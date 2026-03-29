@@ -4,11 +4,13 @@ import random
 import csv
 import os
 import re
+import json
+import math
 from pygame.locals import *
 
 # ------------------ Constants ------------------
 # Frames per second for the simulation
-FPS = 60
+FPS = 144
 # Background color (RGB)
 BACKGROUND = (30, 30, 30)
 # Color for text and certain UI elements
@@ -21,6 +23,7 @@ SLIDER_COLOR = (200, 200, 70)
 # Filenames for saving/exporting data
 EXPORT_FILE = 'simulation_stats.csv'
 DATA_FILE = 'species_data.csv'
+ENV_CONFIG_FILE = 'env_config.json'
 # Font placeholder (initialized later)
 FONT = None
 
@@ -33,7 +36,7 @@ class SpeciesDataManager:
     def __init__(self, filename=DATA_FILE):
         self.filename = filename
         # Updated CSV columns: name, initial count, rates, O2 sens, food sens, speed, preferred pH, food system
-        self.fieldnames = ['name', 'init', 'rep', 'death', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed']
+        self.fieldnames = ['name', 'init', 'rep', 'death', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness']
         self.species = []
         self.load()
 
@@ -66,6 +69,7 @@ class SpeciesDataManager:
         blank['food_capacity'] = '10'
         blank['metabolic_rate'] = '0.1'
         blank['consumption_speed'] = '1.0'
+        blank['greediness'] = '0.5'
         self.species.append(blank)
         self.save()
 
@@ -100,6 +104,9 @@ class Bacterium:
         self.food_level = self.food_capacity
         self.metabolic_rate = getattr(species, 'metabolic_rate', 0.1)
         self.consumption_speed = getattr(species, 'consumption_speed', 1.0)
+        # Wander state
+        self.wander_dir = random.uniform(0, 2*math.pi) if 'math' in globals() else random.random()
+        self.wander_change_timer = random.randint(15, 90)
 
     def move(self, grid_min, grid_max):
         """
@@ -116,28 +123,65 @@ class Bacterium:
         dy = target_y - self.y
         dist = (dx**2 + dy**2) ** 0.5
         if dist > 0:
+            # Add freedom: move partially toward target plus some noise
             step = min(speed / FPS, dist)
-            self.x += dx / dist * step
-            self.y += dy / dist * step
+            # Steering factor reduces perfect tweening
+            steer = 0.7
+            nx = dx / dist
+            ny = dy / dist
+            # Small random jitter
+            jx = random.uniform(-1, 1) * 0.3
+            jy = random.uniform(-1, 1) * 0.3
+            vx = (nx * steer + jx * (1 - steer)) * step
+            vy = (ny * steer + jy * (1 - steer)) * step
+            self.x += vx
+            self.y += vy
 
     def step(self, food_nodes, grid_min, grid_max):
         # Metabolism: lose food each tick
         self.food_level = max(0, self.food_level - self.metabolic_rate)
-        # Pathfind to nearest food node
-        nearest = None
-        min_dist = float('inf')
+        # Compute effective greediness that rises toward 1 as stomach empties
+        base_gx = getattr(self.species, 'greediness', 0.5)
+        cap = self.food_capacity if self.food_capacity > 0 else 1.0
+        fullness = max(0.0, min(1.0, self.food_level / cap))
+        hunger = 1.0 - fullness
+        gx_eff = max(0.0, min(1.0, base_gx + (1.0 - base_gx) * hunger))
+        # Wander timer update
+        self.wander_change_timer -= 1
+        if self.wander_change_timer <= 0:
+            self.wander_change_timer = random.randint(30, 120)
+            self.wander_dir += random.uniform(-0.5, 0.5)
+        # Pathfind with greediness: score food nodes by amount and distance
+        target = None
+        best_score = -float('inf')
+        max_range = 200 + 800 * gx_eff  # willing travel distance scales with effective greediness
         for node in food_nodes:
-            d = ((self.x - node.x)**2 + (self.y - node.y)**2) ** 0.5
-            if d < min_dist:
-                min_dist = d
-                nearest = node
-        if nearest:
-            self.move_towards(nearest.x, nearest.y, self.species.speed)
+            dx = node.x - self.x
+            dy = node.y - self.y
+            dist = (dx*dx + dy*dy) ** 0.5
+            if dist > max_range:
+                continue
+            # Score function: amount weighted minus distance penalty
+            amount_weight = 1.0 + 4.0 * gx_eff  # up to 5x emphasis on rich nodes
+            distance_penalty = (1.0 - gx_eff)  # greedy species care less about distance
+            score = node.amount * amount_weight - dist * distance_penalty
+            if score > best_score:
+                best_score = score
+                target = node
+        # Movement: if we have a target, steer toward it with noise; otherwise wander
+        if target:
+            self.move_towards(target.x, target.y, self.species.speed)
             # If close enough, eat
-            if min_dist < 5:
-                eat_amt = min(self.consumption_speed, nearest.amount, self.food_capacity - self.food_level)
+            d = ((self.x - target.x)**2 + (self.y - target.y)**2) ** 0.5
+            if d < 6:
+                eat_amt = min(self.consumption_speed, target.amount, self.food_capacity - self.food_level)
                 self.food_level += eat_amt
-                nearest.amount -= eat_amt
+                target.amount -= eat_amt
+        else:
+            # Wander: forward step plus noise
+            spd = self.species.speed / FPS
+            self.x += math.cos(self.wander_dir) * spd + random.uniform(-0.5, 0.5)
+            self.y += math.sin(self.wander_dir) * spd + random.uniform(-0.5, 0.5)
         # Clamp position
         self.x = min(max(self.x, grid_min), grid_max)
         self.y = min(max(self.y, grid_min), grid_max)
@@ -148,7 +192,7 @@ class BacteriaSpecies:
     individual members, and population history.
     """
     def __init__(self, name, init, rep, death, so, sf, speed, ph, color,
-                 food_capacity=10.0, metabolic_rate=0.1, consumption_speed=1.0):
+                 food_capacity=10.0, metabolic_rate=0.1, consumption_speed=1.0, greediness=0.5):
         # Store parameters
         self.name = name
         self.base_rep = rep       # base reproduction probability
@@ -161,6 +205,9 @@ class BacteriaSpecies:
         self.food_capacity = food_capacity
         self.metabolic_rate = metabolic_rate
         self.consumption_speed = consumption_speed
+        # New attribute: greediness in [0,1]
+        # 0 = never prioritize far rich nodes; 1 = strongly prefer highest food even if far
+        self.greediness = max(0.0, min(float(greediness), 1.0))
         # Each bacterium gets a random size (mean=1.0, std=0.2)
         self.members = [Bacterium(self, random.randint(0,800), random.randint(0,600),
                                   size=max(0.5, random.gauss(1.0, 0.2)))
@@ -271,14 +318,19 @@ class Simulation:
         """
         if not self.running:
             return
-        # Drop new food nodes
-        for _ in range(self.drop_frequency):
+        # Drop new food nodes (50x less than before)
+        drop_count = max(1, self.drop_frequency // 50)
+        for _ in range(drop_count):
             x = random.randint(0, w)
             y = random.randint(0, h)
             amount = random.uniform(*self.drop_range)
             self.food_nodes.append(FoodNode(x, y, amount))
         # Remove empty food nodes
         self.food_nodes = [node for node in self.food_nodes if node.amount > 0]
+        # --- Optimization: Cap food nodes to most recent 1000 ---
+        MAX_FOOD_NODES = 1000
+        if len(self.food_nodes) > MAX_FOOD_NODES:
+            self.food_nodes = self.food_nodes[-MAX_FOOD_NODES:]
         bsum, dsum = 0, 0
         births_list, deaths_list = [], []
         for sp in self.species:
@@ -324,13 +376,14 @@ class Simulation:
 
     def export(self):
         """
-        Write collected stats to CSV file for analysis.
+        Write collected stats and per-species data to CSV file for analysis.
         """
         if not self.stats['time']:
             print("No data to export.")
             return
         with open(EXPORT_FILE, 'w', newline='') as f:
             writer = csv.writer(f)
+            # Write header for global stats
             writer.writerow(['time', 'total', 'births', 'deaths'])
             for i in range(len(self.stats['time'])):
                 writer.writerow([
@@ -339,6 +392,93 @@ class Simulation:
                     self.stats['births'][i],
                     self.stats['deaths'][i]
                 ])
+            # Write per-species stats
+            writer.writerow([])
+            writer.writerow(['Species', 'Step', 'Count', 'Births', 'Deaths', 'Overall Births', 'Overall Deaths'])
+            for idx, sp in enumerate(self.species):
+                for step in range(len(sp.history)):
+                    births = self.species_step_stats[step]['births'][idx] if step < len(self.species_step_stats) else ''
+                    deaths = self.species_step_stats[step]['deaths'][idx] if step < len(self.species_step_stats) else ''
+                    writer.writerow([
+                        sp.name,
+                        step,
+                        sp.history[step] if step < len(sp.history) else '',
+                        births,
+                        deaths,
+                        sp.total_births,
+                        sp.total_deaths
+                    ])
+
+    def import_stats(self, filename=EXPORT_FILE):
+        """
+        Import simulation stats from CSV and update simulation state.
+        Only updates global stats and per-species history if format matches.
+        """
+        if not os.path.exists(filename):
+            print(f"File {filename} not found.")
+            return
+        with open(filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            lines = list(reader)
+        # Parse global stats
+        stats_start = 1
+        stats_end = stats_start
+        while stats_end < len(lines) and lines[stats_end]:
+            stats_end += 1
+        self.stats = {'time': [], 'total': [], 'births': [], 'deaths': []}
+        for row in lines[stats_start:stats_end]:
+            if len(row) >= 4:
+                self.stats['time'].append(int(row[0]))
+                self.stats['total'].append(int(row[1]))
+                self.stats['births'].append(int(row[2]))
+                self.stats['deaths'].append(int(row[3]))
+        # Parse per-species stats
+        species_start = stats_end + 2
+        self.species_step_stats = []
+        for row in lines[species_start:]:
+            if len(row) >= 7:
+                name, step, count, births, deaths, overall_births, overall_deaths = row
+                # Find species by name
+                for sp in self.species:
+                    if sp.name == name:
+                        step_idx = int(step)
+                        while len(sp.history) <= step_idx:
+                            sp.history.append(0)
+                        sp.history[step_idx] = int(count)
+                        sp.total_births = int(overall_births)
+                        sp.total_deaths = int(overall_deaths)
+                        # Update species_step_stats
+                        while len(self.species_step_stats) <= step_idx:
+                            self.species_step_stats.append({'births': [0]*len(self.species), 'deaths': [0]*len(self.species)})
+                        idx = self.species.index(sp)
+                        self.species_step_stats[step_idx]['births'][idx] = int(births)
+                        self.species_step_stats[step_idx]['deaths'][idx] = int(deaths)
+        print(f"Imported stats from {filename}.")
+
+def load_env_config():
+    if os.path.exists(ENV_CONFIG_FILE):
+        try:
+            with open(ENV_CONFIG_FILE, 'r') as f:
+                content = f.read().strip()
+                if not content:
+                    return None
+                return json.loads(content)
+        except Exception:
+            # If file is corrupt or invalid JSON, ignore and use defaults
+            return None
+    return None
+
+def save_env_config(env):
+    with open(ENV_CONFIG_FILE, 'w') as f:
+        json.dump({
+            'oxygen': env['oxygen'],
+            'co2': env['co2'],
+            'ph': env['ph'],
+            'capacity': env['capacity'],
+            'drop_frequency': env['drop_frequency'],
+            'drop_range_min': env['drop_range_min'],
+            'drop_range_max': env['drop_range_max']
+        }, f)
 
 # ------------------ UI Components ------------------
 class Button:
@@ -510,10 +650,11 @@ class App:
         self.descriptions.update({
             'food_capacity': 'Max food storage (units)',
             'metabolic_rate': 'Food used per tick',
-            'consumption_speed': 'Food eaten per tick'
+            'consumption_speed': 'Food eaten per tick',
+            'greediness': '0.0–1.0 preference for rich food even if far'
         })
         if 'food_capacity' not in self.dm.fieldnames:
-            self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed']
+            self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness']
 
         # Undo and redo stacks for editing species table
         self.undo_stack = []
@@ -531,7 +672,8 @@ class App:
             'ph': 'pH',
             'food_capacity': 'Cap',
             'metabolic_rate': 'Meta',
-            'consumption_speed': 'Eat'
+            'consumption_speed': 'Eat',
+            'greediness': 'Greed'
         }
 
         # Add scroll state for species tab
@@ -555,16 +697,22 @@ class App:
 
         self.init_sim()
         # Create buttons, tabs, sliders
-        self.play_btn = Button((20, 20, 80, 30), 'Play', self.play)
-        self.pause_btn = Button((110, 20, 80, 30), 'Pause', self.toggle_pause)
-        self.export_btn = Button((200, 20, 80, 30), 'Export', self.sim.export)
-        self.add_btn = Button((290, 20, 80, 30), 'Add', self.add_species)
-        self.remove_btn = Button((380, 20, 80, 30), 'Remove', self.remove_species)
-        self.undo_btn = Button((470, 20, 80, 30), 'Undo', self.undo, enabled=False)
-        self.redo_btn = Button((560, 20, 80, 30), 'Redo', self.redo, enabled=False)
+        # Use consistent horizontal spacing for buttons
+        button_w, button_h, button_gap = 80, 30, 10
+        button_y = 20
+        button_xs = [20 + i * (button_w + button_gap) for i in range(8)]
+        self.play_btn = Button((button_xs[0], button_y, button_w, button_h), 'Play', self.play)
+        self.import_btn = Button((button_xs[1], button_y, button_w, button_h), 'Import', self.import_data)
+        self.pause_btn = Button((button_xs[2], button_y, button_w, button_h), 'Pause', self.toggle_pause)
+        self.export_btn = Button((button_xs[3], button_y, button_w, button_h), 'Export', self.sim.export, enabled=False)
+        self.add_btn = Button((button_xs[4], button_y, button_w, button_h), 'Add', self.add_species)
+        self.remove_btn = Button((button_xs[5], button_y, button_w, button_h), 'Remove', self.remove_species)
+        self.undo_btn = Button((button_xs[6], button_y, button_w, button_h), 'Undo', self.undo, enabled=False)
+        self.redo_btn = Button((button_xs[7], button_y, button_w, button_h), 'Redo', self.redo, enabled=False)
 
         self.buttons = [
             self.play_btn,
+            self.import_btn,
             self.pause_btn,
             self.export_btn,
             self.add_btn,
@@ -755,22 +903,27 @@ class App:
                     cols[i % len(cols)],
                     float(d.get('food_capacity', 10)),
                     float(d.get('metabolic_rate', 0.1)),
-                    float(d.get('consumption_speed', 1.0))
+                    float(d.get('consumption_speed', 1.0)),
+                    float(d.get('greediness', 0.5))
                 ))
             except Exception:
                 continue
         if not spp:
-            spp.append(BacteriaSpecies('Ecoli', 50, 0.1, 0.05, 1, 1, 40, 7, cols[0], 10, 0.1, 1.0))
+            spp.append(BacteriaSpecies('Ecoli', 50, 0.1, 0.05, 1, 1, 40, 7, cols[0], 10, 0.1, 1.0, 0.5))
         global env
-        env = {
-            'oxygen': 0.8,
-            'co2': 0.2,
-            'ph': 7.0,
-            'capacity': 500,
-            'drop_frequency': 5,
-            'drop_range_min': 2,
-            'drop_range_max': 8
-        }
+        loaded_env = load_env_config()
+        if loaded_env:
+            env = loaded_env
+        else:
+            env = {
+                'oxygen': 0.8,
+                'co2': 0.2,
+                'ph': 7.0,
+                'capacity': 500,
+                'drop_frequency': 5,
+                'drop_range_min': 2,
+                'drop_range_max': 8
+            }
         env['drop_range'] = (env['drop_range_min'], env['drop_range_max'])
         self.sim = Simulation(spp, env, cap=env['capacity'], steps=500)
 
@@ -1234,9 +1387,14 @@ class App:
                                     num = float(new_val)
                                     if not 0 <= num <= 14:
                                         raise ValueError
+                                elif col == 'greediness':
+                                    num = float(new_val)
+                                    if not 0 <= num <= 1:
+                                        raise ValueError
+                                # apply change if valid
                                 self.undo_stack.append({'action': 'cell_edit', 'row': i, 'col': col, 'old': old_val, 'new': new_val})
                                 self.dm.species[i][col] = new_val
-                            except:
+                            except Exception:
                                 pass
                         self.dm.save()
                         self.editors = []
@@ -1275,6 +1433,8 @@ class App:
                         max_rows = self.stats_max_visible_rows
                         self.stats_scroll_y = max(0, min(self.stats_scroll_y - e.y, max(0, total_rows - max_rows)))
 
+            # --- Enable/disable export button based on data ---
+            self.export_btn.enabled = bool(self.sim.stats['time'])
             # --- Update drop range in env from sliders ---
             # Clamp drop_range_min and drop_range_max to maintain max >= min
             if env['drop_range_min'] > env['drop_range_max']:
@@ -1285,6 +1445,7 @@ class App:
             self.sim.drop_frequency = int(env['drop_frequency'])
             self.sim.drop_range = env['drop_range']
             # --- Always update simulation every frame ---
+            save_env_config(env)  # Save env after any change
             self.sim.update(self.w, self.h)
 
             # Draw background
@@ -1488,5 +1649,10 @@ class App:
                     self.selected_row, self.selected_col = i, j
                     return
 
-if __name__ == "__main__":
+    def import_data(self):
+        """Import simulation stats from CSV and update simulation state."""
+        self.sim.import_stats()
+
+# Move this block outside the App class
+if __name__ == '__main__':
     App().run()
