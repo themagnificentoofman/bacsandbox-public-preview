@@ -1,0 +1,54 @@
+# Bacteria Sandbox
+
+Welcome to **Bacteria Sandbox**, a robust 2D simulation built with Python and Pygame!
+
+## Project Overview
+Bacteria Sandbox is an interactive grid-based simulation where various bacterial species vie for resources, multiply, and perish according to configurable environmental pressures and species-specific traits.
+
+## Setup & Installation
+1. Ensure you have Python 3 installed.
+2. Install the required packages via `requirements.txt`:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Run the application:
+   ```bash
+   python bacteria/bacteria.py
+   ```
+
+## User Interface
+- **Grid View**: A huge 65536x65536 scrolling space. Use your mouse to drag the map or the bottom/right scrollbars to navigate.
+- **Minimap**: Located at the bottom right. Shows the visible area in relation to the entire environment and draggable for quick movement.
+- **Species Tab**: Add, remove, and define traits for various species using an embedded spreadsheet editor. Also features Undo/Redo tracking.
+- **Stats Tab**: Displays live data charts capturing global population, deaths, and births, along with breakdowns of historical counts per species.
+- **Environment Sliders**: Adjust live environmental features such as the amount of O2, CO2, Food Drop Frequencies and Range, as well as the pH scale in real-time.
+
+## Configuration Files
+The project maintains its state using a couple of configuration files:
+
+### `species_data.csv`
+Defines the parameters for every configured species. Can be edited externally or in-app.
+* **name**: Identifier for the species.
+* **init**: Initial population spawned.
+* **rep**: Base reproduction rate.
+* **death**: Base death probability per tick.
+* **so**: O2 sensitivity (-1 to 1; <0 needs CO₂, >0 needs O₂).
+* **sf**: Food sensitivity (0 to 1).
+* **speed**: Base movement speed.
+* **ph**: Preferred pH level (0-14).
+* **food_capacity**: Maximum amount of food unit a bacterium can carry.
+* **metabolic_rate**: Amount of food consumed per tick.
+* **consumption_speed**: Speed at which food points are eaten when found.
+* **greediness**: (0.0 to 1.0) Likelihood to prioritize distant larger food piles over close smaller ones.
+
+### `env_config.json`
+Stores the global simulation state:
+* `oxygen`: Active O2 percent (0-1).
+* `co2`: Active CO2 percent (0-1).
+* `ph`: Current pH level (0-14).
+* `capacity`: Hard carrying capacity for all species combined.
+* `drop_frequency`: Amount of new food clusters to attempt to spawn per grouping tick.
+* `drop_range_min` / `drop_range_max`: Min/Max amount of food in newly dropped clusters.
+
+## Data Export
+As the simulation runs, statistical points matching population changes and event counts are recorded in `simulation_stats.csv`. This includes a detailed log of births, deaths, and running populations over time, great for external data processing or spreadsheet imports.
