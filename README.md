@@ -15,15 +15,17 @@ For a detailed breakdown of the implemented mathematical biology models, tunable
    ```
 3. Run the application:
    ```bash
-   python bacteria/bacteria.py
+   python -m bacteria
    ```
 
 ## User Interface
-- **Grid View**: A huge 65536x65536 scrolling space. Use your mouse to drag the map or the bottom/right scrollbars to navigate.
-- **Minimap**: Located at the bottom right. Shows the visible area in relation to the entire environment and draggable for quick movement.
-- **Species Tab**: Add, remove, and define traits for various species using an embedded spreadsheet editor. Also features Undo/Redo tracking.
-- **Stats Tab**: Displays live data charts capturing global population, deaths, and births, along with breakdowns of historical counts per species.
-- **Environment Sliders**: Adjust live environmental features such as the amount of O2, CO2, Food Drop Frequencies and Range, as well as the pH scale in real-time.
+The application features a real-time UI driven by PyGame, separated into tabs:
+- **Grid Tab**: A huge 65536x65536 scrolling space for the primary simulation view. Use your mouse to drag the map or the bottom/right scrollbars to navigate, and the minimap for quick movement.
+- **Graph Tab**: Real-time line charts tracking historical total populations and per-species populations. Includes export and import commands to save or replay timeline stats securely via CSV.
+- **Stats Tab**: Displays numerical readouts of live simulation events tracking active populations, global births, and total deaths globally and per-species.
+- **Species Tab**: An interactive data-grid for creating, modifying, duplicating, or deleting species parameters on the fly. Also features Undo/Redo tracking.
+- **Globals Tab**: An embedded spreadsheet editor defining baseline environmental factors (O2, CO2, pH, Capacity) and food node drop frequencies.
+- **Environment Sliders**: Use the UI sliders visible in the Grid, Graph, and Stats views to manually adjust live environmental features such as the amount of O2, CO2, Food Drop Frequencies and Range, as well as the pH scale in real-time.
 
 ## Configuration Files
 The project maintains its state using a couple of configuration files:

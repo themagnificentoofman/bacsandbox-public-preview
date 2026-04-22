@@ -28,9 +28,19 @@ Species behaviors are determined by diverse attributes configured in `species_da
 * **Thresholds**: Reproduction threshold, Share threshold, Predation threshold.
 
 ## 4. UI and Controls
-The application features a real-time UI driven by PyGame, separated into tabs:
-* **Grid**: The primary simulation view. Includes dynamic panning, zooming (using mouse or on-screen buttons), and a minimap.
-* **Species Editor**: A deeply interactive data-grid for creating, modifying, duplicating, or deleting species parameters on the fly.
-* **Globals Editor**: Allows tuning of environmental factors (O2, CO2, pH, Capacity) and food node drop frequencies.
-* **Stats**: Tracks populations, births, and deaths globally and per-species.
-* **Graph & Data Management**: Real-time graphing and the ability to export (`simulation_stats.csv`) and import simulation data dynamically.
+The application features a real-time UI driven by PyGame, separated into five active tabs, augmented by live sliders:
+* **Grid Tab**: The primary simulation view. Includes dynamic panning, zooming (using mouse or on-screen buttons), and a minimap.
+* **Graph Tab**: Real-time line charts tracking historical total populations and per-species populations. Includes export and import commands to save or replay timeline stats dynamically.
+* **Stats Tab**: Displays numerical readouts of live simulation events tracking active populations, global births, and total deaths globally and per-species.
+* **Species Tab**: A deeply interactive data-grid for creating, modifying, duplicating, or deleting species parameters on the fly.
+* **Globals Tab**: An embedded editor allowing tuning of starting environmental factors (O2, CO2, pH, Capacity) and food node drop frequencies.
+* **Environment Sliders**: Live UI toolbars visible in the Grid, Graph, and Stats views to manually adjust the environment state during simulation.
+
+## 5. Software Architecture
+The application employs a strict Separation of Concerns pattern, modularized into the `bacteria` Python package:
+* `app.py`: The entry-point class handling the PyGame rendering loop, state synchronization, and Tab dispatching.
+* `core_sim.py`: Implements the headless mathematical and physical models (`Bacterium`, `BacteriaSpecies`, `Simulation`, `FoodNode`).
+* `data.py`: Manages state serialization, loading, and saving mappings for `species_data.csv` and `env_config.json`.
+* `ui_components.py`: Houses decoupled, reusable PyGame widgets (`Button`, `Slider`, `CellEditor`).
+* `constants.py`: Defines immutable graphical primitives and simulation timing defaults.
+* `__main__.py`: Allows the module to be cleanly booted via the `python -m bacteria` CLI command.
