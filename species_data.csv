@@ -1,3 +1,4 @@
-name,init,rep,death,so,sf,speed,ph,food_capacity,metabolic_rate,consumption_speed,greediness
-a,100,1,0.1,-0.1,0.7,2500,10,100,0.5,1.0,0.5
-b,100,1,0.1,0.1,0.7,2500,4,100,0.5,1.0,0.5
+name,init,rep,aging,so,sf,speed,ph,food_capacity,metabolic_rate,consumption_speed,greediness,aggression,defense,rep_thresh,share_thresh,predation_thresh,base_size,sensor_radius
+a,100,1,0.001,-0.1,0.5,2500,7,100,0.1,5.0,0.0,0.5,0.5,0.8,0.9,0.5,1.0,200.0
+b,100,1,0.001,-0.1,0.5,2500,7,105,0.1,5.0,0.0,0.5,0.5,0.8,0.9,0.5,1.0,200.0
+c,100,1,0.001,-0.1,0.5,2500,7,110,0.1,5.0,0.0,0.5,0.5,0.8,0.9,0.5,1.0,200.0

@@ -5,6 +5,8 @@ Welcome to **Bacteria Sandbox**, a robust 2D simulation built with Python and Py
 ## Project Overview
 Bacteria Sandbox is an interactive grid-based simulation where various bacterial species vie for resources, multiply, and perish according to configurable environmental pressures and species-specific traits.
 
+For a detailed breakdown of the implemented mathematical biology models, tunable species traits, physics kinematics, and UI features, please see the formally curated [DOCUMENTATION.md](DOCUMENTATION.md).
+
 ## Setup & Installation
 1. Ensure you have Python 3 installed.
 2. Install the required packages via `requirements.txt`:
@@ -31,19 +33,26 @@ Defines the parameters for every configured species. Can be edited externally or
 * **name**: Identifier for the species.
 * **init**: Initial population spawned.
 * **rep**: Base reproduction rate.
-* **death**: Base death probability per tick.
+* **aging**: Base aging rate multiplier.
 * **so**: O2 sensitivity (-1 to 1; <0 needs CO₂, >0 needs O₂).
 * **sf**: Food sensitivity (0 to 1).
 * **speed**: Base movement speed.
 * **ph**: Preferred pH level (0-14).
-* **food_capacity**: Maximum amount of food unit a bacterium can carry.
-* **metabolic_rate**: Amount of food consumed per tick.
-* **consumption_speed**: Speed at which food points are eaten when found.
+* **food_capacity**: Base max food (pg Glucose, scales w/ $\mu m^3$).
+* **metabolic_rate**: Base food used (pg/tick, scales w/ Kleiber).
+* **consumption_speed**: Base eat speed (pg/tick, scales w/ $\mu m^2$).
 * **greediness**: (0.0 to 1.0) Likelihood to prioritize distant larger food piles over close smaller ones.
+* **aggression**: Toxin power against other species (0-1).
+* **defense**: Toxin resistance (0-1).
+* **rep_thresh**: Min food capacity % to replicate (0-1).
+* **share_thresh**: Min food capacity % to share (0-1).
+* **predation_thresh**: Max food capacity % to predate (0-1).
+* **base_size**: Base size ($\mu m$, default 1.0).
+* **sensor_radius**: Food detection radius ($\mu m$, default 200.0).
 
 ### `env_config.json`
 Stores the global simulation state:
-* `oxygen`: Active O2 percent (0-1).
+* `o2`: Active O2 percent (0-1).
 * `co2`: Active CO2 percent (0-1).
 * `ph`: Current pH level (0-14).
 * `capacity`: Hard carrying capacity for all species combined.
