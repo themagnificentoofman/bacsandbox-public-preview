@@ -9,20 +9,46 @@ if __package__ is None and not hasattr(sys, 'frozen'):
     __package__ = 'bacteria'
 
 from .constants import *
+from .ecm import ECM
 
 class FoodNode:
     """
     Represents a food node on the grid.
     """
+    _pool = []
+    
     def __init__(self, x, y, amount):
         self.x = x
         self.y = y
         self.amount = amount
+    
+    @classmethod
+    def acquire(cls):
+        """Acquire a FoodNode from pool or create new."""
+        if cls._pool:
+            node = cls._pool.pop()
+            return node
+        return cls.__new__(cls)
+    
+    @classmethod
+    def release(cls, node):
+        """Release FoodNode back to pool."""
+        if node is not None and len(cls._pool) < 2000:
+            cls._pool.append(node)
+    
+    def init(self, x, y, amount):
+        """Initialize/reinitialize pool object."""
+        self.x = x
+        self.y = y
+        self.amount = amount
+        return self
 
 class Bacterium:
     """
     Individual bacterium with position and species reference.
     """
+    _pool = []
+    
     def __init__(self, species, x, y, size=1.0, initial_food=None):
         self.species = species
         self.x = x
@@ -68,9 +94,35 @@ class Bacterium:
         self.base_tumble_duration = 0.1
         self.state_timer = self.base_run_duration
         self.is_tumbling = False
+    
+    @classmethod
+    def acquire(cls):
+        """Acquire a Bacterium from pool or create new."""
+        if cls._pool:
+            return cls._pool.pop()
+        return cls.__new__(cls)
+    
+    @classmethod
+    def release(cls, bacterium):
+        """Release Bacterium back to pool."""
+        if bacterium is not None and len(cls._pool) < 5000:
+            cls._pool.append(bacterium)
+    
+    def init(self, species, x, y, size=1.0, initial_food=None):
+        self.__init__(species, x, y, size, initial_food)
+        return self
 
-    def step(self, food_nodes, grid_min, grid_max):
-        self.age += 1.0 / FPS
+    def step(self, food_nodes, bounds, dt, viewport_bounds=None, food_hash=None):
+        is_out_of_bounds = False
+        if viewport_bounds is not None:
+            is_out_of_bounds = (
+                self.x < viewport_bounds.get('left') or 
+                self.x > viewport_bounds.get('right') or 
+                self.y < viewport_bounds.get('top') or 
+                self.y > viewport_bounds.get('bottom')
+            )
+            
+        self.age += dt
         # Senescence: Replicative senescence and ROS (Reactive Oxygen Species) accumulation
         # As age increases, cellular damage increases metabolic maintenance overhead.
         # Reference: Free radical theory of aging (Harman, 1956). Models linear increase in basal energy.
@@ -78,8 +130,8 @@ class Bacterium:
         BASE_LIFESPAN_SEC = 180.0
         age_factor = 1.0 + (self.age / (BASE_LIFESPAN_SEC * self.lifespan_variance))
         
-        # Metabolism: lose food each tick (scaled by FPS)
-        self.food_level = max(0, self.food_level - (self.metabolic_rate / FPS) * age_factor)
+        # Metabolism: lose food each tick (scaled by dt)
+        self.food_level = max(0, self.food_level - (self.metabolic_rate * dt) * age_factor)
         
         # Update size based on fullness
         cap = self.food_capacity if self.food_capacity > 0 else 1.0
@@ -99,19 +151,24 @@ class Bacterium:
         closest_node = None
         min_dist = float('inf')
         max_range = self.species.sensor_radius
-        for node in food_nodes:
+        
+        candidate_nodes = food_hash.query(self.x, self.y, max_range) if food_hash else food_nodes
+        if is_out_of_bounds:
+            candidate_nodes = [] # Hybrid ABM/ODE Fast-forward. ODE translation applies instead.
+            
+        for node in candidate_nodes:
             dx = node.x - self.x
             dy = node.y - self.y
-            dist = (dx*dx + dy*dy) ** 0.5
+            dist = abs(dx) + abs(dy)
             if dist < min_dist:
                 min_dist = dist
                 closest_node = node
             if dist > max_range:
                 continue
             
-            # Chemotactic score: Inverse square law for concentration model at a distance.
+            # Chemotactic score: Manhattan distance approximation for concentration model at a distance.
             # Base concentration is proportional to node amount.
-            concentration = node.amount / max(1.0, dist**2)
+            concentration = node.amount / max(1.0, dist)
             # Receptor activation incorporates greediness (ignores weak signals if not greedy)
             score = concentration * gx_eff
             
@@ -120,18 +177,25 @@ class Bacterium:
                 target = node
                 
         # State management: Run vs Tumble
-        self.state_timer -= 1.0 / FPS
+        self.last_score = getattr(self, 'last_score', 0.0)
+        self.state_timer -= dt
         if self.state_timer <= 0.0:
             self.is_tumbling = not self.is_tumbling
             if self.is_tumbling:
                 self.state_timer = self.base_tumble_duration
             else:
-                self.state_timer = self.base_run_duration * random.gauss(1.0, 0.2)
+                if best_score > self.last_score:
+                    # Gradient is improving - extend run duration by factor of 2.5
+                    self.state_timer = self.base_run_duration * random.gauss(1.0, 0.2) * 2.5
+                else:
+                    self.state_timer = self.base_run_duration * random.gauss(1.0, 0.2)
+        
+        self.last_score = best_score
 
         # Base movement speed
-        spd = self.speed / FPS
+        spd = self.speed * dt
 
-        # Movement: steer toward target with physical rotation limits
+        # Movement: no direct steering, pure run-and-tumble
         if target:
             # Geometric volumetric scaling: V = 4/3 * pi * r^3 -> r = cbrt(3V / 4pi)
             # where V = target.amount (pg = um^3)
@@ -140,51 +204,81 @@ class Bacterium:
             
             d = ((self.x - target.x)**2 + (self.y - target.y)**2) ** 0.5
             
-            if d > eat_dist:
-                target_angle = math.atan2(target.y - self.y, target.x - self.x)
-                angle_diff = (target_angle - self.heading + math.pi) % (2 * math.pi) - math.pi
-                max_turn = self.turn_rate / FPS
-                self.heading += max(-max_turn, min(angle_diff, max_turn))
-            else:
-                # Motility inhibition down-regulation upon reaching concentrated nutrient sources.
-                # Reference: Bacterial cells often halt flagellar rotation or utilize pili to attach to surfaces (biofilm initiation) when grazing.
-                target_angle = math.atan2(target.y - self.y, target.x - self.x)
-                self.heading = target_angle
-                spd = 0.0
+            if d <= eat_dist:
+                spd = 0.0 # Graze without moving
                 
             # If close enough to feed (small margin)
             if d <= eat_dist + 3.0:
-                eat_amt = min(self.consumption_speed / FPS, target.amount, max(0.0, self.food_capacity - self.food_level))
+                eat_amt = min(self.consumption_speed * dt, target.amount, max(0.0, self.food_capacity - self.food_level))
                 self.food_level += eat_amt
                 target.amount -= eat_amt
-        else:
-            if self.is_tumbling:
-                # During tumble, motility is spent entirely on reorientation
-                # Model tumble as applying random torque, capped by maximum turn rate
-                self.heading += random.uniform(-self.turn_rate, self.turn_rate) / FPS
-                spd *= 0.1 # Very slow translation during tumble
-            else:
-                # Run phase: try to follow closest node if exists
-                if closest_node:
-                    target_angle = math.atan2(closest_node.y - self.y, closest_node.x - self.x)
-                    angle_diff = (target_angle - self.heading + math.pi) % (2 * math.pi) - math.pi
-                    max_turn = self.turn_rate / FPS
-                    self.heading += max(-max_turn, min(angle_diff, max_turn))
+                
+        if self.is_tumbling:
+            # During tumble, motility is spent entirely on reorientation
+            # Model tumble as applying random torque, capped by maximum turn rate
+            self.heading += random.uniform(-self.turn_rate, self.turn_rate) * dt
+            spd *= 0.1 # Very slow translation during tumble
         
         # Apply Brownian rotational noise (rotational diffusion)
         # Reference: Rotational diffusion coefficient scales roughly ~ 1 / r^3
         # D_rot = kT / (8 pi eta r^3). A standard value for 1 um sphere in water at room temp is ~0.16 rad^2/s.
         base_diffusion_coefficient = 0.16
         rotational_diffusion = base_diffusion_coefficient / max(0.1, self.base_size ** 3)
-        self.heading += random.gauss(0, rotational_diffusion / FPS)
+        self.heading += random.gauss(0, rotational_diffusion * dt)
         
         # Forward translation
         self.x += math.cos(self.heading) * spd
         self.y += math.sin(self.heading) * spd
             
-        # Clamp position
-        self.x = min(max(self.x, grid_min), grid_max)
-        self.y = min(max(self.y, grid_min), grid_max)
+        # Circular petri dish boundary constraints
+        cx, cy, r_bound = bounds
+        dx = self.x - cx
+        dy = self.y - cy
+        dist = math.hypot(dx, dy)
+        
+        if dist > r_bound and dist > 0.001:
+            nx = dx / dist
+            ny = dy / dist
+            
+            # Reposition on boundary
+            self.x = cx + nx * r_bound
+            self.y = cy + ny * r_bound
+            
+            # Proper geometric reflection logic off circle normal
+            # velocity vector
+            vx = math.cos(self.heading)
+            vy = math.sin(self.heading)
+            
+            # v' = v - 2(v.n)n
+            dot = vx * nx + vy * ny
+            vx_new = vx - 2 * dot * nx
+            vy_new = vy - 2 * dot * ny
+            
+            self.heading = math.atan2(vy_new, vx_new) + random.uniform(-0.2, 0.2)
+
+    def attempt_fission(self, envf, rep_prob, rep_thresh, dt):
+        """
+        Evaluate and execute cell division (binary fission).
+        Reference: Stouthamer (1973), A theoretical study on the amount of ATP required for synthesis of microbial cell material.
+        Cost equivalent of chromosome, ribosomes, and cell wall assembly equates ~40 pg of equivalent glucose per 1 um^3 of new cell volume.
+        Requires sufficient accumulated biomass.
+        """
+        if rep_prob > 0 and random.random() < rep_prob and self.food_level > self.food_capacity * rep_thresh:
+            # Cost equivalent of ribosomes/chromosome equates to ~40 pg of glucose per 1 um^3
+            child_volume = self.base_size ** 3
+            atp_cost = 40.0 * child_volume
+            
+            if self.food_level > atp_cost:
+                remaining_food = self.food_level - atp_cost
+                parent_food = remaining_food * 0.5
+                child_food = remaining_food * 0.5
+                
+                # Ensure they have enough food to survive the tick
+                min_survival_food = self.metabolic_rate * dt
+                if parent_food > min_survival_food and child_food > min_survival_food:
+                    self.food_level = parent_food
+                    return Bacterium(self.species, self.x, self.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food)
+        return None
 
 class BacteriaSpecies:
     """
@@ -193,7 +287,7 @@ class BacteriaSpecies:
     """
     def __init__(self, name, init, rep, aging, so, sf, speed, ph, color,
                  food_capacity=10.0, metabolic_rate=0.1, consumption_speed=1.0, greediness=0.5,
-                 aggression=0.5, defense=0.5, rep_thresh=0.8, share_thresh=0.6,
+                 t6ss_activity=0.5, bacteriocin_production=0.5, immunity_factor=0.5, rep_thresh=0.8, share_thresh=0.6,
                  predation_thresh=0.9, base_size=1.0, sensor_radius=200.0):
         # Store parameters
         self.name = name
@@ -209,8 +303,9 @@ class BacteriaSpecies:
         self.consumption_speed = consumption_speed
         # New attributes
         self.greediness = max(0.0, min(float(greediness), 1.0))
-        self.aggression = max(0.0, min(float(aggression), 1.0))
-        self.defense = max(0.0, min(float(defense), 1.0))
+        self.t6ss_activity = max(0.0, min(float(t6ss_activity), 1.0))
+        self.bacteriocin_production = max(0.0, min(float(bacteriocin_production), 1.0))
+        self.immunity_factor = max(0.0, min(float(immunity_factor), 1.0))
         self.rep_thresh = max(0.0, min(float(rep_thresh), 1.0))
         self.share_thresh = max(0.0, min(float(share_thresh), 1.0))
         self.predation_thresh = max(0.0, min(float(predation_thresh), 1.0))
@@ -224,7 +319,7 @@ class BacteriaSpecies:
         self.total_births = 0     # overall births
         self.total_deaths = 0     # overall deaths
 
-    def step(self, env, cap, w, h, food_nodes):
+    def step(self, env, cap, w, h, food_nodes, dt, viewport_bounds=None, food_hash=None):
         """
         Process one simulation step for this species:
         - Move each bacterium
@@ -261,35 +356,30 @@ class BacteriaSpecies:
         # Overall environmental fitness [0, 1]
         envf = ph_suit * max(0.0, o2_suit)
 
-        grid_min = -32768
-        grid_max = 32768
+        ds_cx, ds_cy = getattr(self.sim, 'petri_center', (w/2, h/2))[0] if hasattr(self, 'sim') else w/2, getattr(self.sim, 'petri_center', (w/2, h/2))[1] if hasattr(self, 'sim') else h/2
+        ds_r = getattr(self.sim, 'petri_radius', math.hypot(w, h)/2 + 100) if hasattr(self, 'sim') else math.hypot(w, h)/2 + 100
+        
         for b in list(self.members):
-            b.step(food_nodes, grid_min, grid_max)
+            b.step(food_nodes, bounds=(ds_cx, ds_cy, ds_r), dt=dt, viewport_bounds=viewport_bounds, food_hash=food_hash)
             # Reproduction trial based on the Verhulst (Logistic) growth model modified by environmental fitness.
             # Reference: Verhulst (1838). dp/dt = r*p*(1 - p/K). Here, `capf` represents the limiting (1 - p/K) term.
-            rep_prob = (self.base_rep / FPS) * capf * envf
+            rep_prob = (self.base_rep * dt) * capf * envf
             rep_prob = max(0, min(rep_prob, 1))  # Clamp to [0,1]
             
-            # Binary fission occurs only when sufficient biomass is accumulated.
-            # Reference: Cell size control and division checkpoints in bacteria (adder/sizer models).
-            if rep_prob > 0 and random.random() < rep_prob and b.food_level > b.food_capacity * self.rep_thresh:
-                # Thermodynamic loss splits CURRENT food pool to avoid instant death on low thresholds.
-                # E.g., parent keeps 50% of its current food, child gets 50%
-                parent_cost = b.food_level * 0.5
-                child_food = b.food_level * 0.5
-                b.food_level -= parent_cost
-                births.append(Bacterium(self, b.x, b.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food))
+            new_bacterium = b.attempt_fission(envf, rep_prob, self.rep_thresh, dt)
+            if new_bacterium:
+                births.append(new_bacterium)
             
             # Senescence modeled via Gompertz law of mortality: mu(x) = A * e^(alpha * x) + B
             # Reference: Gompertz (1825). Exponential increase in death rate due to intrinsic cellular senescence.
             # Alpha governs the steepness of the decay curve. An alpha of 0.04 represents mortality doubling approx every 17s.
             gompertz_alpha = 0.04 / max(0.001, b.lifespan_variance)
-            age_death_penalty = (self.base_aging / FPS) * math.exp(gompertz_alpha * b.age)
+            age_death_penalty = (self.base_aging * dt) * math.exp(gompertz_alpha * b.age)
             # Cap the penalty to avoid overflow probabilities per simulation tick
             age_death_penalty = min(1.0, age_death_penalty)
             
             # Death trial: extrinsic (environmental toxicity) + intrinsic (Gompertz senescence) + starvation
-            toxic_death_prob = ((1.0 - envf) * 0.05) / FPS + age_death_penalty
+            toxic_death_prob = ((1.0 - envf) * 0.05) * dt + age_death_penalty
             if b.food_level <= 0 or random.random() < toxic_death_prob:
                 deaths.append(b)
                 # Decomposition: drop food node (scavenging)
@@ -307,6 +397,36 @@ class BacteriaSpecies:
         self.total_deaths += len(deaths)
         return len(births), len(deaths)
 
+
+class FoodSpatialHash:
+    """
+    Spatial hash table for efficient food node lookup by grid cell.
+    Supports O(1) average case insertion/lookup/removal.
+    """
+    def __init__(self, cell_size=50):
+        self.cell_size = cell_size
+        self.grid = {}
+    
+    def insert(self, food_node):
+        grid_x = int(food_node.x // self.cell_size)
+        grid_y = int(food_node.y // self.cell_size)
+        key = (grid_x, grid_y)
+        if key not in self.grid:
+            self.grid[key] = []
+        self.grid[key].append(food_node)
+    
+    def query(self, x, y, radius):
+        cell_x = int(x // self.cell_size)
+        cell_y = int(y // self.cell_size)
+        search_radius = int(radius / self.cell_size) + 1
+        results = []
+        for dx in range(-search_radius, search_radius + 1):
+            for dy in range(-search_radius, search_radius + 1):
+                key = (cell_x + dx, cell_y + dy)
+                if key in self.grid:
+                    results.extend(self.grid[key])
+        return results
+
 class Simulation:
     """
     Manages multiple species, environment, and global stats.
@@ -315,10 +435,12 @@ class Simulation:
         # give each species a reference to the full list
         for sp in spp:
             setattr(sp, 'species_list', spp)
+            setattr(sp, 'sim', self)
         self.species = spp
         self.env = env           # environment dict: oxygen/CO2/food
         self.cap = cap           # carrying capacity
         self.steps = steps       # max time steps (NOT USED ANYMORE)
+        self.ecm = ECM(cell_size=20) # Inject Extracellular Matrix for molecular diffusion
         # stats collected each step
         self.stats = {'time': [], 'total': [], 'births': [], 'deaths': []}
         self.species_step_stats = []  # List of dicts: [{'births': [...], 'deaths': [...]}]
@@ -334,9 +456,17 @@ class Simulation:
         """
         for sp in self.species:
             initial = int(sp.history[0] if sp.history and sp.history[0] else len(sp.members))
-            sp.members = [Bacterium(sp, random.randint(0,800), random.randint(0,600),
-                                    size=max(0.5, random.gauss(1.0, 0.2)))
-                          for _ in range(initial)]
+            sp.members = []
+            for _ in range(initial):
+                if hasattr(self, 'petri_radius'):
+                    r_b = random.random() * self.petri_radius * 0.8
+                    th = random.random() * 2 * math.pi
+                    x = self.petri_center[0] + r_b * math.cos(th)
+                    y = self.petri_center[1] + r_b * math.sin(th)
+                else:
+                    x = random.randint(0, 800)
+                    y = random.randint(0, 600)
+                sp.members.append(Bacterium(sp, x, y, size=max(0.5, random.gauss(1.0, 0.2))))
             sp.history = []
             sp.total_births = 0
             sp.total_deaths = 0
@@ -345,28 +475,113 @@ class Simulation:
         self.step_idx = 0
         self.running = False
 
-    def update(self, w, h):
+    def _process_interactions(self, spatial_hash, CELL_SIZE, dt):
         """
-        Advance one time step if running:
-        - Let each species step
-        - Enforce hard carrying capacity
-        - Record stats
-        - Update environment (deplete resources)
+        Process Inter/Intra species interactions and ECM biochemical exposure.
+        Reference: Contact-dependent inhibition (T6SS) and diffusible antimicrobial peptides (bacteriocins).
         """
+        for sp in self.species:
+            bac_prod_rate = (sp.bacteriocin_production * 0.5) * dt
+            immunity_mitigation = min(0.99, sp.immunity_factor * 1.5)
+            
+            for b in sp.members:
+                cx = int(b.x // CELL_SIZE)
+                cy = int(b.y // CELL_SIZE)
+                
+                b_size_sq_dmg = (sp.t6ss_activity * (b.size ** 2) * 5.0) * dt
+                
+                # Bacteriocin Emission (metabolic cost):
+                # Emission occurs consistently, scaled by bacteriocin_production
+                # Reference: Ribosomally synthesized antimicrobial peptides. Production costs ATP/amino acids.
+                if bac_prod_rate > 0 and b.food_level > bac_prod_rate:
+                    b.food_level -= bac_prod_rate
+                    self.ecm.add(b.x, b.y, bac_prod_rate * 10.0, layer='bac')
+                
+                # Environmental bacteriocin exposure
+                local_bac = self.ecm.sample(b.x, b.y, layer='bac')
+                if local_bac > 0:
+                    # Damage scaled by immunity factor acting as competitive inhibitor.
+                    bac_dmg = (local_bac * 0.1) * (1.0 - immunity_mitigation) * dt
+                    b.food_level -= bac_dmg
+
+                # Check 9 surrounding cells for physical contact (T6SS / Predation / Sharing)
+                for nx in (cx - 1, cx, cx + 1):
+                    for ny in (cy - 1, cy, cy + 1):
+                        neighbors = spatial_hash.get((nx, ny), [])
+                        for other in neighbors:
+                            if other is b:
+                                continue
+                                
+                            dx = b.x - other.x
+                            dy = b.y - other.y
+                            if abs(dx) > 15 or abs(dy) > 15:
+                                continue
+                                
+                            dist_sq = dx**2 + dy**2
+                            interact_dist = b.size + other.size + 2.0
+                            if dist_sq < interact_dist**2:
+                                if b.species == other.species:
+                                    # Intraspecies cooperation: share food slowly to help starving kin
+                                    if b.food_level > b.food_capacity * sp.share_thresh:
+                                        diff = b.food_level - other.food_level
+                                        if diff > 0:
+                                            transfer = diff * dt
+                                            b.food_level -= transfer
+                                            other.food_level += transfer
+                                else:
+                                    # Interspecies competition
+                                    # Type VI Secretion System (T6SS) Contact Dueling:
+                                    # Reference: Spring-loaded contact weapon delivering effector toxins directly into neighbor.
+                                    # Base damage scales with T6SS activity expression and physical area.
+                                    immunity_defense = min(0.95, (other.species.immunity_factor * other.size) / (b.size + 0.01))
+                                    actual_dmg = b_size_sq_dmg * (1.0 - immunity_defense)
+                                    other.food_level -= actual_dmg
+
+                                    # Phagocytosis (Engulfment): if much larger, instantly consume
+                                    # We use 2.0x size advantage (which means 8x volume advantage)
+                                    if b.food_level < b.food_capacity * sp.predation_thresh:
+                                        if b.size > other.size * 2.0:
+                                            # Instantly kill and eat their food pool (plus bit of biomass)
+                                            b.food_level = min(b.food_capacity, b.food_level + other.food_level + other.food_capacity * 0.2)
+                                            other.food_level = -9999.0
+
+    def update(self, w, h, dt, viewport_bounds=None):
+        """
+        Advance one time step if running.
+        viewport_bounds: dict with keys 'left', 'right', 'top', 'bottom' for visible area
+        """
+        if not hasattr(self, 'petri_center'):
+            self.petri_center = (w/2, h/2)
+            self.petri_radius = math.hypot(w, h) / 2 + 100
+
         if not self.running:
             return
-        # Drop new food nodes based on percentage chance (scaled by FPS to maintain constant drops/sec)
-        if random.random() * 100 < (self.drop_frequency * 144.0 / FPS):
-            x = random.randint(0, w)
-            y = random.randint(0, h)
+            
+        if random.random() * 100 < (self.drop_frequency * 144.0 * dt):
+            r_f = self.petri_radius * math.sqrt(random.random())
+            th = random.random() * 2 * math.pi
+            x = self.petri_center[0] + r_f * math.cos(th)
+            y = self.petri_center[1] + r_f * math.sin(th)
             amount = random.uniform(*self.drop_range)
-            self.food_nodes.append(FoodNode(x, y, amount))
-        # Remove empty food nodes
-        self.food_nodes = [node for node in self.food_nodes if node.amount > 0]
-        # --- Optimization: Cap food nodes to most recent 1000 ---
+            node = FoodNode.acquire().init(x, y, amount)
+            self.food_nodes.append(node)
+            
+        to_remove = [n for n in self.food_nodes if n.amount <= 0]
+        for node in to_remove:
+            self.food_nodes.remove(node)
+            FoodNode.release(node)
+            
         MAX_FOOD_NODES = 1000
         if len(self.food_nodes) > MAX_FOOD_NODES:
+            excess = self.food_nodes[:-MAX_FOOD_NODES]
+            for node in excess:
+                FoodNode.release(node)
             self.food_nodes = self.food_nodes[-MAX_FOOD_NODES:]
+            
+        # Spatial Hash mapping
+        food_hash = FoodSpatialHash(cell_size=50)
+        for node in self.food_nodes:
+            food_hash.insert(node)
         
         # --- Spatial Hash for Bacterial Interactions ---
         CELL_SIZE = 20
@@ -380,52 +595,15 @@ class Simulation:
                 spatial_hash[(cx, cy)].append(b)
 
         # Process Inter/Intra species interactions
-        for sp in self.species:
-            for b in sp.members:
-                cx = int(b.x // CELL_SIZE)
-                cy = int(b.y // CELL_SIZE)
-                # Check 9 surrounding cells
-                for nx in (cx - 1, cx, cx + 1):
-                    for ny in (cy - 1, cy, cy + 1):
-                        neighbors = spatial_hash.get((nx, ny), [])
-                        for other in neighbors:
-                            if other is b:
-                                continue
-                            dist_sq = (b.x - other.x)**2 + (b.y - other.y)**2
-                            interact_dist = b.size + other.size + 2.0
-                            if dist_sq < interact_dist**2:
-                                if b.species == other.species:
-                                    # Intraspecies cooperation: share food slowly to help starving kin
-                                    # ONLY share if we have plenty of food ourselves (>share_thresh of capacity)
-                                    if b.food_level > b.food_capacity * sp.share_thresh:
-                                        diff = b.food_level - other.food_level
-                                        if diff > 0:
-                                            # Balanced sharing rate: transfer 100% of difference over 1 full second
-                                            transfer = diff / FPS
-                                            b.food_level -= transfer
-                                            other.food_level += transfer
-                                else:
-                                    # Interspecies competition: damage via aggression/defense
-                                    # Only attack if we are below our predation threshold capacity
-                                    if b.food_level < b.food_capacity * sp.predation_thresh:
-                                        # Phagocytosis (Engulfment): if much larger, instantly consume
-                                        # We use 2.0x size advantage (which means 8x volume advantage)
-                                        if b.size > other.size * 2.0:
-                                            # Instantly kill and eat their food pool (plus bit of biomass)
-                                            b.food_level = min(b.food_capacity, b.food_level + other.food_level + other.food_capacity * 0.2)
-                                            other.food_level = -9999.0
-                                        else:
-                                            # Base damage scales with surface area (size^2) and aggression
-                                            dmg = (sp.aggression * (b.size ** 2) * 5.0) / FPS
-                                            # Fractional defense mitigation so swarms can eventually whittle down a giant
-                                            mitigation = min(0.95, (other.species.defense * other.size) / (b.size + 0.01))
-                                            actual_dmg = dmg * (1.0 - mitigation)
-                                            other.food_level -= actual_dmg
+        self._process_interactions(spatial_hash, CELL_SIZE, dt)
+
+        # Tick ECM molecular diffusion mechanics
+        self.ecm.tick(dt)
 
         bsum, dsum = 0, 0
         births_list, deaths_list = [], []
         for sp in self.species:
-            b, d = sp.step(self.env, self.cap, w, h, self.food_nodes)
+            b, d = sp.step(self.env, self.cap, w, h, self.food_nodes, dt, viewport_bounds, food_hash)
             bsum += b
             dsum += d
             births_list.append(b)
@@ -477,7 +655,7 @@ class Simulation:
             if pop == 0: continue
             
             # total_glucose_pg: Total mass of glucose metabolized by this species this tick
-            meta_pg = sp.metabolic_rate / FPS
+            meta_pg = sp.metabolic_rate * dt
             total_glucose_pg = meta_pg * pop
             
             if sp.o2_sens > 0:
@@ -516,7 +694,7 @@ class Simulation:
         # Assuming a shallow 1 mL volume open to sea-level atmospheric pressure, equilibrium typically reaches ~30% per second.
         # Gas dissolution rate modeled biologically as 0.288 per second.
         GAS_DIFFUSION_RATE_SEC = 0.288
-        diffusion_rate = GAS_DIFFUSION_RATE_SEC / FPS
+        diffusion_rate = GAS_DIFFUSION_RATE_SEC * dt
         self.env['o2'] += (0.21 - self.env['o2']) * diffusion_rate
         self.env['co2'] += (0.00 - self.env['co2']) * diffusion_rate
         
@@ -524,7 +702,7 @@ class Simulation:
         # Reference: Henderson-Hasselbalch equation and Le Chatelier's equilibrium principle in aqueous environments.
         # Approximated restoration rate of 0.144 pH units towards neutral per second.
         BUFFER_RESTORATION_RATE_SEC = 0.144
-        buffer_rate = BUFFER_RESTORATION_RATE_SEC / FPS
+        buffer_rate = BUFFER_RESTORATION_RATE_SEC * dt
         self.env['ph'] += (7.0 - self.env['ph']) * buffer_rate
 
         # Cap bounds

@@ -44,3 +44,40 @@ The application employs a strict Separation of Concerns pattern, modularized int
 * `ui_components.py`: Houses decoupled, reusable PyGame widgets (`Button`, `Slider`, `CellEditor`).
 * `constants.py`: Defines immutable graphical primitives and simulation timing defaults.
 * `__main__.py`: Allows the module to be cleanly booted via the `python -m bacteria` CLI command.
+
+## 6. Advanced Biological & Physiological Engines
+
+### 6.1. Binary Fission Synthesis (Stouthamer 1973)
+Cellular division represents a massive metabolic investment rather than simple splitting. Based on Stouthamer's (1973) theoretical models on the ATP required for the synthesis of microbial cell material (chromosomes, ribosomes, and cell wall assembly), binary fission strictly requires stored biomass exceeding:
+$$ \text{ATP}_{\text{cost}} = 40.0 \times \text{Volume}_{\text{child}} $$
+where the cell volume is calculated as $size^3$. Parent cells must ensure that their glucose/biomass pool can satisfy this synthesis cost while leaving both the parent and child with survivable residual energy.
+
+### 6.2. ECM Diffusion Grid (Fick's Second Law)
+The Extracellular Matrix (ECM) employs a discrete spatial hash matrix to model the spread and dilution of biochemical agents such as Quorum Sensing autoinducers and Bacteriocin peptides.
+The continuous spatial-temporal dynamics are evaluated via Fick's Second Law of Diffusion coupled with biological protease degradation:
+$$ \frac{\partial C}{\partial t} = D \nabla^2 C - \lambda C $$
+where $C$ is the molecule concentration, $D$ represents the diffusion scalar (modeling kinematic spread), and $\lambda$ represents the decay rate or environmental half-life.
+
+### 6.3. Secretion Systems and Contact Warfare
+The simulation strictly models both localized and contact-dependent competition mechanics:
+* **Bacteriocin Production**: Cells excrete diffusible antimicrobial peptides into the ECM by expending metabolic ATP. Competing cells absorb these localized toxins, leading to continuous damage unless mitigated by matching immunity factors. Damage reduction scales as:
+  $$ \text{Mitigation}_{\text{Bac}} = 1.0 - \min(0.99, I_{\text{factor}} \times 1.5) $$
+* **Type VI Secretion System (T6SS)**: For immediate interspecies combat, cells utilize the T6SS—a spring-loaded needle delivering effector toxins directly into neighbors upon physical collision. The offensive damage injection scales with the attacker's physical surface area ($size^2$) and inherent T6SS activity modifier. The defender reduces this shock damage via competitive immunity scaling logarithmically against the size differential:
+  $$ \text{Damage}_{\text{T6SS}} = \left( T_{\text{act}} \times \text{Size}_{\text{attacker}}^2 \times 5.0 \right) \times \left( 1.0 - \min\left(0.95, \frac{I_{\text{factor}} \times \text{Size}_{\text{target}}}{\text{Size}_{\text{attacker}} + 0.01}\right) \right) $$
+
+## 7. Performance Architecture (Large $N$ Scale)
+
+To sustain extremely large unit counts ($N > 5000$) without suffering from $O(N \times M)$ processing halts or garbage collection spikes, the engine incorporates several aggressive systemic overrides:
+
+### 7.1. Object Pooling
+To prevent memory fragmentation and continuous deallocation during binary fission and cell death, both `FoodNode` and `Bacterium` utilize a strict object-pooling paradigm (`_pool`, `acquire()`, `release()`). When an entity dies, its memory sector is scrubbed via `.init()` and placed in a suspended ring-buffer rather than destructing.
+
+### 7.2. Spatial Hashing ($O(1)$ Lookup)
+Iterating physical food searches across the entire map ($N \times M$ Manhattan distances) destroys CPU throughput. The engine generates a discretized `FoodSpatialHash` grid mapping clustered subsets of coordinates:
+$$ \text{Cell}_{\text{index}} = \left( \lfloor \frac{x}{\text{cell\_size}} \rfloor, \lfloor \frac{y}{\text{cell\_size}} \rfloor \right) $$
+Pathfinding algorithms locally query this hash matrix rather than validating global coordinate spans.
+
+### 7.3. Hybrid ABM/ODE and Viewport Culling
+Entities are visually culled to discard rendering sequences when entirely out of the active user viewport. The backend parallels this using **Hybrid Agent-Based / Ordinary Differential Equation** translation toggles. When entities are flagged as `is_out_of_bounds`, complex stochastic chemotaxis vectors and localized grid collisions are dynamically suppressed. Instead, simple rigid-body kinematics equations are applied for basic translation:
+$$ \vec{x}_{t+\Delta t} = \vec{x}_t + \vec{v} \Delta t $$
+Where $\vec{v}$ remains continuous from their exit vector, drastically suppressing the math computation limits.

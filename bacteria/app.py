@@ -152,13 +152,14 @@ class App:
         # Use consistent horizontal spacing for buttons
         button_w, button_h, button_gap = 80, 30, 10
         button_y = 20
-        button_xs = [20 + i * (button_w + button_gap) for i in range(6)]
+        button_xs = [20 + i * (button_w + button_gap) for i in range(7)]
         self.play_btn = Button((button_xs[0], button_y, button_w, button_h), 'Play', self.play)
         self.import_btn = Button((button_xs[1], button_y, button_w, button_h), 'Import', self.import_data)
         self.pause_btn = Button((button_xs[2], button_y, button_w, button_h), 'Pause', self.toggle_pause)
-        self.export_btn = Button((button_xs[3], button_y, button_w, button_h), 'Export', lambda: self.sim.export(self.dm.species, self.default_env), enabled=False)
-        self.add_btn = Button((button_xs[4], button_y, button_w, button_h), 'Add', self.add_species, enabled=False)
-        self.remove_btn = Button((button_xs[5], button_y, button_w, button_h), 'Remove', self.remove_species, enabled=False)
+        self.render_btn = Button((button_xs[3], button_y, button_w, button_h), 'Render', self.toggle_render)
+        self.export_btn = Button((button_xs[4], button_y, button_w, button_h), 'Export', lambda: self.sim.export(self.dm.species, self.default_env), enabled=False)
+        self.add_btn = Button((button_xs[5], button_y, button_w, button_h), 'Add', self.add_species, enabled=False)
+        self.remove_btn = Button((button_xs[6], button_y, button_w, button_h), 'Remove', self.remove_species, enabled=False)
         
         self.zoom_in_btn = Button((0, 0, 40, 40), '+', lambda: self.set_zoom(1.0))
         self.zoom_out_btn = Button((0, 0, 40, 40), '-', lambda: self.set_zoom(-1.0))
@@ -167,11 +168,13 @@ class App:
             self.play_btn,
             self.import_btn,
             self.pause_btn,
+            self.render_btn,
             self.export_btn,
             self.add_btn,
             self.remove_btn
         ]
 
+        self.render_enabled = True
         self.tabs = {
             'grid': Button((560, 20, 80, 30), 'Grid', lambda: self.set_tab('grid')),
             'graph': Button((650, 20, 80, 30), 'Graph', lambda: self.set_tab('graph')),
@@ -386,26 +389,27 @@ class App:
         for i, d in enumerate(self.dm.species):
             try:
                 spp.append(BacteriaSpecies(
-                    d['name'],
-                    int(d.get('init') or 0),
-                    float(d.get('rep') or 0.0),
-                    float(d.get('aging') or 0.0),
-                    float(d.get('so') or 0.0),
-                    float(d.get('sf') or 0.0),
-                    float(d.get('speed') or 40),
-                    float(d.get('ph') or 7),
-                    cols[i % len(cols)],
-                    float(d.get('food_capacity') or 10),
-                    float(d.get('metabolic_rate') or 0.1),
-                    float(d.get('consumption_speed') or 1.0),
-                    float(d.get('greediness') or 0.5),
-                    float(d.get('aggression') or 0.5),
-                    float(d.get('defense') or 0.5),
-                    float(d.get('rep_thresh') or 0.8),
-                    float(d.get('share_thresh') or 0.6),
-                    float(d.get('predation_thresh') or 0.9),
-                    float(d.get('base_size') or 1.0),
-                    float(d.get('sensor_radius') or 200.0)
+                    name=d['name'],
+                    init=int(d.get('init') or 0),
+                    rep=float(d.get('rep') or 0.0),
+                    aging=float(d.get('aging') or 0.0),
+                    so=float(d.get('so') or 0.0),
+                    sf=float(d.get('sf') or 0.0),
+                    speed=float(d.get('speed') or 40),
+                    ph=float(d.get('ph') or 7),
+                    color=cols[i % len(cols)],
+                    food_capacity=float(d.get('food_capacity') or 10),
+                    metabolic_rate=float(d.get('metabolic_rate') or 0.1),
+                    consumption_speed=float(d.get('consumption_speed') or 1.0),
+                    greediness=float(d.get('greediness') or 0.5),
+                    t6ss_activity=float(d.get('t6ss_activity') or d.get('aggression') or 0.5),
+                    bacteriocin_production=float(d.get('bacteriocin_production') or d.get('defense') or 0.5),
+                    immunity_factor=float(d.get('immunity_factor') or 0.5),
+                    rep_thresh=float(d.get('rep_thresh') or 0.8),
+                    share_thresh=float(d.get('share_thresh') or 0.6),
+                    predation_thresh=float(d.get('predation_thresh') or 0.9),
+                    base_size=float(d.get('base_size') or 1.0),
+                    sensor_radius=float(d.get('sensor_radius') or 200.0)
                 ))
             except Exception:
                 continue
@@ -570,6 +574,14 @@ class App:
             self.pause_btn.text = 'Pause'
         else:
             self.pause_btn.text = 'Unpause'
+
+    def toggle_render(self):
+        """Toggle rendering on/off to boost simulation computation speed."""
+        self.render_enabled = not self.render_enabled
+        if self.render_enabled:
+            self.render_btn.text = 'Render'
+        else:
+            self.render_btn.text = 'No Render'
 
     def set_tab(self, t):
         """Switch UI tab (grid, graph, stats, species)."""
@@ -855,6 +867,7 @@ class App:
     def run(self):
         """Main loop: handle events, update sim, and draw UI."""
         while True:
+            dt = self.clock.tick(FPS) / 1000.0
             # Dynamically place sliders so they don't get truncated by right border
             slider_max_w = 200
             for s in self.sliders:
@@ -1167,7 +1180,15 @@ class App:
             self.sim.drop_frequency = int(self.active_env['drop_frequency'])
             self.sim.drop_range = self.active_env['drop_range']
             # --- Always update simulation every frame ---
-            self.sim.update(self.w, self.h)
+            half_w = self.w / (2 * self.zoom) if self.zoom > 0 else self.w / 2
+            half_h = self.h / (2 * self.zoom) if self.zoom > 0 else self.h / 2
+            viewport_bounds = {
+                'left': self.grid_center_x - half_w,
+                'right': self.grid_center_x + half_w,
+                'top': self.grid_center_y - half_h,
+                'bottom': self.grid_center_y + half_h
+            }
+            self.sim.update(self.w, self.h, dt, viewport_bounds)
             
             # Smooth zoom update
             if abs(self.zoom - self.zoom_target) > 0.001:
@@ -1178,107 +1199,117 @@ class App:
             self.screen.fill(BACKGROUND)
             # Draw content based on current tab
             if self.tab == 'grid':
-                self.draw_grid()
-                self.draw_minimap()
-                # Draw food nodes in grid (Draw first so they are under bacteria)
-                for node in self.sim.food_nodes:
-                    sx = self.w//2 + (node.x - self.grid_center_x) * self.zoom
-                    sy = self.h//2 + (node.y - self.grid_center_y) * self.zoom
-                    if 0 <= sx < self.w and 0 <= sy < self.h:
-                        # Scale food visual radius strictly by geometric cubic root (volume -> radius)
-                        # amount = V (pg = um^3), r = cbrt(3V / 4pi)
-                        food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
-                        radius = max(1, int(4 * self.zoom * food_r_um))
-                        pygame.draw.circle(self.screen, (200,200,70), (int(sx), int(sy)), radius)
-
-                # Draw bacteria in grid coordinates
-                for sp in self.sim.species:
-                    for b in sp.members:
-                        # Convert grid coordinates to screen
-                        sx = self.w//2 + (b.x - self.grid_center_x) * self.zoom
-                        sy = self.h//2 + (b.y - self.grid_center_y) * self.zoom
-                        # Only draw if visible
-                        if 0 <= sx < self.w and 0 <= sy < self.h:
-                            radius = max(1, int(4 * self.zoom * b.size))
-                            pygame.draw.circle(self.screen, sp.color, (int(sx), int(sy)), radius)
-                
-                # --- HOVER TOOLTIP ---
-                mx, my = pygame.mouse.get_pos()
-                hovered_b = None
-                hovered_food = None
-                
-                if not self.sim.running:
-                    for sp in self.sim.species:
-                        for b in sp.members:
-                            sx = self.w//2 + (b.x - self.grid_center_x) * self.zoom
-                            sy = self.h//2 + (b.y - self.grid_center_y) * self.zoom
-                            radius = max(1, int(4 * self.zoom * b.size))
-                            # Check distance to mouse
-                            if (mx - sx)**2 + (my - sy)**2 <= max(radius, 5)**2:  # Use a min radius of 5 for easier hovering
-                                hovered_b = b
-                                break
-                        if hovered_b:
-                            break
-                        
-                if not hovered_b:
-                    # Check food nodes if no bacterium is hovered
+                if self.render_enabled:
+                    self.draw_grid()
+                    self.draw_minimap()
+                    # Draw Petri Dish border
+                    if hasattr(self.sim, 'petri_center') and hasattr(self.sim, 'petri_radius'):
+                        cx, cy = self.sim.petri_center
+                        sx = self.w//2 + (cx - self.grid_center_x) * self.zoom
+                        sy = self.h//2 + (cy - self.grid_center_y) * self.zoom
+                        scaled_r = int(self.sim.petri_radius * self.zoom)
+                        if scaled_r > 0:
+                            pygame.draw.circle(self.screen, (80, 80, 80), (int(sx), int(sy)), scaled_r, max(1, int(3 * self.zoom)))
+                    
+                    # Draw food nodes in grid (Draw first so they are under bacteria)
                     for node in self.sim.food_nodes:
                         sx = self.w//2 + (node.x - self.grid_center_x) * self.zoom
                         sy = self.h//2 + (node.y - self.grid_center_y) * self.zoom
-                        food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
-                        radius = max(1, int(4 * self.zoom * food_r_um))
-                        if (mx - sx)**2 + (my - sy)**2 <= max(radius, 5)**2:
-                            hovered_food = node
-                            break
+                        if 0 <= sx < self.w and 0 <= sy < self.h:
+                            # Scale food visual radius strictly by geometric cubic root (volume -> radius)
+                            # amount = V (pg = um^3), r = cbrt(3V / 4pi)
+                            food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
+                            radius = max(1, int(4 * self.zoom * food_r_um))
+                            pygame.draw.circle(self.screen, (200,200,70), (int(sx), int(sy)), radius)
+
+                    # Draw bacteria in grid coordinates
+                    for sp in self.sim.species:
+                        for b in sp.members:
+                            # Convert grid coordinates to screen
+                            sx = self.w//2 + (b.x - self.grid_center_x) * self.zoom
+                            sy = self.h//2 + (b.y - self.grid_center_y) * self.zoom
+                            # Only draw if visible
+                            if 0 <= sx < self.w and 0 <= sy < self.h:
+                                radius = max(1, int(4 * self.zoom * b.size))
+                                pygame.draw.circle(self.screen, sp.color, (int(sx), int(sy)), radius)
                 
-                if hovered_b or hovered_food:
-                    # Prepare text lines
-                    if hovered_b:
-                        lines = [
-                            f"Species: {hovered_b.species.name}",
-                            f"Age: {hovered_b.age:.1f}s",
-                            f"Food: {hovered_b.food_level:.1f}/{hovered_b.food_capacity:.1f}",
-                            f"Size: {hovered_b.size:.2f} (Base: {hovered_b.base_size:.2f})",
-                            f"Metabolism: {hovered_b.metabolic_rate:.2f}/s",
-                            f"Eating Spd: {hovered_b.consumption_speed:.2f}/s",
-                            f"Speed: {hovered_b.speed:.2f} px/s",
-                            f"Greediness: {hovered_b.species.greediness:.2f}",
-                            f"Base Rep/s: {hovered_b.species.base_rep:.3f}",
-                            f"Age Multiplier: {hovered_b.species.base_aging:.3f}"
-                        ]
-                        outline_color = hovered_b.species.color
-                    else:
-                        lines = [
-                            f"Food Node",
-                            f"Amount: {hovered_food.amount:.2f}",
-                            f"Pos: ({int(hovered_food.x)}, {int(hovered_food.y)})"
-                        ]
-                        outline_color = (200, 200, 70)
-                    
-                    # Render texts to find dimensions
-                    rendered_lines = [constants.FONT.render(text, True, WHITE) for text in lines]
-                    box_w = max(r.get_width() for r in rendered_lines) + 20
-                    box_h = len(rendered_lines) * 24 + 10
-                    
-                    # Dynamic position (clamp to screen edges)
-                    box_x, box_y = mx + 15, my + 15
-                    if box_x + box_w > self.w:
-                        box_x = mx - box_w - 15
-                    if box_y + box_h > self.h:
-                        box_y = my - box_h - 15
+                    # --- HOVER TOOLTIP ---
+                    mx, my = pygame.mouse.get_pos()
+                    hovered_b = None
+                    hovered_food = None
+                
+                    if not self.sim.running:
+                        for sp in self.sim.species:
+                            for b in sp.members:
+                                sx = self.w//2 + (b.x - self.grid_center_x) * self.zoom
+                                sy = self.h//2 + (b.y - self.grid_center_y) * self.zoom
+                                radius = max(1, int(4 * self.zoom * b.size))
+                                # Check distance to mouse
+                                if (mx - sx)**2 + (my - sy)**2 <= max(radius, 5)**2:  # Use a min radius of 5 for easier hovering
+                                    hovered_b = b
+                                    break
+                            if hovered_b:
+                                break
                         
-                    # Draw box backing + border
-                    tooltip_rect = pygame.Rect(box_x, box_y, box_w, box_h)
-                    overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
-                    overlay.fill((30, 30, 30, 230))
-                    self.screen.blit(overlay, (box_x, box_y))
-                    pygame.draw.rect(self.screen, outline_color, tooltip_rect, 2, border_radius=4)
+                    if not hovered_b:
+                        # Check food nodes if no bacterium is hovered
+                        for node in self.sim.food_nodes:
+                            sx = self.w//2 + (node.x - self.grid_center_x) * self.zoom
+                            sy = self.h//2 + (node.y - self.grid_center_y) * self.zoom
+                            food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
+                            radius = max(1, int(4 * self.zoom * food_r_um))
+                            if (mx - sx)**2 + (my - sy)**2 <= max(radius, 5)**2:
+                                hovered_food = node
+                                break
+                
+                    if hovered_b or hovered_food:
+                        # Prepare text lines
+                        if hovered_b:
+                            lines = [
+                                f"Species: {hovered_b.species.name}",
+                                f"Age: {hovered_b.age:.1f}s",
+                                f"Food: {hovered_b.food_level:.1f}/{hovered_b.food_capacity:.1f}",
+                                f"Size: {hovered_b.size:.2f} (Base: {hovered_b.base_size:.2f})",
+                                f"Metabolism: {hovered_b.metabolic_rate:.2f}/s",
+                                f"Eating Spd: {hovered_b.consumption_speed:.2f}/s",
+                                f"Speed: {hovered_b.speed:.2f} px/s",
+                                f"Greediness: {hovered_b.species.greediness:.2f}",
+                                f"Base Rep/s: {hovered_b.species.base_rep:.3f}",
+                                f"Age Multiplier: {hovered_b.species.base_aging:.3f}"
+                            ]
+                            outline_color = hovered_b.species.color
+                        else:
+                            lines = [
+                                f"Food Node",
+                                f"Amount: {hovered_food.amount:.2f}",
+                                f"Pos: ({int(hovered_food.x)}, {int(hovered_food.y)})"
+                            ]
+                            outline_color = (200, 200, 70)
                     
-                    # Blit text
-                    curr_y = box_y + 10
-                    for rline in rendered_lines:
-                        self.screen.blit(rline, (box_x + 10, curr_y))
-                        curr_y += 24
+                        # Render texts to find dimensions
+                        rendered_lines = [constants.FONT.render(text, True, WHITE) for text in lines]
+                        box_w = max(r.get_width() for r in rendered_lines) + 20
+                        box_h = len(rendered_lines) * 24 + 10
+                    
+                        # Dynamic position (clamp to screen edges)
+                        box_x, box_y = mx + 15, my + 15
+                        if box_x + box_w > self.w:
+                            box_x = mx - box_w - 15
+                        if box_y + box_h > self.h:
+                            box_y = my - box_h - 15
+                        
+                        # Draw box backing + border
+                        tooltip_rect = pygame.Rect(box_x, box_y, box_w, box_h)
+                        overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+                        overlay.fill((30, 30, 30, 230))
+                        self.screen.blit(overlay, (box_x, box_y))
+                        pygame.draw.rect(self.screen, outline_color, tooltip_rect, 2, border_radius=4)
+                    
+                        # Blit text
+                        curr_y = box_y + 10
+                        for rline in rendered_lines:
+                            self.screen.blit(rline, (box_x + 10, curr_y))
+                            curr_y += 24
 
             elif self.tab == 'graph' and self.sim.stats['time']:
                 mx, my = int(self.w * 0.05), int(self.h * 0.2)
@@ -1372,7 +1403,6 @@ class App:
                     self.screen.blit(text, (self.species_desc_dialog_rect.x + 10, self.species_desc_dialog_rect.y + 50 + idx * 30))
 
             pygame.display.flip()
-            self.clock.tick(FPS)
 
     def draw_stats_tab(self):
         """Render stats tab with dynamic vertical scrolling."""

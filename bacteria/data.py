@@ -17,7 +17,7 @@ class SpeciesDataManager:
     def __init__(self, filename=DATA_FILE):
         self.filename = filename
         # Updated CSV columns: name, initial count, rates, O2 sens, food sens, speed, preferred pH, food system, interactions
-        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 'aggression', 'defense', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius']
+        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius']
 
         self.species = []
         self.load()
@@ -37,8 +37,9 @@ class SpeciesDataManager:
                 'metabolic_rate': '0.1',
                 'consumption_speed': '1.0',
                 'greediness': '0.5',
-                'aggression': '0.5',
-                'defense': '0.5',
+                't6ss_activity': '0.5',
+                'bacteriocin_production': '0.5',
+                'immunity_factor': '0.5',
                 'rep_thresh': '0.8',
                 'share_thresh': '0.6',
                 'predation_thresh': '0.9',
@@ -71,8 +72,9 @@ class SpeciesDataManager:
             'food_capacity': '10',
             'metabolic_rate': '0.1',
             'consumption_speed': '1.0',
-            'greediness': '0.5',
-            'aggression': '0.5',
+            't6ss_activity': '0.5',
+            'bacteriocin_production': '0.5',
+            'immunity_factorion': '0.5',
             'defense': '0.5',
             'rep_thresh': '0.8',
             'share_thresh': '0.6',
