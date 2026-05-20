@@ -1,4 +1,3 @@
-import math
 import os
 import sys
 
@@ -7,23 +6,25 @@ if __package__ is None and not hasattr(sys, 'frozen'):
     sys.path.insert(0, os.path.dirname(os.path.dirname(path)))
     __package__ = 'bacteria'
     
-from .constants import FPS
+from .constants import (
+    ECM_ALPHA_MAX,
+    ECM_BAC_DECAY_S,
+    ECM_BAC_DIFFUSION_UM2_S,
+    ECM_CELL_SIZE_UM,
+    ECM_MIN_CONCENTRATION,
+    ECM_QS_DECAY_S,
+    ECM_QS_DIFFUSION_UM2_S,
+)
 
 class ECM:
     """
     Extracellular Matrix managing diffusion and degradation of environmental molecules.
     Uses a coarse spatial hash (dictionary grid) for fast lookups and low overhead.
     """
-    def __init__(self, cell_size=50):
+    def __init__(self, cell_size=ECM_CELL_SIZE_UM):
         self.cell_size = cell_size
         self.qs_inducers = {}
         self.bacteriocins = {}
-        
-        self.chunk_size = 200
-        self._qs_keys = []
-        self._qs_idx = 0
-        self._bac_keys = []
-        self._bac_idx = 0
 
     def add(self, x, y, amount, layer='qs'):
         """
@@ -44,55 +45,33 @@ class ECM:
         return target.get((cx, cy), 0.0)
 
     def tick(self, dt):
-        self._process_layer('qs', self.qs_inducers, 0.3, 0.05, dt)
-        self._process_layer('bac', self.bacteriocins, 0.1, 0.1, dt)
+        self._process_layer(self.qs_inducers, ECM_QS_DIFFUSION_UM2_S, ECM_QS_DECAY_S, dt)
+        self._process_layer(self.bacteriocins, ECM_BAC_DIFFUSION_UM2_S, ECM_BAC_DECAY_S, dt)
 
-    def _process_layer(self, layer_name, grid, base_diffuse, base_decay, dt):
-        is_qs = layer_name == 'qs'
-        keys = self._qs_keys if is_qs else self._bac_keys
-        idx = self._qs_idx if is_qs else self._bac_idx
-        
-        if idx >= len(keys) or len(keys) == 0:
-            keys = list(grid.keys())
-            idx = 0
-            if is_qs:
-                self._qs_keys = keys
-            else:
-                self._bac_keys = keys
-        
-        if not keys:
+    def _process_layer(self, grid, diffusion_um2_s, decay_s, dt):
+        if not grid:
             return
-            
-        sweep_frames = max(1.0, len(keys) / self.chunk_size)
-        eff_dt = dt * sweep_frames
-        
-        diffuse_rate = base_diffuse * eff_dt
-        decay_rate = base_decay * eff_dt
-        
-        chunk = keys[idx:idx + self.chunk_size]
-        new_idx = idx + self.chunk_size
-        
-        for k in chunk:
-            val = grid.get(k, 0.0)
-            if val < 0.001:
-                if val <= 0 and k in grid:
-                    del grid[k]
+
+        # Explicit Fickian 2D stencil: alpha = D * dt / dx^2; alpha <= 0.25 preserves nonnegative mass.
+        alpha = min(ECM_ALPHA_MAX, max(0.0, diffusion_um2_s * dt / (self.cell_size ** 2)))
+        decay_multiplier = max(0.0, min(1.0, 1.0 - decay_s * dt))
+        next_grid = {}
+
+        for k, val in list(grid.items()):
+            if val < ECM_MIN_CONCENTRATION:
                 continue
-                
-            decayed = val * (1.0 - decay_rate)
-            diffusion_amt = decayed * diffuse_rate
-            retained = decayed - (diffusion_amt * 4.0)
-            
-            if retained < 0:
-                retained = 0
-            
-            grid[k] = retained
-            
+
+            decayed = val * decay_multiplier
+            retained = decayed * (1.0 - 4.0 * alpha)
+            neighbor_share = decayed * alpha
+
+            if retained >= ECM_MIN_CONCENTRATION:
+                next_grid[k] = next_grid.get(k, 0.0) + retained
+
             cx, cy = k
-            for nx, ny in [(cx-1, cy), (cx+1, cy), (cx, cy-1), (cx, cy+1)]:
-                grid[(nx, ny)] = grid.get((nx, ny), 0.0) + diffusion_amt
-                
-        if is_qs:
-            self._qs_idx = new_idx
-        else:
-            self._bac_idx = new_idx
+            if neighbor_share >= ECM_MIN_CONCENTRATION:
+                for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                    next_grid[(nx, ny)] = next_grid.get((nx, ny), 0.0) + neighbor_share
+
+        grid.clear()
+        grid.update({k: v for k, v in next_grid.items() if v >= ECM_MIN_CONCENTRATION})

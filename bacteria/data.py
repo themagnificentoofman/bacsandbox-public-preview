@@ -46,10 +46,14 @@ class SpeciesDataManager:
                 'base_size': '1.0',
                 'sensor_radius': '200.0'
             }
+            normalized_species = []
             for sp in self.species:
-                for col in self.fieldnames:
-                    if col not in sp:
-                        sp[col] = defaults.get(col, '0')
+                if not sp.get('t6ss_activity') and sp.get('aggression'):
+                    sp['t6ss_activity'] = sp.get('aggression')
+                if not sp.get('immunity_factor') and sp.get('defense'):
+                    sp['immunity_factor'] = sp.get('defense')
+                normalized_species.append({col: sp.get(col) or defaults.get(col, '0') for col in self.fieldnames})
+            self.species = normalized_species
         else:
             self.species = []
 
@@ -74,8 +78,7 @@ class SpeciesDataManager:
             'consumption_speed': '1.0',
             't6ss_activity': '0.5',
             'bacteriocin_production': '0.5',
-            'immunity_factorion': '0.5',
-            'defense': '0.5',
+            'immunity_factor': '0.5',
             'rep_thresh': '0.8',
             'share_thresh': '0.6',
             'predation_thresh': '0.9',
