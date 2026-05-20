@@ -117,7 +117,7 @@ $$
 BacSandbox uses an E. coli-inspired run-and-tumble model. Runs are sampled around 1 second and clamped to biological bounds:
 
 $$
-t_{\text{run}} \sim \operatorname{clamp}(\mathcal{N}(1.0, 0.2^2), 0.25, 3.0)
+t_{\text{run}} \sim \mathrm{clamp}(\mathcal{N}(1.0, 0.2^2), 0.25, 3.0)
 $$
 
 Tumbles last about 0.1 seconds:
@@ -135,7 +135,7 @@ $$
 During a run, heading gently rotates toward the local gradient while movement remains forward-only:
 
 $$
-\Delta \theta_{\text{run}} = \operatorname{clamp}(\theta_G - \theta, -\omega g_{\text{eff}} \Delta t, \omega g_{\text{eff}} \Delta t)
+\Delta \theta_{\text{run}} = \mathrm{clamp}(\theta_G - \theta, -\omega g_{\text{eff}} \Delta t, \omega g_{\text{eff}} \Delta t)
 $$
 
 During a tumble, the cell performs one event-scale reorientation rather than a tiny frame-scaled wobble. The unbiased magnitude is centered near the classic observed E. coli reorientation angle of 68 degrees:
@@ -223,7 +223,7 @@ $$
 Decay is applied as:
 
 $$
-m = \operatorname{clamp}(1 - \lambda\Delta t, 0, 1)
+m = \mathrm{clamp}(1 - \lambda\Delta t, 0, 1)
 $$
 
 The finite-difference update is:
