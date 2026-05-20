@@ -1,5 +1,6 @@
 import math
 import re
+import ast
 import pygame, sys, os
 from pygame.locals import *
 import sys
@@ -16,6 +17,17 @@ from . import constants
 from .data import SpeciesDataManager, load_env_config, save_env_config
 from .core_sim import Bacterium, BacteriaSpecies, Simulation, FoodNode
 from .ui_components import Button, Slider, CellEditor
+
+
+def format_world_distance_um(distance_um):
+    """Format micrometer world distances for the grid scale indicator."""
+    if distance_um >= 10000.0:
+        return f"{distance_um / 10000.0:.2f} cm"
+    if distance_um >= 1000.0:
+        return f"{distance_um / 1000.0:.2f} mm"
+    if distance_um >= 10.0:
+        return f"{distance_um:.1f} {WORLD_UNIT_NAME}"
+    return f"{distance_um:.2f} {WORLD_UNIT_NAME}"
 
 class App:
     """
@@ -41,26 +53,27 @@ class App:
             'rep': 'Reproduction rate per second (0–1)',
             'aging': 'Aging rate multiplier (base age penalty scalar)',
             'so': 'O₂ sensitivity (-1 to 1; <0 poisoned by O₂, >0 needs O₂)',
-            'sf': 'Food sensitivity (0–1)',
+            'sf': 'Nutrient sensitivity (0-1)',
             'speed': 'Base speed (divides by size)',
             'ph': 'Preferred pH (0–14; strict survival bell curve)'
         }
         # Add new fields to species table
         self.descriptions.update({
-            'food_capacity': 'Base max food (pg Glucose, scales w/ \u03bcm³)',
-            'metabolic_rate': 'Base food used (pg/tick, scales w/ Kleiber)',
-            'consumption_speed': 'Base eat speed (pg/tick, scales w/ \u03bcm²)',
-            'greediness': '0.0–1.0 preference for rich food even if far',
-            'aggression': 'Toxin power against other species (0–1)',
-            'defense': 'Toxin resistance (0–1)',
-            'rep_thresh': 'Min food capacity % to replicate (0–1)',
-            'share_thresh': 'Min food capacity % to share (0–1)',
-            'predation_thresh': 'Max food capacity % to predate (0–1)',
+            'food_capacity': 'Base nutrient capacity (pg glucose-equivalent, scales w/ μm³)',
+            'metabolic_rate': 'Basal nutrient use (pg/s, scales w/ Kleiber)',
+            'consumption_speed': 'Max nutrient uptake (pg/s, scales w/ μm²)',
+            'greediness': '0.0-1.0 response to stronger nutrient gradients',
+            't6ss_activity': 'Contact toxin delivery activity (0-1)',
+            'bacteriocin_production': 'Diffusible antimicrobial production (0-1)',
+            'immunity_factor': 'Resistance to bacteriocins and T6SS (0-1)',
+            'rep_thresh': 'Min nutrient fullness to replicate (0-1)',
+            'share_thresh': 'Min nutrient fullness to share (0-1)',
+            'predation_thresh': 'Max nutrient fullness to predate (0-1)',
             'base_size': 'Base size (\u03bcm, default 1.0)',
-            'sensor_radius': 'Food detection radius (\u03bcm, default 200.0)'
+            'sensor_radius': 'Nutrient detection radius (\u03bcm, default 200.0)'
         })
         if 'food_capacity' not in self.dm.fieldnames:
-            self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 'aggression', 'defense']
+            self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor']
         if 'rep_thresh' not in self.dm.fieldnames:
             self.dm.fieldnames += ['rep_thresh', 'share_thresh']
         if 'predation_thresh' not in self.dm.fieldnames:
@@ -82,15 +95,16 @@ class App:
             'rep': 'Rep',
             'aging': 'Aging',
             'so': 'O2',
-            'sf': 'Food',
+            'sf': 'Nutr',
             'speed': 'Spd',
             'ph': 'pH',
             'food_capacity': 'Cap',
             'metabolic_rate': 'Meta',
             'consumption_speed': 'Eat',
             'greediness': 'Greed',
-            'aggression': 'Atk',
-            'defense': 'Def',
+            't6ss_activity': 'T6SS',
+            'bacteriocin_production': 'Bac',
+            'immunity_factor': 'Imm',
             'rep_thresh': 'RepT',
             'share_thresh': 'ShrT',
             'predation_thresh': 'PredT',
@@ -123,9 +137,9 @@ class App:
             'co2': 'CO₂ level (0.0 to 1.0)',
             'ph': 'Environment pH (0.0 to 14.0)',
             'capacity': 'Max bacteria pop. (≥ 0)',
-            'drop_frequency': 'Food drop frequency (0 to 100)',
-            'drop_range_min': 'Min food drop amount (≥ 1)',
-            'drop_range_max': 'Max food drop amount (≥ drop_range_min)'
+            'drop_frequency': 'Expected nutrient clusters per second (0 to 100)',
+            'drop_range_min': 'Min nutrient drop amount (>= 1)',
+            'drop_range_max': 'Max nutrient drop amount (>= drop_range_min)'
         }
         self.show_globals_desc = False
         self.globals_desc_btn = Button((self.w - 200, self.h - 60, 180, 30), 'Show Desc', self.toggle_globals_desc)
@@ -133,18 +147,17 @@ class App:
 
         # Load env config as default env
         loaded_env = load_env_config()
+        self.default_env = {
+            'o2': 0.8,
+            'co2': 0.2,
+            'ph': NEUTRAL_PH,
+            'drop_frequency': 5,
+            'drop_range_min': 2,
+            'drop_range_max': 8,
+            'capacity': 500
+        }
         if loaded_env:
-            self.default_env = loaded_env
-        else:
-            self.default_env = {
-                'o2': 0.8,
-                'co2': 0.2,
-                'ph': 7.0,
-                'drop_frequency': 5,
-                'drop_range_min': 2,
-                'drop_range_max': 8,
-                'capacity': 500
-            }
+            self.default_env.update(loaded_env)
         self.default_env['drop_range'] = (self.default_env['drop_range_min'], self.default_env['drop_range_max'])
 
         self.init_sim()
@@ -364,6 +377,32 @@ class App:
         # Store minimap rect for event handling
         self._minimap_rect = pygame.Rect(x, y, size, size)
 
+    def draw_scale_indicator(self):
+        if not hasattr(self, '_minimap_rect') or self.zoom <= 0:
+            return
+
+        bar_px = SCALE_BAR_REFERENCE_PIXELS
+        world_um = bar_px / self.zoom
+        label = f"{bar_px} px = {format_world_distance_um(world_um)}"
+        label_surface = constants.FONT.render(label, True, WHITE)
+        panel_w = max(bar_px + 20, label_surface.get_width() + 20)
+        panel_h = 52
+        preferred_x = self._minimap_rect.right + 10
+        scale_x = min(preferred_x, self.w - panel_w - 10)
+        scale_y = self._minimap_rect.y
+        if scale_x < self._minimap_rect.right + 4:
+            scale_x = self._minimap_rect.x
+            scale_y = max(10, self._minimap_rect.y - panel_h - 8)
+        panel_rect = pygame.Rect(scale_x, scale_y, panel_w, panel_h)
+
+        pygame.draw.rect(self.screen, (35, 35, 35), panel_rect, border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, panel_rect, 1, border_radius=6)
+        bar_y = scale_y + 18
+        pygame.draw.line(self.screen, WHITE, (scale_x + 10, bar_y), (scale_x + 10 + bar_px, bar_y), 2)
+        pygame.draw.line(self.screen, WHITE, (scale_x + 10, bar_y - 5), (scale_x + 10, bar_y + 5), 2)
+        pygame.draw.line(self.screen, WHITE, (scale_x + 10 + bar_px, bar_y - 5), (scale_x + 10 + bar_px, bar_y + 5), 2)
+        self.screen.blit(label_surface, (scale_x + 10, scale_y + 28))
+
     def minimap_to_grid(self, mx, my):
         # Convert minimap pixel to grid center coordinates
         x = self._minimap_rect.x
@@ -403,8 +442,8 @@ class App:
                     consumption_speed=float(d.get('consumption_speed') or 1.0),
                     greediness=float(d.get('greediness') or 0.5),
                     t6ss_activity=float(d.get('t6ss_activity') or d.get('aggression') or 0.5),
-                    bacteriocin_production=float(d.get('bacteriocin_production') or d.get('defense') or 0.5),
-                    immunity_factor=float(d.get('immunity_factor') or 0.5),
+                    bacteriocin_production=float(d.get('bacteriocin_production') or 0.5),
+                    immunity_factor=float(d.get('immunity_factor') or d.get('defense') or 0.5),
                     rep_thresh=float(d.get('rep_thresh') or 0.8),
                     share_thresh=float(d.get('share_thresh') or 0.6),
                     predation_thresh=float(d.get('predation_thresh') or 0.9),
@@ -414,7 +453,13 @@ class App:
             except Exception:
                 continue
         if not spp:
-            spp.append(BacteriaSpecies('Ecoli', 50, 0.1, 0.05, 1, 1, 40, 7, cols[0], 10, 0.1, 1.0, 0.5, 0.5, 0.5, 0.8, 0.6, 0.9, 1.0, 200.0))
+            spp.append(BacteriaSpecies(
+                'Ecoli', 50, 0.1, 0.05, 1, 1, 40, 7, cols[0],
+                food_capacity=10, metabolic_rate=0.1, consumption_speed=1.0,
+                greediness=0.5, t6ss_activity=0.5, bacteriocin_production=0.5,
+                immunity_factor=0.5, rep_thresh=0.8, share_thresh=0.6,
+                predation_thresh=0.9, base_size=1.0, sensor_radius=200.0
+            ))
             
         self.active_env = self.default_env.copy()
         self.sim = Simulation(spp, self.active_env, cap=self.active_env['capacity'], steps=500)
@@ -428,8 +473,9 @@ class App:
             'metabolic_rate': '0.1',
             'consumption_speed': '1.0',
             'greediness': '0.5',
-            'aggression': '0.5',
-            'defense': '0.5',
+            't6ss_activity': '0.5',
+            'bacteriocin_production': '0.5',
+            'immunity_factor': '0.5',
             'rep_thresh': '0.8',
             'share_thresh': '0.6',
             'predation_thresh': '0.9',
@@ -885,6 +931,8 @@ class App:
                 if e.type == VIDEORESIZE:
                     self.w, self.h = e.w, e.h
                     self.screen = pygame.display.set_mode((self.w, self.h), RESIZABLE)
+                    self.species_max_visible_rows = max(1, (self.h - 180) // 30)
+                    self.stats_max_visible_rows = max(1, (self.h - 180) // 28)
                     self.clamp_grid_center()
                 if e.type == MOUSEBUTTONDOWN:
                     mx, my = e.pos
@@ -1009,12 +1057,15 @@ class App:
                             self.duplicate_species()
                         continue
 
-                    # --- NEW LOGIC: Press Enter to start editing ---
+                    # Press Enter to start editing the selected visible species-table cell.
                     if self.tab == 'species' and not self.editors and e.key == K_RETURN:
                         i, j = self.selected_row, self.selected_col
-                        rect = (50 + j*120, 100 + i*30, 120, 30)
-                        val = self.dm.species[i][self.dm.fieldnames[j]]
-                        self.editors = [CellEditor(self.dm.fieldnames[j], rect, val, i, j)]
+                        rows = len(self.dm.species)
+                        cols = len(self.dm.fieldnames)
+                        if 0 <= i < rows and 0 <= j < cols:
+                            rect = (50 + (j - self.species_scroll_x) * 120, 100 + (i - self.species_scroll_y) * 30, 120, 30)
+                            val = self.dm.species[i][self.dm.fieldnames[j]]
+                            self.editors = [CellEditor(self.dm.fieldnames[j], rect, val, i, j)]
                         continue
 
                     if self.tab == 'globals' and not self.editors and e.key == K_RETURN:
@@ -1109,7 +1160,7 @@ class App:
                                         num = float(new_val)
                                         if not 0 <= num <= 14:
                                             raise ValueError
-                                    elif col == 'greediness':
+                                    elif col in ['greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh']:
                                         num = float(new_val)
                                         if not 0 <= num <= 1:
                                             raise ValueError
@@ -1122,6 +1173,14 @@ class App:
                                         if num < 0:
                                             raise ValueError
                                     elif col == 'consumption_speed':
+                                        num = float(new_val)
+                                        if num < 0:
+                                            raise ValueError
+                                    elif col == 'base_size':
+                                        num = float(new_val)
+                                        if num < 0.1:
+                                            raise ValueError
+                                    elif col == 'sensor_radius':
                                         num = float(new_val)
                                         if num < 0:
                                             raise ValueError
@@ -1163,7 +1222,7 @@ class App:
                 # --- Stats tab scroll handling ---
                 if self.tab == 'stats':
                     if e.type == MOUSEWHEEL:
-                        total_rows = len(self.sim.species) * (5 + 1) + 6
+                        total_rows = len(self.sim.species) * (5 + 1) + len(self.get_stats_summary_texts())
                         max_rows = self.stats_max_visible_rows
                         self.stats_scroll_y = max(0, min(self.stats_scroll_y - e.y, max(0, total_rows - max_rows)))
 
@@ -1218,7 +1277,7 @@ class App:
                         if 0 <= sx < self.w and 0 <= sy < self.h:
                             # Scale food visual radius strictly by geometric cubic root (volume -> radius)
                             # amount = V (pg = um^3), r = cbrt(3V / 4pi)
-                            food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
+                            food_r_um = max(FOOD_NODE_MIN_RADIUS_UM, ((3.0 * max(FOOD_NODE_MIN_VOLUME_PG, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
                             radius = max(1, int(4 * self.zoom * food_r_um))
                             pygame.draw.circle(self.screen, (200,200,70), (int(sx), int(sy)), radius)
 
@@ -1232,6 +1291,7 @@ class App:
                             if 0 <= sx < self.w and 0 <= sy < self.h:
                                 radius = max(1, int(4 * self.zoom * b.size))
                                 pygame.draw.circle(self.screen, sp.color, (int(sx), int(sy)), radius)
+                    self.draw_scale_indicator()
                 
                     # --- HOVER TOOLTIP ---
                     mx, my = pygame.mouse.get_pos()
@@ -1256,7 +1316,7 @@ class App:
                         for node in self.sim.food_nodes:
                             sx = self.w//2 + (node.x - self.grid_center_x) * self.zoom
                             sy = self.h//2 + (node.y - self.grid_center_y) * self.zoom
-                            food_r_um = max(0.5, ((3.0 * max(0.1, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
+                            food_r_um = max(FOOD_NODE_MIN_RADIUS_UM, ((3.0 * max(FOOD_NODE_MIN_VOLUME_PG, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
                             radius = max(1, int(4 * self.zoom * food_r_um))
                             if (mx - sx)**2 + (my - sy)**2 <= max(radius, 5)**2:
                                 hovered_food = node
@@ -1268,11 +1328,11 @@ class App:
                             lines = [
                                 f"Species: {hovered_b.species.name}",
                                 f"Age: {hovered_b.age:.1f}s",
-                                f"Food: {hovered_b.food_level:.1f}/{hovered_b.food_capacity:.1f}",
+                                f"Nutrient: {hovered_b.food_level:.1f}/{hovered_b.food_capacity:.1f}",
                                 f"Size: {hovered_b.size:.2f} (Base: {hovered_b.base_size:.2f})",
                                 f"Metabolism: {hovered_b.metabolic_rate:.2f}/s",
                                 f"Eating Spd: {hovered_b.consumption_speed:.2f}/s",
-                                f"Speed: {hovered_b.speed:.2f} px/s",
+                                f"Speed: {hovered_b.speed:.2f} um/s",
                                 f"Greediness: {hovered_b.species.greediness:.2f}",
                                 f"Base Rep/s: {hovered_b.species.base_rep:.3f}",
                                 f"Age Multiplier: {hovered_b.species.base_aging:.3f}"
@@ -1280,7 +1340,7 @@ class App:
                             outline_color = hovered_b.species.color
                         else:
                             lines = [
-                                f"Food Node",
+                                f"Nutrient Node",
                                 f"Amount: {hovered_food.amount:.2f}",
                                 f"Pos: ({int(hovered_food.x)}, {int(hovered_food.y)})"
                             ]
@@ -1404,21 +1464,28 @@ class App:
 
             pygame.display.flip()
 
-    def draw_stats_tab(self):
-        """Render stats tab with dynamic vertical scrolling."""
+    def get_stats_summary_texts(self):
         total_count = self.sim.stats['total'][-1] if self.sim.stats['total'] else 0
         total_births = self.sim.stats['births'][-1] if self.sim.stats['births'] else 0
         total_deaths = self.sim.stats['deaths'][-1] if self.sim.stats['deaths'] else 0
-        overall_births = sum(self.sim.stats['births']) if self.sim.stats['births'] else 0
-        overall_deaths = sum(self.sim.stats['deaths']) if self.sim.stats['deaths'] else 0
-        total_texts = [
+        overall_births = self.sim.stats.get('overall_births', [])[-1] if self.sim.stats.get('overall_births') else sum(self.sim.stats['births']) if self.sim.stats['births'] else 0
+        overall_deaths = self.sim.stats.get('overall_deaths', [])[-1] if self.sim.stats.get('overall_deaths') else sum(self.sim.stats['deaths']) if self.sim.stats['deaths'] else 0
+        elapsed_seconds = self.sim.stats.get('elapsed_seconds', [])[-1] if self.sim.stats.get('elapsed_seconds') else 0.0
+        tickrate_hz = self.sim.stats.get('tickrate_hz', [])[-1] if self.sim.stats.get('tickrate_hz') else 0.0
+        return [
             f"Total Count: {total_count}",
             f"Total Births (last step): {total_births}",
             f"Total Deaths (last step): {total_deaths}",
             f"Overall Births: {overall_births}",
             f"Overall Deaths: {overall_deaths}",
-            f"Step: {self.sim.step_idx}"
+            f"Step: {self.sim.step_idx}",
+            f"Elapsed: {elapsed_seconds:.2f}s",
+            f"Tickrate: {tickrate_hz:.1f} Hz"
         ]
+
+    def draw_stats_tab(self):
+        """Render stats tab with dynamic vertical scrolling."""
+        total_texts = self.get_stats_summary_texts()
         stat_labels = [
             "Count",
             "Births (last step)",
@@ -1549,7 +1616,7 @@ class App:
                         except ValueError:
                             if k == 'drop_range':
                                 try:
-                                    val = eval(v)
+                                    val = ast.literal_eval(v)
                                     env_config[k] = list(val) if isinstance(val, tuple) else val
                                 except Exception:
                                     env_config[k] = v
@@ -1568,10 +1635,11 @@ class App:
                         j += 1
 
         if env_config is not None:
+            if 'drop_range' in env_config and isinstance(env_config['drop_range'], (list, tuple)) and len(env_config['drop_range']) >= 2:
+                env_config['drop_range_min'] = env_config['drop_range'][0]
+                env_config['drop_range_max'] = env_config['drop_range'][1]
             self.default_env.update(env_config)
-            
-            env = self.default_env
-            save_env_config(self.active_env)
+            save_env_config(self.default_env)
 
         if species_config is not None:
             self.dm.species = species_config
