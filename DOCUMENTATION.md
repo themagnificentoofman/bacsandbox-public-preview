@@ -215,6 +215,7 @@ Most structural biomass is therefore unavailable, refractory, respired, or lost 
 ### 4.9 ECM Diffusion Grid
 
 The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil with a stability clamp:
+The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil with a stability clamp:
 
 $$
 \alpha = \min\left(\alpha_{\max}, \frac{D\Delta t}{\Delta x^2}\right), \quad \alpha_{\max}=0.24
@@ -849,6 +850,16 @@ Species are configured in `species_data.csv` and can also be edited in the Speci
 * `persister_exit_thresh`: Recovery fullness threshold $S_2$ from 0 to 1. Above it, persisters resuscitate to the proliferative state. It is clamped to stay at least `PERSISTER_THRESHOLD_MIN_GAP` above $S_1$. Default 0.5.
 * `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible).
 * `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0.
+* `temp_min`: Ratkowsky minimum cardinal temperature $T_{min}$ in degrees Celsius. No growth occurs at or below it (see Section 4.14).
+* `temp_max`: Ratkowsky maximum cardinal temperature $T_{max}$ in degrees Celsius. No growth occurs at or above it. It is clamped to be strictly above `temp_min`.
+* `acetate_secretion`: Overflow acetate excreted per unit of fresh glucose uptake, from 0 to 1. Producers emit acetate into the ECM (see Section 4.15). Default 0 (no overflow).
+* `acetate_uptake`: Acetate cross-feeding uptake activity from 0 to 1. Consumers oxidize local acetate as a secondary aerobic carbon source (see Section 4.15). Default 0 (no cross-feeding).
+* `baranyi_q0`: Initial Baranyi physiological state $q_0$ of the fresh inoculum (dimensionless, $> 0$). A smaller value lengthens the lag phase via $h_0 = \ln(1 + 1/q_0)$ (see Section 4.16); it is clamped to $[10^{-4}, 10^3]$. Default 0.05 (moderate lag).
+* `persister_switch`: Persister switching propensity from 0 to 1 (see Section 4.17). It scales the entry rate into the dormant persister state; 0 fully disables persistence (pre-M4 behaviour). Default 0.
+* `persister_enter_thresh`: Starvation fullness threshold $S_1$ from 0 to 1. Below it, starvation-induced switching into persistence engages. Default 0.15.
+* `persister_exit_thresh`: Recovery fullness threshold $S_2$ from 0 to 1. Above it, persisters resuscitate to the proliferative state. It is clamped to stay at least `PERSISTER_THRESHOLD_MIN_GAP` above $S_1$. Default 0.5.
+* `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible).
+* `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0.
 
 ## 6. Global Environment Parameters
 
@@ -858,9 +869,11 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 * `co2`: Dissolved carbon dioxide fraction from 0 to 1. Respiration increases it and buffering/pH logic responds to it.
 * `ph`: Current environmental pH from 0 to 14.
 * `temperature`: Environment temperature in degrees Celsius (slider range 0 to 60). It drives the Ratkowsky growth multiplier $f_{T}$ applied per species (see Section 4.14).
+* `temperature`: Environment temperature in degrees Celsius (slider range 0 to 60). It drives the Ratkowsky growth multiplier $f_{T}$ applied per species (see Section 4.14).
 * `capacity`: Hard carrying capacity across all species. Excess population is culled if total cells exceed this value.
 * `drop_frequency`: Expected food clusters per real second. The implementation uses an expected-rate spawning approximation $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$.
 * `drop_range_min` and `drop_range_max`: Uniform random range for the amount in each new food cluster.
+* `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
 
 ## 7. Data Export And Import
@@ -935,6 +948,7 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 
 * `bacteria/app.py`: Pygame application loop, rendering, tabs, UI state, and high-level simulation orchestration.
 * `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`.
+* `bacteria/ecm.py`: Extracellular matrix diffusion and decay for quorum-sensing molecules, bacteriocins, and cross-feeding acetate.
 * `bacteria/ecm.py`: Extracellular matrix diffusion and decay for quorum-sensing molecules, bacteriocins, and cross-feeding acetate.
 * `bacteria/data.py`: CSV/JSON serialization for `species_data.csv` and `env_config.json`.
 * `bacteria/ui_components.py`: Reusable buttons, sliders, and editable cells.
