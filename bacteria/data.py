@@ -17,7 +17,7 @@ class SpeciesDataManager:
     def __init__(self, filename=DATA_FILE):
         self.filename = filename
         # Updated CSV columns: name, initial count, rates, O2 sens, food sens, speed, preferred pH, food system, interactions
-        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius']
+        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius', 'temp_min', 'temp_max', 'acetate_secretion', 'acetate_uptake', 'baranyi_q0', 'persister_switch', 'persister_enter_thresh', 'persister_exit_thresh', 'phage_resistance', 'hgt_competence']
 
         self.species = []
         self.load()
@@ -44,7 +44,17 @@ class SpeciesDataManager:
                 'share_thresh': '0.6',
                 'predation_thresh': '0.9',
                 'base_size': '1.0',
-                'sensor_radius': '200.0'
+                'sensor_radius': '200.0',
+                'temp_min': '4.0',
+                'temp_max': '47.0',
+                'acetate_secretion': '0.0',
+                'acetate_uptake': '0.0',
+                'baranyi_q0': '0.05',
+                'persister_switch': '0.0',
+                'persister_enter_thresh': '0.15',
+                'persister_exit_thresh': '0.5',
+                'phage_resistance': '0.0',
+                'hgt_competence': '0.0'
             }
             normalized_species = []
             for sp in self.species:
@@ -83,7 +93,17 @@ class SpeciesDataManager:
             'share_thresh': '0.6',
             'predation_thresh': '0.9',
             'base_size': '1.0',
-            'sensor_radius': '200.0'
+            'sensor_radius': '200.0',
+            'temp_min': '4.0',
+            'temp_max': '47.0',
+            'acetate_secretion': '0.0',
+            'acetate_uptake': '0.0',
+            'baranyi_q0': '0.05',
+            'persister_switch': '0.0',
+            'persister_enter_thresh': '0.15',
+            'persister_exit_thresh': '0.5',
+            'phage_resistance': '0.0',
+            'hgt_competence': '0.0'
         })
         self.species.append(blank)
         self.save()
@@ -116,9 +136,12 @@ def save_env_config(env):
             'o2': env['o2'],
             'co2': env['co2'],
             'ph': env['ph'],
+            'temperature': env.get('temperature', 37.0),
             'drop_frequency': env['drop_frequency'],
             'drop_range_min': env['drop_range_min'],
             'drop_range_max': env['drop_range_max'],
-            'capacity': env['capacity']
+            'capacity': env['capacity'],
+            # M5: persist free-phage seeding rate so a configured outbreak survives reload
+            'phage_inflow': env.get('phage_inflow', 0)
         }, f)
 

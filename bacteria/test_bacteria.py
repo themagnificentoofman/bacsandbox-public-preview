@@ -11,10 +11,18 @@ if __package__ is None and not hasattr(sys, 'frozen'):
 
 from bacteria import (
     BACTERIA_TUMBLE_MEAN_TURN_RAD,
+    ACETATE_ECM_UNITS_PER_PG,
+    ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV,
+    ACETATE_PER_GLUCOSE_MAX_MASS_RATIO,
+    BARANYI_Q_STATE_MAX,
+    BARANYI_Q0_MAX,
+    BARANYI_Q0_MIN,
     CELL_DRY_MASS_FRACTION,
     CELL_WET_MASS_PG_PER_UM3,
     ATMOSPHERIC_O2_FRACTION,
     DEFAULT_BACTERIA_SPEED_UM_S,
+    DEFAULT_BARANYI_Q0,
+    DEFAULT_ENV_TEMPERATURE_C,
     ECM_CELL_SIZE_UM,
     ECM_MIN_CONCENTRATION,
     FISSION_COST_PG_PER_UM3,
@@ -24,6 +32,21 @@ from bacteria import (
     T6SS_DAMAGE_SCALING_FACTOR,
     T6SS_IMMUNITY_SIZE_EPSILON_UM,
     T6SS_MAX_IMMUNITY_DEFENSE,
+    DEFAULT_PERSISTER_SWITCH,
+    DEFAULT_PERSISTER_ENTER_THRESH,
+    DEFAULT_PERSISTER_EXIT_THRESH,
+    PERSISTER_METABOLIC_FACTOR,
+    PERSISTER_RESISTANCE_FACTOR,
+    PERSISTER_THRESHOLD_MIN_GAP,
+    DEFAULT_PHAGE_ADSORPTION_RATE,
+    DEFAULT_PHAGE_BURST_SIZE,
+    DEFAULT_PHAGE_LATENT_PERIOD_SEC,
+    DEFAULT_PHAGE_RESISTANCE,
+    DEFAULT_HGT_COMPETENCE,
+    HGT_METABOLIC_BURDEN,
+    HGT_TRANSFER_RATE_PER_SEC,
+    PHAGE_ECM_UNITS_PER_VIRION,
+    PHAGE_SEED_PACKET_VIRIONS,
     Bacterium,
     BacteriaSpecies,
     FoodNode,
@@ -326,5 +349,507 @@ class TestBacteriumMath(unittest.TestCase):
         self.assertEqual(format_world_distance_um(2500.0), '2.50 mm')
         self.assertEqual(format_world_distance_um(20000.0), '2.00 cm')
 
+
+class TestTemperatureKinetics(unittest.TestCase):
+    """Deterministic bounds tests for the Ratkowsky (1983) square-root temperature model."""
+
+    def _species(self, temp_min=4.0, temp_max=47.0):
+        return BacteriaSpecies('Temp', 0, 0.0, 0.0, 0.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (255, 255, 255), base_size=1.0,
+                               temp_min=temp_min, temp_max=temp_max)
+
+    def test_factor_zero_outside_biokinetic_window(self):
+        sp = self._species(temp_min=4.0, temp_max=47.0)
+        # No growth at or below T_min, nor at or above T_max.
+        self.assertEqual(sp.temperature_factor(4.0), 0.0)
+        self.assertEqual(sp.temperature_factor(-10.0), 0.0)
+        self.assertEqual(sp.temperature_factor(47.0), 0.0)
+        self.assertEqual(sp.temperature_factor(60.0), 0.0)
+
+    def test_factor_bounded_unit_interval(self):
+        sp = self._species()
+        for i in range(0, 601):
+            t = i * 0.1
+            f = sp.temperature_factor(t)
+            self.assertGreaterEqual(f, 0.0)
+            self.assertLessEqual(f, 1.0)
+
+    def test_factor_normalized_peak_is_one(self):
+        sp = self._species()
+        peak = max(sp.temperature_factor(i * 0.1) for i in range(40, 470))
+        # Normalization should make the species optimum reach (within sampling) 1.0.
+        self.assertAlmostEqual(peak, 1.0, places=4)
+
+    def test_factor_monotonic_increase_below_optimum(self):
+        sp = self._species()
+        # Locate optimum by coarse scan, then assert monotonic rise from T_min up to it.
+        opt = max((i * 0.1 for i in range(40, 470)), key=sp.temperature_factor)
+        prev = -1.0
+        t = sp.temp_min + 0.1
+        while t < opt:
+            f = sp.temperature_factor(t)
+            self.assertGreaterEqual(f + 1e-12, prev)
+            prev = f
+            t += 0.1
+
+    def test_psychrophile_has_lower_optimum_than_mesophile(self):
+        # A cold-adapted species (lower cardinal temps) should peak at a lower temperature.
+        psychro = self._species(temp_min=-5.0, temp_max=20.0)
+        meso = self._species(temp_min=4.0, temp_max=47.0)
+        psychro_opt = max((i * 0.1 for i in range(-100, 210)), key=psychro.temperature_factor)
+        meso_opt = max((i * 0.1 for i in range(0, 480)), key=meso.temperature_factor)
+        self.assertLess(psychro_opt, meso_opt)
+
+    def test_cold_reduces_metabolic_consumption(self):
+        # At a near-freezing temperature the Ratkowsky factor depresses basal metabolism,
+        # so a chilled cell must consume less stored nutrient than one at its optimum.
+        sp = self._species()
+        warm = Bacterium(sp, 0.0, 0.0, size=1.0)
+        cold = Bacterium(sp, 0.0, 0.0, size=1.0)
+        warm.step([], bounds=(0.0, 0.0, 1.0e6), dt=1.0, temp_factor=sp.temperature_factor(37.0))
+        cold.step([], bounds=(0.0, 0.0, 1.0e6), dt=1.0, temp_factor=sp.temperature_factor(6.0))
+        self.assertGreater(warm.last_metabolic_consumption_pg, cold.last_metabolic_consumption_pg)
+        self.assertGreater(cold.last_metabolic_consumption_pg, 0.0)
+
+
+class TestCrossFeeding(unittest.TestCase):
+    """Deterministic mass-balance and behaviour tests for M2 acetate overflow cross-feeding."""
+
+    def _env(self, o2=ATMOSPHERIC_O2_FRACTION, temperature=DEFAULT_ENV_TEMPERATURE_C):
+        # Aerobic, mesophilic-optimum environment so temp_factor and o2_gate are both nonzero.
+        return {'ph': NEUTRAL_PH, 'o2': o2, 'co2': 0.0, 'temperature': temperature,
+                'drop_frequency': 0, 'drop_range': (1, 1)}
+
+    def _species(self, name, color, acetate_secretion=0.0, acetate_uptake=0.0):
+        # bacteriocin_production=0 isolates cross-feeding food deltas from antimicrobial emission cost.
+        return BacteriaSpecies(name, 0, 0.0, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, color, base_size=1.0, bacteriocin_production=0.0,
+                               acetate_secretion=acetate_secretion, acetate_uptake=acetate_uptake)
+
+    def test_producer_secretes_acetate_into_ecm(self):
+        sp = self._species('Producer', (255, 0, 0), acetate_secretion=1.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=5.0)
+        # Pretend the cell just took up 1 pg glucose last tick; overflow should appear as acetate.
+        b.last_food_uptake_pg = 1.0
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+
+        food_before = b.food_level
+        sim._process_interactions({}, 20, 1.0)
+
+        # Mass excreted is bounded by the glucose->2 acetate ceiling, deducted from internal stores.
+        expected_secreted = 1.0 * ACETATE_PER_GLUCOSE_MAX_MASS_RATIO
+        self.assertAlmostEqual(food_before - b.food_level, expected_secreted)
+        self.assertAlmostEqual(sim.ecm.sample(0.0, 0.0, layer='acetate'),
+                               expected_secreted * ACETATE_ECM_UNITS_PER_PG)
+
+    def test_consumer_gains_food_from_acetate_without_glucose(self):
+        sp = self._species('Consumer', (0, 0, 255), acetate_uptake=1.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=1.0)
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+        # Seed abundant local acetate (in ECM units) with no glucose food nodes present.
+        seeded_pg = 0.5
+        sim.ecm.add(0.0, 0.0, seeded_pg * ACETATE_ECM_UNITS_PER_PG, layer='acetate')
+
+        food_before = b.food_level
+        acetate_units_before = sim.ecm.sample(0.0, 0.0, layer='acetate')
+        sim._process_interactions({}, 20, 1.0)
+        acetate_units_after = sim.ecm.sample(0.0, 0.0, layer='acetate')
+
+        consumed_pg = (acetate_units_before - acetate_units_after) / ACETATE_ECM_UNITS_PER_PG
+        self.assertGreater(consumed_pg, 0.0)
+        # Stored energy gained equals acetate mass consumed scaled by its glucose-energy equivalence.
+        self.assertAlmostEqual(b.food_level - food_before,
+                               consumed_pg * ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV)
+        self.assertEqual(b.last_acetate_consumption_pg, consumed_pg)
+
+    def test_no_acetate_creation_when_traits_disabled(self):
+        # Backward compatibility: default (0/0) traits reproduce pre-M2 behaviour exactly.
+        sp = self._species('Neutral', (0, 255, 0))
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=5.0)
+        b.last_food_uptake_pg = 1.0
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+
+        food_before = b.food_level
+        sim._process_interactions({}, 20, 1.0)
+
+        self.assertEqual(b.food_level, food_before)
+        self.assertEqual(sim.ecm.sample(0.0, 0.0, layer='acetate'), 0.0)
+        self.assertEqual(b.last_acetate_consumption_pg, 0.0)
+
+    def test_cross_feeding_conserves_mass_producer_to_consumer(self):
+        # Acetate the producer loses (above the ECM prune floor) must be available to a co-located
+        # consumer; no carbon is created from nothing.
+        producer = self._species('Producer', (255, 0, 0), acetate_secretion=1.0)
+        consumer = self._species('Consumer', (0, 0, 255), acetate_uptake=1.0)
+        pb = Bacterium(producer, 0.0, 0.0, size=1.0, initial_food=8.0)
+        pb.last_food_uptake_pg = 1.0
+        producer.members = [pb]
+        consumer.members = []
+        sim = Simulation([producer, consumer], self._env(), 100)
+
+        food_before = pb.food_level
+        sim._process_interactions({}, 20, 1.0)
+        secreted_pg = food_before - pb.food_level
+        acetate_units = sim.ecm.sample(0.0, 0.0, layer='acetate')
+        self.assertAlmostEqual(acetate_units, secreted_pg * ACETATE_ECM_UNITS_PER_PG)
+
+    def test_uptake_requires_oxygen(self):
+        # Acetate oxidation is aerobic: with no dissolved O2 the consumer cannot use acetate.
+        sp = self._species('Consumer', (0, 0, 255), acetate_uptake=1.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=1.0)
+        sp.members = [b]
+        sim = Simulation([sp], self._env(o2=0.0), 100)
+        sim.ecm.add(0.0, 0.0, 0.5 * ACETATE_ECM_UNITS_PER_PG, layer='acetate')
+
+        food_before = b.food_level
+        sim._process_interactions({}, 20, 1.0)
+        self.assertEqual(b.food_level, food_before)
+        self.assertEqual(b.last_acetate_consumption_pg, 0.0)
+
+
+class TestLagPhase(unittest.TestCase):
+    """Deterministic tests for the M3 Baranyi & Roberts (1994) physiological-state lag model."""
+
+    def _species(self, name, base_rep=0.5, baranyi_q0=DEFAULT_BARANYI_Q0,
+                 food_capacity=1000.0, metabolic_rate=0.0):
+        # metabolic_rate=0 keeps food_level fixed so q dynamics are isolated; o2_sens=1 aerobe with
+        # atmospheric O2 and 37 degC optimum give envf=temp_factor=1 for clean rate arithmetic.
+        return BacteriaSpecies(name, 0, base_rep, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0, bacteriocin_production=0.0,
+                               food_capacity=food_capacity, metabolic_rate=metabolic_rate,
+                               baranyi_q0=baranyi_q0)
+
+    def test_fresh_inoculum_starts_in_lag(self):
+        # A new cell carries its species' q0; the adjustment alpha(q)=q/(1+q) is near zero, so the
+        # effective growth-rate multiplier starts heavily suppressed.
+        sp = self._species('Fresh', baranyi_q0=DEFAULT_BARANYI_Q0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=500.0)
+        self.assertEqual(b.q, DEFAULT_BARANYI_Q0)
+        alpha = b.q / (1.0 + b.q)
+        self.assertLess(alpha, 0.1)
+
+    def test_physiological_state_grows_exponentially(self):
+        # The q update is solved analytically each tick, so after n steps q == q0 * e^{mu_max*t}.
+        base_rep = 0.5
+        sp = self._species('Grow', base_rep=base_rep)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=500.0)
+        dt = 0.1
+        n = 10
+        for _ in range(n):
+            b.step([], (0.0, 0.0, 1000.0), dt)  # temp_factor defaults to 1.0
+        expected_q = DEFAULT_BARANYI_Q0 * math.exp(base_rep * dt * n)
+        self.assertAlmostEqual(b.q, expected_q, places=6)
+
+    def test_lag_shortens_with_higher_q0(self):
+        # Larger q0 means less "work to be done" (h0 = ln(1+1/q0)), so alpha crosses 0.5 (q=1) sooner.
+        base_rep = 0.5
+        dt = 0.1
+
+        def steps_until_adapted(q0):
+            sp = self._species('S', base_rep=base_rep, baranyi_q0=q0)
+            b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=500.0)
+            count = 0
+            while b.q < 1.0 and count < 100000:
+                b.step([], (0.0, 0.0, 1000.0), dt)
+                count += 1
+            return count
+
+        self.assertLess(steps_until_adapted(0.5), steps_until_adapted(0.01))
+
+    def test_high_q0_disables_lag_backward_compat(self):
+        # q0 at the clamp ceiling makes alpha ~ 1 from the outset, reproducing pre-M3 (no-lag) growth.
+        sp = self._species('NoLag', baranyi_q0=BARANYI_Q0_MAX)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=500.0)
+        alpha = b.q / (1.0 + b.q)
+        self.assertGreater(alpha, 0.999)
+
+    def test_q0_clamped_to_finite_nonzero_range(self):
+        # Zero/huge q0 are clamped so the lag is always finite and adaptation always completes.
+        self.assertEqual(self._species('Z', baranyi_q0=0.0).baranyi_q0, BARANYI_Q0_MIN)
+        self.assertEqual(self._species('H', baranyi_q0=1.0e12).baranyi_q0, BARANYI_Q0_MAX)
+
+    def test_q_capped_to_prevent_overflow(self):
+        # Over long runs q must saturate at the numerical cap rather than overflowing to infinity.
+        sp = self._species('Cap', base_rep=5.0, baranyi_q0=DEFAULT_BARANYI_Q0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=1.0e9)
+        for _ in range(2000):
+            b.step([], (0.0, 0.0, 1000.0), 1.0)
+        self.assertLessEqual(b.q, BARANYI_Q_STATE_MAX)
+        self.assertTrue(math.isfinite(b.q))
+
+    def test_daughter_inherits_parent_adapted_state(self):
+        # A dividing parent (high q) passes its adapted state to the daughter: progeny do not re-lag.
+        sp = self._species('Div', base_rep=1.0)
+        parent = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        parent.q = 50.0  # already adapted
+        with patch('random.random', return_value=0.0), patch('random.gauss', return_value=1.0):
+            child = parent.attempt_fission(1.0, 1.0, sp.rep_thresh, 1.0)
+        self.assertIsNotNone(child)
+        self.assertEqual(child.q, 50.0)
+
+    def test_lag_gates_reproduction_vs_adapted(self):
+        # With identical food/environment, a lagging (low-q0) inoculum yields a smaller per-tick
+        # reproduction probability than an adapted (high-q0) one; verified via births under a fixed
+        # RNG threshold that only the adapted species' rep_prob exceeds.
+        dt = 1.0
+        lagging = self._species('Lag', base_rep=0.7, baranyi_q0=DEFAULT_BARANYI_Q0)
+        adapted = self._species('Adapt', base_rep=0.7, baranyi_q0=BARANYI_Q0_MAX)
+        for sp in (lagging, adapted):
+            sp.members = [Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)]
+        env = {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+               'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': 0, 'drop_range': (1, 1)}
+        # Fixed RNG at 0.5: adapted rep_prob (~0.70) divides, lagging rep_prob (~0.06) does not.
+        with patch('random.random', return_value=0.5), patch('random.gauss', return_value=1.0):
+            lag_births, _ = lagging.step(env, 100000, 800, 600, [], dt)
+            adapt_births, _ = adapted.step(env, 100000, 800, 600, [], dt)
+        self.assertEqual(lag_births, 0)
+        self.assertGreater(adapt_births, 0)
+
+
+class TestPersisterSwitching(unittest.TestCase):
+    """Deterministic tests for the M4 persister phenotypic-switch model (Balaban et al. 2004)."""
+
+    def _species(self, name, persister_switch=1.0, base_rep=0.0, metabolic_rate=0.0,
+                 enter=DEFAULT_PERSISTER_ENTER_THRESH, exit_=DEFAULT_PERSISTER_EXIT_THRESH,
+                 bacteriocin_production=0.0, immunity_factor=0.0):
+        # base_rep/metabolic_rate default to 0 so food stays fixed and fullness (the switch driver)
+        # is fully controlled by initial_food/food_capacity; aerobe at 37 degC -> envf=temp_factor=1.
+        return BacteriaSpecies(name, 0, base_rep, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               bacteriocin_production=bacteriocin_production,
+                               immunity_factor=immunity_factor,
+                               food_capacity=1000.0, metabolic_rate=metabolic_rate,
+                               persister_switch=persister_switch,
+                               persister_enter_thresh=enter, persister_exit_thresh=exit_)
+
+    def test_starvation_drives_entry_to_persister(self):
+        # Fullness 0.05 < S1 (0.15): with the RNG pinned at 0 the positive enter-rate always fires.
+        sp = self._species('Starve')
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=50.0)  # fullness 0.05
+        self.assertFalse(b.is_persister)
+        with patch('random.random', return_value=0.0):
+            b.step([], (0.0, 0.0, 1000.0), 1.0)
+        self.assertTrue(b.is_persister)
+
+    def test_rich_nutrients_drive_exit_from_persister(self):
+        # Fullness 0.9 > S2 (0.5): a dormant cell resuscitates back to proliferative.
+        sp = self._species('Recover')
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)  # fullness 0.9
+        b.is_persister = True
+        with patch('random.random', return_value=0.0):
+            b.step([], (0.0, 0.0, 1000.0), 1.0)
+        self.assertFalse(b.is_persister)
+
+    def test_persister_halts_fission(self):
+        # A dormant cell never divides even with food above threshold and the RNG forcing fission.
+        sp = self._species('Halt', persister_switch=0.0, base_rep=1.0)  # switch disabled so state is stable
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        b.is_persister = True
+        sp.members = [b]
+        env = {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+               'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': 0, 'drop_range': (1, 1)}
+        with patch('random.random', return_value=0.0), patch('random.gauss', return_value=1.0):
+            births, _ = sp.step(env, 100000, 800, 600, [], 1.0)
+        self.assertEqual(births, 0)
+
+    def test_persister_reduces_basal_metabolism(self):
+        # Dormancy throttles maintenance burn to PERSISTER_METABOLIC_FACTOR of the proliferative rate.
+        # Fix the RNG so both cells share an identical lifespan_variance (hence age_factor), isolating
+        # the persister factor as the only difference in metabolic demand.
+        sp = self._species('Meta', persister_switch=0.0, metabolic_rate=10.0)
+        with patch('random.gauss', return_value=1.0), patch('random.random', return_value=0.5):
+            active = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+            dormant = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+            dormant.is_persister = True
+            active.step([], (0.0, 0.0, 1000.0), 1.0)
+            dormant.step([], (0.0, 0.0, 1000.0), 1.0)
+        self.assertAlmostEqual(dormant.last_metabolic_consumption_pg,
+                               active.last_metabolic_consumption_pg * PERSISTER_METABOLIC_FACTOR)
+
+    def test_persister_resists_bacteriocin_dose(self):
+        # The same environmental bacteriocin dose damages a dormant cell PERSISTER_RESISTANCE_FACTOR
+        # as much as a proliferative one (Balaban et al. 2004; Lewis 2010).
+        sp = self._species('Resist', persister_switch=0.0)
+        active = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        dormant = Bacterium(sp, 100.0, 100.0, size=1.0, initial_food=900.0)
+        dormant.is_persister = True
+        sp.members = [active, dormant]
+        sim = Simulation([sp], {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION,
+                                 'drop_frequency': 0, 'drop_range': (1, 1)}, 100)
+        # Deposit an equal bacteriocin dose at each cell's location.
+        sim.ecm.add(active.x, active.y, 100.0, layer='bac')
+        sim.ecm.add(dormant.x, dormant.y, 100.0, layer='bac')
+        # Cells sit in separate spatial-hash cells so they do not interact with each other.
+        spatial_hash = {(0, 0): [active], (5, 5): [dormant]}
+        with patch('random.random', return_value=0.9):
+            sim._process_interactions(spatial_hash, 20, 1.0)
+        active_drop = 900.0 - active.food_level
+        dormant_drop = 900.0 - dormant.food_level
+        self.assertGreater(active_drop, 0.0)
+        self.assertAlmostEqual(dormant_drop, active_drop * PERSISTER_RESISTANCE_FACTOR)
+
+    def test_switch_disabled_is_backward_compatible(self):
+        # persister_switch=0 means a cell never spontaneously enters persistence, even when starved.
+        sp = self._species('Off', persister_switch=0.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=10.0)  # fullness 0.01
+        with patch('random.random', return_value=0.0):
+            for _ in range(50):
+                b.step([], (0.0, 0.0, 1000.0), 1.0)
+        self.assertFalse(b.is_persister)
+
+    def test_exit_threshold_kept_above_enter_threshold(self):
+        # The constructor enforces a minimum S2 - S1 gap so the enter/exit bands cannot overlap.
+        sp = self._species('Gap', enter=0.6, exit_=0.4)
+        self.assertGreaterEqual(sp.persister_exit_thresh,
+                                sp.persister_enter_thresh + PERSISTER_THRESHOLD_MIN_GAP)
+
+
+class TestPhagePredationHGT(unittest.TestCase):
+    """Deterministic tests for the M5 lytic-phage SIR model and horizontal gene transfer."""
+
+    def _species(self, name, phage_resistance=0.0, hgt_competence=0.0, base_rep=0.0,
+                 metabolic_rate=0.0):
+        # base_rep/metabolic_rate default to 0 so food stays fixed and the only dynamics under test
+        # are infection, lysis, and HGT. Aerobe at 37 degC -> envf = temp_factor = 1.
+        return BacteriaSpecies(name, 0, base_rep, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=1000.0, metabolic_rate=metabolic_rate,
+                               bacteriocin_production=0.0, immunity_factor=0.0,
+                               phage_resistance=phage_resistance, hgt_competence=hgt_competence)
+
+    def _env(self):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': 0,
+                'drop_range': (1, 1), 'phage_inflow': 0}
+
+    def test_traits_clamped_to_unit_interval(self):
+        sp = self._species('Clamp', phage_resistance=5.0, hgt_competence=-2.0)
+        self.assertEqual(sp.phage_resistance, 1.0)
+        self.assertEqual(sp.hgt_competence, 0.0)
+
+    def test_initial_resistant_fraction(self):
+        # phage_resistance=1.0 -> every cell is born resistant; 0.0 -> none.
+        all_res = self._species('AllRes', phage_resistance=1.0)
+        none_res = self._species('NoneRes', phage_resistance=0.0)
+        self.assertTrue(Bacterium(all_res, 0.0, 0.0, size=1.0).phage_resistant)
+        self.assertFalse(Bacterium(none_res, 0.0, 0.0, size=1.0).phage_resistant)
+
+    def test_adsorption_infects_susceptible_cell(self):
+        # A susceptible cell in a dense phage field adsorbs and enters the latent (infected) state.
+        sp = self._species('Susc', phage_resistance=0.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        b.speed = 0.0  # immobilize so it stays in the seeded point phage field
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+        sim.ecm.add(0.0, 0.0, 1000.0 * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+        self.assertFalse(b.infected)
+        with patch('random.random', return_value=0.0):  # force adsorption to fire
+            sp.step(self._env(), 100000, 800, 600, [], TEST_DT_SEC)
+        self.assertTrue(b.infected)
+        self.assertAlmostEqual(b.lysis_timer, DEFAULT_PHAGE_LATENT_PERIOD_SEC)
+
+    def test_resistant_cell_never_adsorbs(self):
+        # A resistant cell in the same dense phage field is never infected.
+        sp = self._species('Res', phage_resistance=1.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        b.speed = 0.0
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+        sim.ecm.add(0.0, 0.0, 1000.0 * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+        with patch('random.random', return_value=0.0):
+            sp.step(self._env(), 100000, 800, 600, [], TEST_DT_SEC)
+        self.assertFalse(b.infected)
+
+    def test_lysis_kills_cell_and_releases_burst(self):
+        # An infected cell whose latent timer elapses lyses: it dies, drops necromass, and releases
+        # a burst of progeny virions into the local phage field.
+        sp = self._species('Lyse', phage_resistance=0.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        b.speed = 0.0  # immobilize so the burst is released at the sampled origin
+        b.infected = True
+        b.lysis_timer = TEST_DT_SEC * 0.5  # elapses within a single step
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+        food_nodes = []
+        # Pin RNG high so no secondary death/adsorption paths interfere.
+        with patch('random.random', return_value=0.99):
+            births, deaths = sp.step(self._env(), 100000, 800, 600, food_nodes, TEST_DT_SEC)
+        self.assertEqual(deaths, 1)
+        self.assertNotIn(b, sp.members)
+        released = sim.ecm.sample(0.0, 0.0, layer='phage') / PHAGE_ECM_UNITS_PER_VIRION
+        self.assertGreater(released, 0.0)
+        self.assertTrue(any(n.amount > 0 for n in food_nodes))
+
+    def test_infected_cell_does_not_divide(self):
+        # A phage-hijacked cell cannot reproduce even with ample food and forced fission RNG.
+        sp = self._species('NoDiv', phage_resistance=0.0, base_rep=1.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        b.infected = True
+        b.lysis_timer = DEFAULT_PHAGE_LATENT_PERIOD_SEC  # not yet lysing
+        sp.members = [b]
+        with patch('random.random', return_value=0.0), patch('random.gauss', return_value=1.0):
+            births, _ = sp.step(self._env(), 100000, 800, 600, [], TEST_DT_SEC)
+        self.assertEqual(births, 0)
+
+    def test_hgt_transfers_resistance_and_imposes_burden(self):
+        # A resistant, competent donor in contact with a susceptible competent recipient transfers
+        # resistance and saddles the recipient with the plasmid carriage cost.
+        sp = self._species('HGT', phage_resistance=0.0, hgt_competence=1.0)
+        donor = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        recipient = Bacterium(sp, 0.5, 0.0, size=1.0, initial_food=900.0)
+        donor.phage_resistant = True
+        recipient.phage_resistant = False
+        sp.members = [donor, recipient]
+        sim = Simulation([sp], self._env(), 100)
+        spatial_hash = {(0, 0): [donor, recipient]}
+        with patch('random.random', return_value=0.0):  # force transfer to fire
+            sim._process_interactions(spatial_hash, 20, TEST_DT_SEC)
+        self.assertTrue(recipient.phage_resistant)
+        self.assertAlmostEqual(recipient.metabolic_burden_factor, 1.0 + HGT_METABOLIC_BURDEN)
+
+    def test_hgt_disabled_without_competence(self):
+        # With hgt_competence=0 the trait never transfers regardless of contact or RNG.
+        sp = self._species('NoHGT', phage_resistance=0.0, hgt_competence=0.0)
+        donor = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        recipient = Bacterium(sp, 0.5, 0.0, size=1.0, initial_food=900.0)
+        donor.phage_resistant = True
+        recipient.phage_resistant = False
+        sp.members = [donor, recipient]
+        sim = Simulation([sp], self._env(), 100)
+        spatial_hash = {(0, 0): [donor, recipient]}
+        with patch('random.random', return_value=0.0):
+            sim._process_interactions(spatial_hash, 20, TEST_DT_SEC)
+        self.assertFalse(recipient.phage_resistant)
+
+    def test_daughter_inherits_resistance_and_burden(self):
+        # Heritability: a resistant, plasmid-bearing parent passes both traits to its daughter.
+        sp = self._species('Inherit', phage_resistance=0.0, base_rep=1.0)
+        parent = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
+        parent.phage_resistant = True
+        parent.metabolic_burden_factor = 1.0 + HGT_METABOLIC_BURDEN
+        with patch('random.random', return_value=0.0), patch('random.gauss', return_value=1.0):
+            child = parent.attempt_fission(1.0, 1.0, sp.rep_thresh, TEST_DT_SEC)
+        self.assertIsNotNone(child)
+        self.assertTrue(child.phage_resistant)
+        self.assertAlmostEqual(child.metabolic_burden_factor, 1.0 + HGT_METABOLIC_BURDEN)
+
+    def test_phage_inflow_zero_is_backward_compatible(self):
+        # With phage_inflow=0 no virions are ever seeded and no cell becomes infected.
+        sp = self._species('Quiet', phage_resistance=0.0)
+        b = Bacterium(sp, 400.0, 300.0, size=1.0, initial_food=900.0)
+        sp.members = [b]
+        sim = Simulation([sp], self._env(), 100)
+        sim.running = True
+        for _ in range(20):
+            sim.update(800, 600, TEST_DT_SEC)
+        self.assertEqual(sim.ecm.sample(400.0, 300.0, layer='phage'), 0.0)
+        self.assertFalse(b.infected)
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
