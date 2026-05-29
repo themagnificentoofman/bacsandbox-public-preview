@@ -479,10 +479,10 @@ Temperature kinetics (Ratkowsky model):
 Cross-feeding (acetate overflow, see Section 4.15):
 
 * `ACETATE_MOLAR_MASS_G = 60.05`
-* `ACETATE_PER_GLUCOSE_MAX_MASS_RATIO = (2 \times 60.05) / 180.16 \approx 0.667`
+* `ACETATE_PER_GLUCOSE_MAX_MASS_RATIO` $= (2 \times 60.05) / 180.16 \approx 0.667$
 * `GLUCOSE_AEROBIC_ATP_PER_MOL = 32.0`
 * `ACETATE_AEROBIC_ATP_PER_MOL = 10.0`
-* `ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV \approx 0.938`
+* `ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV` $\approx 0.938$
 * `O2_PER_ACETATE_MASS_RATIO = 64.0 / 60.05`
 * `CO2_PER_ACETATE_MASS_RATIO = 88.02 / 60.05`
 * `ECM_ACETATE_DIFFUSION_UM2_S = 1000.0`
@@ -494,9 +494,9 @@ Cross-feeding (acetate overflow, see Section 4.15):
 Lag phase (Baranyi & Roberts dynamic state, see Section 4.16):
 
 * `DEFAULT_BARANYI_Q0 = 0.05` (fresh-inoculum physiological state; $h_0 = \ln(1 + 1/q_0) \approx 3.04$)
-* `BARANYI_Q_STATE_MAX = 1.0 \times 10^{6}` (numerical cap where $\alpha > 0.999999$)
-* `BARANYI_Q0_MIN = 1.0 \times 10^{-4}` (floor; guarantees a finite lag)
-* `BARANYI_Q0_MAX = 1.0 \times 10^{3}` (ceiling; effectively disables the lag)
+* `BARANYI_Q_STATE_MAX` $= 1.0 \times 10^{6}$ (numerical cap where $\alpha > 0.999999$)
+* `BARANYI_Q0_MIN` $= 1.0 \times 10^{-4}$ (floor; guarantees a finite lag)
+* `BARANYI_Q0_MAX` $= 1.0 \times 10^{3}$ (ceiling; effectively disables the lag)
 
 Phenotypic switching (persister bet-hedging, see Section 4.17):
 
@@ -729,7 +729,7 @@ $$
 The entry rate is additionally scaled by the per-species propensity $s \in [0,1]$
 (`persister_switch`), i.e. $k^{+}_{\text{eff}} = s\,k^{+}(f)$, so $s = 0$ disables persistence
 entirely and reproduces the pre-M4 behaviour exactly. The two fullness thresholds are constrained by
-the constructor so that $S_2 \ge S_1 + \texttt{PERSISTER\_THRESHOLD\_MIN\_GAP}$, preventing the
+the constructor so that $S_2 \ge S_1 +$ `PERSISTER_THRESHOLD_MIN_GAP`, preventing the
 enter/exit bands from overlapping and causing rapid chatter.
 
 **Persister phenotype.** While dormant, a cell:
@@ -799,7 +799,7 @@ $$
 
 where $k_H$ is `HGT_TRANSFER_RATE_PER_SEC` and $c$ are the two cells' competences. The recipient
 becomes resistant and inherits a **plasmid carriage cost**: its basal maintenance metabolism is
-multiplied by $1 + \texttt{HGT\_METABOLIC\_BURDEN}$, modelling the well-documented fitness penalty of
+multiplied by $1 +$ `HGT_METABOLIC_BURDEN`, modelling the well-documented fitness penalty of
 maintaining a resistance plasmid (San Millán & MacLean 2017). This cost is inherited by daughters, so
 in the absence of phage pressure the burdened lineage is slightly outcompeted — capturing the
 cost–benefit tension that governs the spread of mobile resistance elements.
