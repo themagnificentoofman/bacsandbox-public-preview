@@ -549,11 +549,11 @@ $b$ is the low-temperature square-root slope, and $c$ governs the steepness of h
 thermal inactivation. Outside the open interval $(T_{min}, T_{max})$ growth is zero.
 
 The raw rate $\mu(T) = \bigl(\sqrt{\mu(T)}\bigr)^2$ is converted into a dimensionless multiplier in
-$[0, 1]$ by normalizing against each species' own optimum $\sqrt{\mu}_{\text{peak}}$, located once at
+$[0, 1]$ by normalizing against each species' own optimum $\sqrt{\mu_{\text{peak}}}$, located once at
 construction by uniform sampling across $[T_{min}, T_{max}]$:
 
 $$
-f_{T}(T) = \left( \frac{\sqrt{\mu(T)}}{\sqrt{\mu}_{\text{peak}}} \right)^{2}, \qquad f_{T} \in [0, 1]
+f_{T}(T) = \left( \frac{\sqrt{\mu(T)}}{\sqrt{\mu_{\text{peak}}}} \right)^{2}, \qquad f_{T} \in [0, 1]
 $$
 
 Because the multiplier is normalized to the optimum, the slope parameter $b$ cancels and only the
@@ -727,7 +727,7 @@ P_{\text{switch}} = 1 - e^{-\,k\,\Delta t}.
 $$
 
 The entry rate is additionally scaled by the per-species propensity $s \in [0,1]$
-(`persister_switch`), i.e. $k^{+}_{\text{eff}} = s\,k^{+}(f)$, so $s = 0$ disables persistence
+(`persister_switch`), i.e. $k_{\text{eff}}^{+} = s\,k^{+}(f)$, so $s = 0$ disables persistence
 entirely and reproduces the pre-M4 behaviour exactly. The two fullness thresholds are constrained by
 the constructor so that $S_2 \ge S_1 +$ `PERSISTER_THRESHOLD_MIN_GAP`, preventing the
 enter/exit bands from overlapping and causing rapid chatter.
