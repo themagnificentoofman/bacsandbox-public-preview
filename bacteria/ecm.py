@@ -7,11 +7,15 @@ if __package__ is None and not hasattr(sys, 'frozen'):
     __package__ = 'bacteria'
     
 from .constants import (
+    ECM_ACETATE_DECAY_S,
+    ECM_ACETATE_DIFFUSION_UM2_S,
     ECM_ALPHA_MAX,
     ECM_BAC_DECAY_S,
     ECM_BAC_DIFFUSION_UM2_S,
     ECM_CELL_SIZE_UM,
     ECM_MIN_CONCENTRATION,
+    ECM_PHAGE_DECAY_S,
+    ECM_PHAGE_DIFFUSION_UM2_S,
     ECM_QS_DECAY_S,
     ECM_QS_DIFFUSION_UM2_S,
 )
@@ -25,6 +29,17 @@ class ECM:
         self.cell_size = cell_size
         self.qs_inducers = {}
         self.bacteriocins = {}
+        # Acetate cross-feeding metabolite (M2): overflow carbon source diffusing producers -> consumers.
+        self.acetate = {}
+        # Free bacteriophage virion field (M5): diffusible lytic-phage concentration driving SIR epidemics.
+        self.phage = {}
+        # Single source of truth mapping layer name -> backing grid, so add/sample never drift apart.
+        self._layers = {
+            'qs': self.qs_inducers,
+            'bac': self.bacteriocins,
+            'acetate': self.acetate,
+            'phage': self.phage,
+        }
 
     def add(self, x, y, amount, layer='qs'):
         """
@@ -32,7 +47,7 @@ class ECM:
         """
         cx = int(x // self.cell_size)
         cy = int(y // self.cell_size)
-        target = self.qs_inducers if layer == 'qs' else self.bacteriocins
+        target = self._layers.get(layer, self.qs_inducers)
         target[(cx, cy)] = target.get((cx, cy), 0.0) + amount
 
     def sample(self, x, y, layer='qs'):
@@ -41,12 +56,14 @@ class ECM:
         """
         cx = int(x // self.cell_size)
         cy = int(y // self.cell_size)
-        target = self.qs_inducers if layer == 'qs' else self.bacteriocins
+        target = self._layers.get(layer, self.qs_inducers)
         return target.get((cx, cy), 0.0)
 
     def tick(self, dt):
         self._process_layer(self.qs_inducers, ECM_QS_DIFFUSION_UM2_S, ECM_QS_DECAY_S, dt)
         self._process_layer(self.bacteriocins, ECM_BAC_DIFFUSION_UM2_S, ECM_BAC_DECAY_S, dt)
+        self._process_layer(self.acetate, ECM_ACETATE_DIFFUSION_UM2_S, ECM_ACETATE_DECAY_S, dt)
+        self._process_layer(self.phage, ECM_PHAGE_DIFFUSION_UM2_S, ECM_PHAGE_DECAY_S, dt)
 
     def _process_layer(self, grid, diffusion_um2_s, decay_s, dt):
         if not grid:

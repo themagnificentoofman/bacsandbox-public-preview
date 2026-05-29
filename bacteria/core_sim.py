@@ -49,7 +49,7 @@ class Bacterium:
     """
     _pool = []
     
-    def __init__(self, species, x, y, size=1.0, initial_food=None):
+    def __init__(self, species, x, y, size=1.0, initial_food=None, initial_q=None):
         self.species = species
         self.x = x
         self.y = y
@@ -96,6 +96,25 @@ class Bacterium:
         self.is_tumbling = False
         self._tumble_reoriented = False
         self.last_metabolic_consumption_pg = 0.0
+        # M2 cross-feeding bookkeeping (pg). last_food_uptake_pg drives overflow acetate secretion;
+        # last_acetate_consumption_pg feeds acetate-oxidation O2/CO2 coupling in the env update.
+        self.last_food_uptake_pg = 0.0
+        self.last_acetate_consumption_pg = 0.0
+        # M3 Baranyi & Roberts (1994) physiological state q. Fresh inoculum starts at the species' q0
+        # (low -> long lag); daughter cells inherit the parent's adapted q so they do not re-lag.
+        self.q = initial_q if initial_q is not None else getattr(species, 'baranyi_q0', DEFAULT_BARANYI_Q0)
+        # M4 phenotypic switching: cells begin proliferative and may stochastically enter the dormant,
+        # stress-tolerant persister state under starvation (Balaban et al. 2004). Daughters are always
+        # born proliferative since persisters do not divide.
+        self.is_persister = False
+        # M5 phage predation (SIR host state) + HGT. A cell is born resistant with the species' initial
+        # resistant fraction (heritable, chromosomal); infection and lysis are tracked per cell. The
+        # metabolic burden factor (>=1) models the fitness cost of a horizontally acquired resistance
+        # plasmid (San Millan & MacLean 2017); it is 1.0 for cells with no carriage cost.
+        self.phage_resistant = random.random() < getattr(species, 'phage_resistance', 0.0)
+        self.infected = False
+        self.lysis_timer = 0.0
+        self.metabolic_burden_factor = 1.0
 
     def _sample_run_duration(self):
         """Return one E. coli-style run duration sampled in real elapsed seconds."""
@@ -115,11 +134,14 @@ class Bacterium:
         if bacterium is not None and len(cls._pool) < 5000:
             cls._pool.append(bacterium)
     
-    def init(self, species, x, y, size=1.0, initial_food=None):
-        self.__init__(species, x, y, size, initial_food)
+    def init(self, species, x, y, size=1.0, initial_food=None, initial_q=None):
+        self.__init__(species, x, y, size, initial_food, initial_q)
         return self
 
-    def step(self, food_nodes, bounds, dt, viewport_bounds=None, food_hash=None):
+    def step(self, food_nodes, bounds, dt, viewport_bounds=None, food_hash=None, temp_factor=1.0):
+        # temp_factor in [0, 1] is the Ratkowsky temperature multiplier supplied by the species.
+        # It scales metabolism, nutrient uptake, and motility so that cold/hot extremes slow the
+        # cell toward dormancy (factor -> 0) while the species optimum leaves rates unchanged (-> 1).
         is_out_of_bounds = False
         if viewport_bounds is not None:
             is_out_of_bounds = (
@@ -140,14 +162,52 @@ class Bacterium:
         age_factor = 1.0 + (self.age / (SENESCENCE_BASE_LIFESPAN_SEC * self.lifespan_variance))
         
         # Metabolism: lose nutrient over elapsed real time.
-        metabolic_demand_pg = (self.metabolic_rate * dt) * age_factor
+        # Temperature (Ratkowsky) scales enzymatic turnover: cold/hot extremes depress basal demand,
+        # which is why chilled cultures persist far longer than cultures at their growth optimum.
+        # M4: dormant persisters burn only a fraction of basal maintenance (Lewis 2010).
+        persister_metabolic_factor = PERSISTER_METABOLIC_FACTOR if self.is_persister else 1.0
+        # M5: a horizontally acquired resistance plasmid raises basal maintenance (carriage cost).
+        metabolic_demand_pg = (self.metabolic_rate * dt) * age_factor * temp_factor * persister_metabolic_factor * self.metabolic_burden_factor
         self.last_metabolic_consumption_pg = min(max(0.0, self.food_level), metabolic_demand_pg)
         self.food_level = max(0, self.food_level - metabolic_demand_pg)
+
+        # M3 Baranyi lag: advance the physiological state q. dq/dt = mu_max * q, with mu_max taken as
+        # the species' temperature-scaled specific growth rate. Cold/hot extremes (temp_factor -> 0)
+        # slow adaptation and lengthen the lag, matching observed temperature-dependent lag times.
+        # Solved analytically over the tick (q_{t+dt} = q_t * e^{mu_max*dt}) so the result is exact and
+        # frame-rate independent rather than a forward-Euler approximation.
+        mu_max = getattr(self.species, 'base_rep', 0.0)
+        if mu_max > 0.0 and self.q < BARANYI_Q_STATE_MAX:
+            self.q = min(BARANYI_Q_STATE_MAX, self.q * math.exp(mu_max * temp_factor * dt))
         
         # Update size based on fullness
         cap = self.food_capacity if self.food_capacity > 0 else 1.0
         fullness = max(0.0, min(1.0, self.food_level / cap))
         self.size = self.base_size * (BACTERIA_STARVED_RENDER_SCALE + BACTERIA_FULL_RENDER_SCALE_RANGE * fullness)
+
+        # M4 phenotypic switching (Balaban et al. 2004). Reversible, stochastic transition between the
+        # proliferative and dormant persister states, gated by internal fullness as a faithful proxy
+        # for sustained LOCAL nutrient balance. Probabilities use the exponential CDF 1 - e^{-rate*dt}
+        # so the per-tick chance is exact and frame-rate independent. Disabled when the species'
+        # switching propensity is 0, reproducing pre-M4 behaviour exactly.
+        persister_switch = getattr(self.species, 'persister_switch', 0.0)
+        if persister_switch > 0.0:
+            s1 = getattr(self.species, 'persister_enter_thresh', DEFAULT_PERSISTER_ENTER_THRESH)
+            s2 = getattr(self.species, 'persister_exit_thresh', DEFAULT_PERSISTER_EXIT_THRESH)
+            if not self.is_persister:
+                # Baseline bet-hedging plus a starvation-induced term that strengthens as reserves empty.
+                enter_rate = PERSISTER_SPONTANEOUS_SWITCH_RATE_PER_SEC
+                if fullness < s1:
+                    enter_rate += PERSISTER_STRESS_SWITCH_RATE_PER_SEC * (1.0 - fullness / max(s1, NUMERIC_DISTANCE_EPSILON_UM))
+                if random.random() < 1.0 - math.exp(-enter_rate * persister_switch * dt):
+                    self.is_persister = True
+            else:
+                # Spontaneous reversion plus a resuscitation term that strengthens as reserves refill.
+                wake_rate = PERSISTER_SPONTANEOUS_WAKE_RATE_PER_SEC
+                if fullness > s2:
+                    wake_rate += PERSISTER_WAKE_RATE_PER_SEC * ((fullness - s2) / max(1.0 - s2, NUMERIC_DISTANCE_EPSILON_UM))
+                if random.random() < 1.0 - math.exp(-wake_rate * dt):
+                    self.is_persister = False
         
         # Compute effective greediness that rises toward 1 as stomach empties
         base_gx = getattr(self.species, 'greediness', 0.5)
@@ -211,8 +271,8 @@ class Bacterium:
         
         self.last_score = current_score
 
-        # Base movement speed
-        spd = self.speed * dt
+        # Base movement speed; flagellar motor output is enzyme-driven, so it scales with temperature.
+        spd = self.speed * dt * temp_factor
 
         if target is not None and has_gradient and not self.is_tumbling:
             desired_heading = math.atan2(gradient_y, gradient_x)
@@ -222,8 +282,9 @@ class Bacterium:
             max_turn = CHEMOTAXIS_STEER_RATE_RAD_S * gx_eff * dt
             self.heading += max(-max_turn, min(max_turn, heading_error))
 
-        # Multi-node consumption: feed from all candidate nodes within eat distance
-        max_eat_amt = self.consumption_speed * dt
+        # Multi-node consumption: feed from all candidate nodes within eat distance.
+        # Membrane transporter kinetics are temperature-limited, so uptake scales with temp_factor.
+        max_eat_amt = self.consumption_speed * dt * temp_factor
         amt_eaten_total = 0.0
         is_grazing = False
         
@@ -245,6 +306,9 @@ class Bacterium:
                 self.food_level += eat_amt
                 node.amount -= eat_amt
                 amt_eaten_total += eat_amt
+
+        # Record this tick's glucose uptake so the species step can excrete overflow acetate (M2).
+        self.last_food_uptake_pg = amt_eaten_total
 
         if is_grazing:
             spd *= BACTERIA_GRAZING_SPEED_FACTOR # Grazing increases drag/friction but does not create a full stop.
@@ -325,7 +389,17 @@ class Bacterium:
                 min_survival_food = self.metabolic_rate * dt
                 if parent_food > min_survival_food and child_food > min_survival_food:
                     self.food_level = parent_food
-                    return Bacterium(self.species, self.x, self.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food)
+                    # Daughter inherits the parent's adapted physiological state q (no re-lag): an
+                    # already-dividing cell's progeny are pre-adapted (Baranyi & Roberts 1994).
+                    child = Bacterium(self.species, self.x, self.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food, initial_q=self.q)
+                    # M5: phage resistance is heritable. A susceptible lineage gains resistance by rare
+                    # spontaneous mutation per division (Luria & Delbruck 1943), the seed of the
+                    # post-crash rebound. The plasmid carriage cost is inherited with the trait.
+                    child.phage_resistant = self.phage_resistant
+                    if not child.phage_resistant and random.random() < PHAGE_RESISTANCE_MUTATION_RATE:
+                        child.phage_resistant = True
+                    child.metabolic_burden_factor = self.metabolic_burden_factor
+                    return child
         return None
 
 class BacteriaSpecies:
@@ -339,7 +413,15 @@ class BacteriaSpecies:
                  t6ss_activity=DEFAULT_T6SS_ACTIVITY, bacteriocin_production=DEFAULT_BACTERIOCIN_PRODUCTION,
                  immunity_factor=DEFAULT_IMMUNITY_FACTOR, rep_thresh=DEFAULT_REPRODUCTION_THRESHOLD,
                  share_thresh=DEFAULT_SHARE_THRESHOLD, predation_thresh=DEFAULT_PREDATION_THRESHOLD,
-                 base_size=DEFAULT_BASE_SIZE_UM, sensor_radius=DEFAULT_SENSOR_RADIUS_UM):
+                 base_size=DEFAULT_BASE_SIZE_UM, sensor_radius=DEFAULT_SENSOR_RADIUS_UM,
+                 temp_min=DEFAULT_TEMP_MIN_C, temp_max=DEFAULT_TEMP_MAX_C,
+                 acetate_secretion=DEFAULT_ACETATE_SECRETION, acetate_uptake=DEFAULT_ACETATE_UPTAKE,
+                 baranyi_q0=DEFAULT_BARANYI_Q0,
+                 persister_switch=DEFAULT_PERSISTER_SWITCH,
+                 persister_enter_thresh=DEFAULT_PERSISTER_ENTER_THRESH,
+                 persister_exit_thresh=DEFAULT_PERSISTER_EXIT_THRESH,
+                 phage_resistance=DEFAULT_PHAGE_RESISTANCE,
+                 hgt_competence=DEFAULT_HGT_COMPETENCE):
         # Store parameters
         self.name = name
         self.base_rep = rep       # base reproduction probability
@@ -362,6 +444,33 @@ class BacteriaSpecies:
         self.predation_thresh = max(0.0, min(float(predation_thresh), 1.0))
         self.base_size = max(0.1, float(base_size))
         self.sensor_radius = max(0.0, float(sensor_radius))
+        # Cardinal growth temperatures (Ratkowsky square-root model). T_max is kept strictly above
+        # T_min so the curve is well defined; the optimum is located numerically once at construction.
+        self.temp_min = float(temp_min)
+        self.temp_max = max(self.temp_min + 1.0, float(temp_max))
+        # Precompute the peak of sqrt(mu) over [T_min, T_max] so temperature_factor returns a value
+        # in [0, 1] that equals 1.0 at this species' own thermal optimum.
+        self._temp_sqrt_mu_peak = self._compute_temp_sqrt_mu_peak()
+        # M2 cross-feeding traits, both in [0, 1]. acetate_secretion is the fraction of fresh glucose
+        # uptake excreted as overflow acetate; acetate_uptake scales the cell's acetate-oxidation rate.
+        self.acetate_secretion = max(0.0, min(float(acetate_secretion), 1.0))
+        self.acetate_uptake = max(0.0, min(float(acetate_uptake), 1.0))
+        # M3 Baranyi lag: initial physiological state q0 of fresh inoculum. Small q0 -> long lag
+        # (h0 = ln(1 + 1/q0)); clamped to a finite, non-zero range so adaptation always completes.
+        self.baranyi_q0 = max(BARANYI_Q0_MIN, min(float(baranyi_q0), BARANYI_Q0_MAX))
+        # M4 phenotypic switching traits. persister_switch in [0,1] is the switching propensity (0
+        # disables persistence). The two thresholds are internal-fullness levels: enter (S1) is the
+        # starvation trigger, exit (S2) is the recovery trigger; S2 is kept strictly above S1 so the
+        # enter/exit bands do not overlap and chatter.
+        self.persister_switch = max(0.0, min(float(persister_switch), 1.0))
+        self.persister_enter_thresh = max(0.0, min(float(persister_enter_thresh), 1.0))
+        self.persister_exit_thresh = max(self.persister_enter_thresh + PERSISTER_THRESHOLD_MIN_GAP,
+                                         min(float(persister_exit_thresh), 1.0))
+        # M5 phage/HGT traits, both in [0, 1]. phage_resistance is the heritable initial fraction of
+        # cells born resistant to adsorption; hgt_competence gates contact-dependent horizontal
+        # transfer of resistance (0 disables both donating and receiving).
+        self.phage_resistance = max(0.0, min(float(phage_resistance), 1.0))
+        self.hgt_competence = max(0.0, min(float(hgt_competence), 1.0))
         # Each bacterium gets a random size
         self.members = [Bacterium(self, random.randint(0,800), random.randint(0,600),
                                   size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)))
@@ -369,6 +478,40 @@ class BacteriaSpecies:
         self.history = []         # track population over time
         self.total_births = 0     # overall births
         self.total_deaths = 0     # overall deaths
+
+    def _ratkowsky_sqrt_mu(self, temp_c):
+        """Raw square-root growth term sqrt(mu) of the Ratkowsky (1983) model (unnormalized).
+
+        Equation: sqrt(mu) = b*(T - T_min)*(1 - exp(c*(T - T_max))).
+        Returns 0.0 outside the (T_min, T_max) biokinetic window where no growth occurs.
+        """
+        if temp_c <= self.temp_min or temp_c >= self.temp_max:
+            return 0.0
+        root = (RATKOWSKY_B_SQRT_PER_C * (temp_c - self.temp_min)
+                * (1.0 - math.exp(RATKOWSKY_C_PER_C * (temp_c - self.temp_max))))
+        return root if root > 0.0 else 0.0
+
+    def _compute_temp_sqrt_mu_peak(self):
+        """Locate the maximum of sqrt(mu) across [T_min, T_max] by uniform sampling (one-time)."""
+        peak = 0.0
+        n = RATKOWSKY_NORMALIZATION_SAMPLES
+        span = self.temp_max - self.temp_min
+        for i in range(n + 1):
+            t = self.temp_min + span * (i / n)
+            peak = max(peak, self._ratkowsky_sqrt_mu(t))
+        return peak if peak > 0.0 else 1.0
+
+    def temperature_factor(self, temp_c):
+        """Ratkowsky growth-rate multiplier in [0, 1], normalized to this species' optimum.
+
+        mu(T) ~ sqrt(mu)^2, so the multiplier is (sqrt(mu)/sqrt(mu)_peak)^2. It is 1.0 at the
+        species optimum and 0.0 at/beyond its cardinal T_min and T_max temperatures.
+        """
+        root = self._ratkowsky_sqrt_mu(temp_c)
+        if root <= 0.0:
+            return 0.0
+        ratio = root / self._temp_sqrt_mu_peak
+        return max(0.0, min(1.0, ratio * ratio))
 
     def step(self, env, cap, w, h, food_nodes, dt, viewport_bounds=None, food_hash=None):
         """
@@ -407,19 +550,64 @@ class BacteriaSpecies:
         # Overall environmental fitness [0, 1]
         envf = ph_suit * max(0.0, o2_suit)
 
+        # Temperature kinetics (Ratkowsky): a per-species multiplier in [0, 1] driving growth,
+        # metabolism, uptake, and motility. Kept separate from envf so it can scale per-cell rates.
+        curr_temp = env.get('temperature', DEFAULT_ENV_TEMPERATURE_C)
+        temp_factor = self.temperature_factor(curr_temp)
+
         ds_cx, ds_cy = getattr(self.sim, 'petri_center', (w/2, h/2))[0] if hasattr(self, 'sim') else w/2, getattr(self.sim, 'petri_center', (w/2, h/2))[1] if hasattr(self, 'sim') else h/2
         ds_r = getattr(self.sim, 'petri_radius', math.hypot(w, h)/2 + PETRI_RADIUS_PADDING_UM) if hasattr(self, 'sim') else math.hypot(w, h)/2 + PETRI_RADIUS_PADDING_UM
-        
+        # M5: free-phage field for the lytic cycle. Adsorption, latent countdown, and lysis are all
+        # resolved here per cell so a single tick handles the full SIR transition (S->I->lysed).
+        ecm = getattr(getattr(self, 'sim', None), 'ecm', None)
+
         for b in list(self.members):
-            b.step(food_nodes, bounds=(ds_cx, ds_cy, ds_r), dt=dt, viewport_bounds=viewport_bounds, food_hash=food_hash)
+            b.step(food_nodes, bounds=(ds_cx, ds_cy, ds_r), dt=dt, viewport_bounds=viewport_bounds, food_hash=food_hash, temp_factor=temp_factor)
+
+            # --- M5 Phage predation (lytic SIR cycle) ---
+            phage_lysed = False
+            if ecm is not None:
+                if b.infected:
+                    # Latent (eclipse) period countdown; on expiry the host lyses (Ellis & Delbruck 1939).
+                    b.lysis_timer -= dt
+                    if b.lysis_timer <= 0.0:
+                        deaths.append(b)
+                        phage_lysed = True
+                        # Burst release: progeny virions deposited into the local phage field.
+                        ecm.add(b.x, b.y, DEFAULT_PHAGE_BURST_SIZE * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+                        # Lysed-cell debris returns as labile necromass (no cytosol recovery: hijacked by phage).
+                        cell_volume_um3 = b.base_size ** 3
+                        necromass_pg = cell_volume_um3 * CELL_WET_MASS_PG_PER_UM3 * CELL_DRY_MASS_FRACTION * LABILE_NECROMASS_FRACTION
+                        if necromass_pg > MIN_FOOD_NODE_AMOUNT_PG:
+                            food_nodes.append(FoodNode.acquire().init(b.x, b.y, necromass_pg))
+                elif not b.phage_resistant:
+                    # Mass-action adsorption: P(adsorb) = 1 - exp(-k * [phage] * dt) (Levin et al. 1977).
+                    local_phage = ecm.sample(b.x, b.y, layer='phage') / PHAGE_ECM_UNITS_PER_VIRION
+                    if local_phage > PHAGE_MIN_ADSORBABLE and \
+                            random.random() < 1.0 - math.exp(-DEFAULT_PHAGE_ADSORPTION_RATE * local_phage * dt):
+                        b.infected = True
+                        b.lysis_timer = DEFAULT_PHAGE_LATENT_PERIOD_SEC
+                        # One free virion is removed from the field upon successful adsorption.
+                        ecm.add(b.x, b.y, -PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+            if phage_lysed:
+                # The cell is destroyed this tick; skip its reproduction and senescence trials.
+                continue
+
             # Reproduction trial based on the Verhulst (Logistic) growth model modified by environmental fitness.
             # Reference: Verhulst (1838). dp/dt = r*p*(1 - p/K). Here, `capf` represents the limiting (1 - p/K) term.
-            rep_prob = (self.base_rep * dt) * capf * envf
+            # The Ratkowsky temp_factor multiplies the intrinsic rate r, gating growth to the biokinetic range.
+            # The Baranyi adjustment function alpha(q) = q/(1+q) gates growth during lag: ~0 while the cell
+            # is still adapting (q small) and -> 1 once adapted, reproducing the flat-then-exponential curve.
+            baranyi_alpha = b.q / (1.0 + b.q)
+            rep_prob = (self.base_rep * dt) * capf * envf * temp_factor * baranyi_alpha
             rep_prob = max(0, min(rep_prob, 1))  # Clamp to [0,1]
             
-            new_bacterium = b.attempt_fission(envf, rep_prob, self.rep_thresh, dt)
-            if new_bacterium:
-                births.append(new_bacterium)
+            # M4: dormant persisters halt division entirely until they resuscitate (Lewis 2010).
+            # M5: phage-hijacked (infected) cells cannot divide while the virus commandeers replication.
+            if not b.is_persister and not b.infected:
+                new_bacterium = b.attempt_fission(envf, rep_prob, self.rep_thresh, dt)
+                if new_bacterium:
+                    births.append(new_bacterium)
             
             # Senescence modeled via Gompertz law of mortality: mu(x) = A * e^(alpha * x) + B
             # Reference: Gompertz (1825). Exponential increase in death rate due to intrinsic cellular senescence.
@@ -429,8 +617,11 @@ class BacteriaSpecies:
             # Cap the penalty to avoid overflow probabilities per simulation tick
             age_death_penalty = min(1.0, age_death_penalty)
             
-            # Death trial: extrinsic (environmental toxicity) + intrinsic (Gompertz senescence) + starvation
-            toxic_death_prob = ((1.0 - envf) * ENV_TOXIC_DEATH_RATE_PER_SEC) * dt + age_death_penalty
+            # Death trial: extrinsic (environmental toxicity) + intrinsic (Gompertz senescence) + starvation.
+            # M4: persisters are stress-tolerant, so both the environmental and senescence hazards are
+            # attenuated by the persister resistance factor (Balaban et al. 2004; Lewis 2010).
+            persister_resistance = PERSISTER_RESISTANCE_FACTOR if b.is_persister else 1.0
+            toxic_death_prob = (((1.0 - envf) * ENV_TOXIC_DEATH_RATE_PER_SEC) * dt + age_death_penalty) * persister_resistance
             if b.food_level <= 0 or random.random() < toxic_death_prob:
                 deaths.append(b)
                 if b.food_level >= 0:
@@ -550,13 +741,52 @@ class Simulation:
         for sp in self.species:
             bac_prod_rate = (sp.bacteriocin_production * BACTERIOCIN_PRODUCTION_COST_RATE) * dt
             immunity_mitigation = min(BACTERIOCIN_MAX_IMMUNITY_MITIGATION, sp.immunity_factor * BACTERIOCIN_IMMUNITY_SCALING)
-            
+
+            # M2 cross-feeding gates (computed once per species per tick).
+            # Acetate oxidation is an aerobic, temperature-limited process, so secretion of overflow
+            # acetate (a hallmark of fast aerobic glucose growth) and acetate uptake both scale with
+            # the species' Ratkowsky temperature factor; uptake additionally requires dissolved O2.
+            cf_temp_factor = sp.temperature_factor(self.env.get('temperature', DEFAULT_ENV_TEMPERATURE_C))
+            cf_o2_gate = min(1.0, max(0.0, self.env.get('o2', ATMOSPHERIC_O2_FRACTION)) / AEROBE_O2_SATURATION_LEVEL)
+            cf_secretes = sp.acetate_secretion > 0.0 and cf_temp_factor > 0.0
+            cf_consumes = sp.acetate_uptake > 0.0 and cf_temp_factor > 0.0 and cf_o2_gate > 0.0
+
             for b in sp.members:
                 if b.food_level < 0:
                     continue
                 cx = int(b.x // CELL_SIZE)
                 cy = int(b.y // CELL_SIZE)
-                
+
+                # Reset per-tick acetate consumption before any cross-feeding so the env update only
+                # couples O2/CO2 to acetate actually oxidized this tick.
+                b.last_acetate_consumption_pg = 0.0
+
+                # --- M2 overflow acetate secretion ---
+                # Excrete a fraction of the glucose taken up last tick as acetate (capped by the
+                # 1 glucose -> 2 acetate mass ceiling and by the carbon the cell currently holds).
+                if cf_secretes and b.last_food_uptake_pg > 0.0:
+                    secreted_pg = b.last_food_uptake_pg * sp.acetate_secretion * ACETATE_PER_GLUCOSE_MAX_MASS_RATIO
+                    secreted_pg = min(secreted_pg, max(0.0, b.food_level))
+                    if secreted_pg > 0.0:
+                        b.food_level -= secreted_pg
+                        # Scale pg into ECM grid units so the trace survives the prune floor; inverted on uptake.
+                        self.ecm.add(b.x, b.y, secreted_pg * ACETATE_ECM_UNITS_PER_PG, layer='acetate')
+
+                # --- M2 acetate uptake (cross-feeding) ---
+                # Oxidize locally available acetate as a secondary carbon source, limited by transporter
+                # budget (temperature- and O2-gated), local availability, and remaining storage room.
+                if cf_consumes and b.food_level < b.food_capacity:
+                    available_pg = self.ecm.sample(b.x, b.y, layer='acetate') / ACETATE_ECM_UNITS_PER_PG
+                    if available_pg > 0.0:
+                        budget_pg = b.consumption_speed * sp.acetate_uptake * dt * cf_temp_factor * cf_o2_gate
+                        # Room is expressed in acetate mass: each pg acetate stores ACETATE_ENERGY_YIELD pg glucose-equiv.
+                        room_pg = (b.food_capacity - b.food_level) / ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV
+                        consumed_pg = max(0.0, min(available_pg, budget_pg, room_pg))
+                        if consumed_pg > 0.0:
+                            b.food_level += consumed_pg * ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV
+                            b.last_acetate_consumption_pg = consumed_pg
+                            self.ecm.add(b.x, b.y, -consumed_pg * ACETATE_ECM_UNITS_PER_PG, layer='acetate')
+
                 b_size_sq_dmg = (sp.t6ss_activity * (b.size ** 2) * T6SS_DAMAGE_SCALING_FACTOR) * dt
                 
                 # Bacteriocin Emission (metabolic cost):
@@ -570,7 +800,9 @@ class Simulation:
                 local_bac = self.ecm.sample(b.x, b.y, layer='bac')
                 if local_bac > 0:
                     # Damage scaled by immunity factor acting as competitive inhibitor.
-                    bac_dmg = (local_bac * BACTERIOCIN_DAMAGE_COEFFICIENT) * (1.0 - immunity_mitigation) * dt
+                    # M4: dormant persisters tolerate the antimicrobial dose (Balaban et al. 2004).
+                    persister_resistance = PERSISTER_RESISTANCE_FACTOR if b.is_persister else 1.0
+                    bac_dmg = (local_bac * BACTERIOCIN_DAMAGE_COEFFICIENT) * (1.0 - immunity_mitigation) * persister_resistance * dt
                     b.food_level -= bac_dmg
 
                 # Check 9 surrounding cells for physical contact (T6SS / Predation / Sharing)
@@ -589,6 +821,19 @@ class Simulation:
                             dist_sq = dx**2 + dy**2
                             interact_dist = b.size + other.size + BACTERIA_CONTACT_MARGIN_UM
                             if dist_sq < interact_dist**2:
+                                # --- M5 Horizontal gene transfer (contact-dependent) ---
+                                # A resistant donor transfers the phage-resistance trait to a susceptible
+                                # neighbor by conjugation-like contact (Ochman et al. 2000). Both cells must
+                                # be HGT-competent; transfer follows P = 1 - exp(-k * c_donor * c_recip * dt).
+                                # The recipient inherits the plasmid carriage cost (San Millan & MacLean 2017).
+                                if b.phage_resistant and not other.phage_resistant:
+                                    donor_comp = sp.hgt_competence
+                                    recip_comp = other.species.hgt_competence
+                                    if donor_comp > 0.0 and recip_comp > 0.0:
+                                        hgt_prob = 1.0 - math.exp(-HGT_TRANSFER_RATE_PER_SEC * donor_comp * recip_comp * dt)
+                                        if random.random() < hgt_prob:
+                                            other.phage_resistant = True
+                                            other.metabolic_burden_factor = 1.0 + HGT_METABOLIC_BURDEN
                                 if b.species == other.species:
                                     # Intraspecies cooperation: share food slowly to help starving kin
                                     if b.food_level > b.food_capacity * sp.share_thresh:
@@ -609,6 +854,9 @@ class Simulation:
                                     # Base damage scales with T6SS activity expression and physical area.
                                     immunity_defense = min(T6SS_MAX_IMMUNITY_DEFENSE, (other.species.immunity_factor * other.size) / (b.size + T6SS_IMMUNITY_SIZE_EPSILON_UM))
                                     actual_dmg = b_size_sq_dmg * (1.0 - immunity_defense)
+                                    # M4: dormant persisters tolerate contact-dependent toxin delivery (Lewis 2010).
+                                    if other.is_persister:
+                                        actual_dmg *= PERSISTER_RESISTANCE_FACTOR
                                     other.food_level -= actual_dmg
 
                                     # Phagocytosis (Engulfment): if much larger, instantly consume
@@ -647,7 +895,24 @@ class Simulation:
             amount = random.uniform(*self.drop_range)
             node = FoodNode.acquire().init(x, y, amount)
             self.food_nodes.append(node)
-            
+
+        # --- M5 Phage seeding: Poisson introduction of free virions (epidemic trigger) ---
+        # phage_inflow is the expected number of seed packets per second; each packet deposits a bolus
+        # of virions at a random petri location. Default 0 means no outbreak; a slider can trigger or
+        # halt epidemics live. Poisson rate (lambda * dt) keeps seeding real-time rather than FPS-bound.
+        phage_inflow = max(0.0, float(self.env.get('phage_inflow', DEFAULT_PHAGE_INFLOW)))
+        if phage_inflow > 0.0:
+            expected_packets = phage_inflow * dt
+            packet_count = int(expected_packets)
+            if random.random() < (expected_packets - packet_count):
+                packet_count += 1
+            for _ in range(packet_count):
+                r_p = self.petri_radius * math.sqrt(random.random())
+                th_p = random.random() * 2 * math.pi
+                px = self.petri_center[0] + r_p * math.cos(th_p)
+                py = self.petri_center[1] + r_p * math.sin(th_p)
+                self.ecm.add(px, py, PHAGE_SEED_PACKET_VIRIONS * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+
         to_remove = [n for n in self.food_nodes if n.amount < MIN_FOOD_NODE_AMOUNT_PG]
         for node in to_remove:
             self.food_nodes.remove(node)
@@ -772,6 +1037,18 @@ class Simulation:
                 # Lactic acid strongly drops pH due to highly acidic dissociation equilibrium (pKa 3.86).
                 # Reference: Henderson-Hasselbalch representation inside small buffered environments.
                 acid_production += (lactic_acid_pg / ENV_100_O2_PG) * LACTIC_ACID_PH_EFFECT
+
+            # M2 acetate oxidation gas coupling: C2H4O2 + 2 O2 -> 2 CO2 + 2 H2O.
+            # Acetate cross-feeders consume extra O2 and produce CO2 (and carbonic acid) independent of
+            # the glucose-driven respiration above, so this is summed for every species that ate acetate.
+            total_acetate_pg = sum(getattr(b, 'last_acetate_consumption_pg', 0.0) for b in sp.members)
+            if total_acetate_pg > 0.0:
+                acetate_o2_pg = total_acetate_pg * O2_PER_ACETATE_MASS_RATIO
+                acetate_co2_pg = total_acetate_pg * CO2_PER_ACETATE_MASS_RATIO
+                o2_consumption_fraction += acetate_o2_pg / ENV_100_O2_PG
+                co2_production_fraction += acetate_co2_pg / ENV_100_CO2_PG
+                acid_production += (acetate_co2_pg / ENV_100_CO2_PG) * CARBONIC_ACID_PH_EFFECT
+
 
         self.env['o2'] -= o2_consumption_fraction
         self.env['co2'] += co2_production_fraction

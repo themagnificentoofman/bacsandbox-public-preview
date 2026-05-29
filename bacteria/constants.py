@@ -101,6 +101,96 @@ PH_TOLERANCE_GAUSSIAN_SD = 1.5
 # Aerobic fitness saturates by 10% O2; strict anaerobes are strongly inhibited around 2% O2.
 AEROBE_O2_SATURATION_LEVEL = 0.10
 ANAEROBE_O2_TOXICITY_THRESHOLD = 0.02
+
+# --- Temperature kinetics: Ratkowsky square-root model ---
+# Reference: Ratkowsky, Lowry, McMeekin, Stokes & Chandler (1983), "Model for bacterial
+# culture growth rate throughout the entire biokinetic temperature range", J. Bacteriol.
+# Full (four-parameter) form: sqrt(mu) = b*(T - T_min)*(1 - exp(c*(T - T_max))).
+#   mu       = specific growth rate (here used as a dimensionless rate multiplier after normalization)
+#   T_min    = theoretical minimum temperature below which no growth occurs
+#   T_max    = theoretical maximum temperature above which no growth occurs
+#   b        = slope parameter governing the low-temperature square-root rise
+#   c        = Arrhenius-like steepness of high-temperature thermal inactivation
+# Because the simulation uses the curve NORMALIZED to each species' own optimum, b cancels
+# out of the multiplier; it is retained for documentation and possible absolute-rate use.
+# Default b/c approximate mesophilic (E. coli-like) growth kinetics from the 1983 dataset.
+RATKOWSKY_B_SQRT_PER_C = 0.0410      # sqrt(rate) slope per degC; mesophile literature ~0.035-0.041
+RATKOWSKY_C_PER_C = 0.161            # high-temperature inactivation steepness per degC (E. coli-like)
+# Default cardinal temperatures: E. coli grows ~4-49 degC; defaults bracket a mesophile range.
+DEFAULT_TEMP_MIN_C = 4.0             # theoretical minimum growth temperature (degC)
+DEFAULT_TEMP_MAX_C = 47.0            # theoretical maximum growth temperature (degC)
+# Default incubation temperature; 37 degC is standard human/host body temperature for E. coli.
+DEFAULT_ENV_TEMPERATURE_C = 37.0
+# Environment temperature slider bounds (degC); spans deep-freeze to autoclave-adjacent extremes.
+ENV_TEMPERATURE_MIN_C = 0.0
+ENV_TEMPERATURE_MAX_C = 60.0
+# One-time per-species sample count used to locate the Ratkowsky growth optimum for normalization.
+RATKOWSKY_NORMALIZATION_SAMPLES = 200
+
+# --- Lag phase: Baranyi & Roberts (1994) dynamic physiological-state model ---
+# A freshly inoculated cell carries an internal "work to be done" before it can divide, captured by a
+# dimensionless physiological state q. The adjustment function alpha(q) = q / (1 + q) multiplies the
+# growth rate: alpha ~ 0 during lag (q small), rising to 1 once the cell has adapted (q large).
+# Reference: Baranyi & Roberts (1994), "A dynamic approach to predicting bacterial growth in food",
+# Int. J. Food Microbiol. 23:277-294.
+DEFAULT_BARANYI_Q0 = 0.05  # initial physiological state of fresh inoculum; h0 = ln(1 + 1/q0) ~ 3.04 (moderate lag)
+# q grows as dq/dt = mu_max * q (here mu_max is the species' temperature-scaled specific growth rate).
+# Cap q to keep alpha numerically at ~1 without risking float overflow on long runs; adaptation is
+# biologically complete (alpha > 0.999999) far below this bound.
+BARANYI_Q_STATE_MAX = 1.0e6
+BARANYI_Q0_MIN = 1.0e-4  # floor so lag is finite (h0 <= ln(1 + 1e4) ~ 9.2); zero q0 would never adapt
+BARANYI_Q0_MAX = 1.0e3   # ceiling: high q0 means effectively no lag (alpha starts near 1)
+
+# --- Phenotypic switching: persister / proliferative bet-hedging (M4) ---
+# A subpopulation stochastically switches into a dormant, stress-tolerant "persister" state that
+# halts division, minimizes maintenance metabolism, and resists antimicrobials and senescence. The
+# switch is reversible: persisters resuscitate when nutrients return. Switching is governed by two
+# fullness thresholds (a starvation trigger S1 and a recovery trigger S2) and per-second rates.
+# References: Balaban, Merrin, Chait, Kowalik & Leibler (2004), "Bacterial Persistence as a
+# Phenotypic Switch", Science 305:1622-1625; Lewis (2010), "Persister Cells", Annu. Rev. Microbiol.
+# 64:357-372. Rates are sim-accelerated (the simulation runs in real seconds, not hours) so that the
+# bet-hedging dynamics are observable within a session while preserving the relative ordering of the
+# spontaneous, stress-induced, and resuscitation pathways.
+DEFAULT_PERSISTER_SWITCH = 0.0       # per-species switching propensity in [0,1]; 0 disables persistence (pre-M4 behaviour)
+DEFAULT_PERSISTER_ENTER_THRESH = 0.15  # S1: internal fullness below which starvation-induced switching engages
+DEFAULT_PERSISTER_EXIT_THRESH = 0.50   # S2: internal fullness above which persisters resuscitate to proliferative
+PERSISTER_SPONTANEOUS_SWITCH_RATE_PER_SEC = 0.002  # baseline stochastic normal->persister (bet-hedging) rate
+PERSISTER_STRESS_SWITCH_RATE_PER_SEC = 0.2         # starvation-induced normal->persister rate (stringent/SOS response)
+PERSISTER_WAKE_RATE_PER_SEC = 0.2                  # nutrient-triggered persister->normal resuscitation rate
+PERSISTER_SPONTANEOUS_WAKE_RATE_PER_SEC = 0.005    # baseline stochastic persister->normal reversion rate
+PERSISTER_METABOLIC_FACTOR = 0.1     # dormant maintenance burn as a fraction of basal metabolism (Lewis 2010: dormant, not dead)
+PERSISTER_RESISTANCE_FACTOR = 0.1    # incoming bacteriocin/T6SS/senescence hazard scaled to 10% (~10x tolerance)
+PERSISTER_THRESHOLD_MIN_GAP = 0.05   # minimum S2 - S1 separation so enter/exit bands cannot overlap and chatter
+PERSISTER_RING_COLOR = (40, 40, 50)  # dark desaturated outline marking dormant persister cells in the renderer
+
+# --- Lytic bacteriophage predation + horizontal gene transfer (M5) ---
+# Free virions are tracked as a diffusible ECM field. Susceptible cells adsorb phage by mass action,
+# enter a latent (eclipse) period, then lyse, releasing a burst of progeny virions. A heritable
+# resistant subpopulation (arising by rare mutation or by horizontal transfer) survives the crash and
+# rebounds, producing the classic predator-prey / SIR boom-bust dynamics. References: Ellis & Delbruck
+# (1939), "The Growth of Bacteriophage", J. Gen. Physiol. 22:365-384 (one-step growth: latent period
+# and burst size); Levin, Stewart & Chao (1977), "Resource-Limited Growth, Competition, and Predation:
+# A Model and Experimental Studies with Bacteria and Bacteriophage", Am. Nat. 111:3-24 (mass-action
+# adsorption and predator-prey coupling); Ochman, Lawrence & Groisman (2000), "Lateral gene transfer
+# and the nature of bacterial innovation", Nature 405:299-304 (HGT). Plasmid/resistance carriage cost:
+# San Millan & MacLean (2017), "Fitness Costs of Plasmids", Microbiol. Spectr. 5(5). Rates are
+# sim-accelerated (real seconds, not the ~20-40 min latent periods of nature) for observable dynamics.
+ECM_PHAGE_DIFFUSION_UM2_S = 500.0      # virion diffusion coefficient; lower than small solutes (larger particles)
+ECM_PHAGE_DECAY_S = 0.02               # virion inactivation (loss of infectivity) rate per second
+PHAGE_ECM_UNITS_PER_VIRION = 1.0       # ECM grid units per virion; kept O(1) so a single adsorption is meaningful
+DEFAULT_PHAGE_ADSORPTION_RATE = 0.02   # mass-action adsorption rate constant per virion-unit per second
+DEFAULT_PHAGE_LATENT_PERIOD_SEC = 3.0  # eclipse + latent period before lysis (sim-accelerated)
+DEFAULT_PHAGE_BURST_SIZE = 20.0        # progeny virions released per lysed cell (lytic burst, scaled from ~50-200)
+DEFAULT_PHAGE_INFLOW = 0.0             # global free-phage introduction rate (seed packets/sec); 0 = no outbreak
+PHAGE_SEED_PACKET_VIRIONS = 10.0       # virions per introduced seed packet (enough to exceed the adsorbable floor)
+PHAGE_MIN_ADSORBABLE = 1.0e-3          # local phage below this (= ECM prune floor) is negligible for adsorption
+PHAGE_RESISTANCE_MUTATION_RATE = 0.001 # spontaneous susceptible->resistant mutation probability per division
+DEFAULT_PHAGE_RESISTANCE = 0.0         # per-species initial resistant fraction in [0,1] (0 = fully susceptible)
+DEFAULT_HGT_COMPETENCE = 0.0           # per-species HGT donate/receive competence in [0,1]; 0 disables transfer
+HGT_TRANSFER_RATE_PER_SEC = 0.1        # contact-dependent horizontal transfer rate constant (conjugation-like)
+HGT_METABOLIC_BURDEN = 0.2             # fractional rise in basal metabolism from carrying the transferred plasmid
+PHAGE_INFECTED_RING_COLOR = (255, 140, 0)  # orange outline marking phage-infected (lysing) cells
+PHAGE_RESISTANT_RING_COLOR = (0, 200, 220)  # cyan outline marking phage-resistant cells
 # Toxic death under poor environmental fitness remains a low per-second background hazard.
 ENV_TOXIC_DEATH_RATE_PER_SEC = 0.05
 
@@ -154,6 +244,33 @@ ECM_BAC_DECAY_S = 0.00578
 ECM_MIN_CONCENTRATION = 1.0e-3
 # 20 um ECM cells keep explicit diffusion stable at interactive tick rates while preserving local gradients.
 ECM_CELL_SIZE_UM = 20
+
+# --- Cross-feeding metabolite: acetate overflow (Wolfe 2005, "The Acetate Switch", MMBR 69:12-50) ---
+# During fast aerobic growth on glucose, E. coli excretes overflow acetate; other taxa oxidize it as a
+# secondary carbon source. We model acetate as a third diffusible ECM layer linking producers to consumers.
+ACETATE_MOLAR_MASS_G = 60.05  # acetic acid / acetate, g/mol (CH3COOH)
+# Overflow upper bound: 1 glucose can be split into 2 acetate by mass (glucose -> 2 acetate, ignoring CO2 loss).
+ACETATE_PER_GLUCOSE_MAX_MASS_RATIO = (2.0 * ACETATE_MOLAR_MASS_G) / GLUCOSE_MOLAR_MASS_G  # ~0.6667 g acetate / g glucose
+# ATP yields set the relative energy value of acetate vs glucose so cross-feeders gain less per pg.
+GLUCOSE_AEROBIC_ATP_PER_MOL = 32.0  # ~30-32 ATP/glucose, full aerobic oxidation (Rich 2003, Biochem Soc Trans 31:1095)
+ACETATE_AEROBIC_ATP_PER_MOL = 10.0  # ~10 ATP/acetate via acetyl-CoA -> TCA + ETC
+# Energy per unit mass relative to glucose: (ATP/g acetate) / (ATP/g glucose).
+ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV = (
+    (ACETATE_AEROBIC_ATP_PER_MOL / ACETATE_MOLAR_MASS_G)
+    / (GLUCOSE_AEROBIC_ATP_PER_MOL / GLUCOSE_MOLAR_MASS_G)
+)  # ~0.9376 glucose-energy-equivalent per pg acetate consumed
+# Acetate oxidation stoichiometry: C2H4O2 + 2 O2 -> 2 CO2 + 2 H2O.
+O2_PER_ACETATE_MASS_RATIO = 64.0 / ACETATE_MOLAR_MASS_G   # 2 mol O2 (64.0 g) per mol acetate
+CO2_PER_ACETATE_MASS_RATIO = 88.02 / ACETATE_MOLAR_MASS_G  # 2 mol CO2 (88.02 g) per mol acetate
+# Acetate is a small ion that diffuses quickly in water and washes out slowly by dilution.
+ECM_ACETATE_DIFFUSION_UM2_S = 1000.0  # ~1.09e3 um^2/s aqueous acetate self-diffusion (Vitagliano & Lyons 1956)
+ECM_ACETATE_DECAY_S = 0.001  # slow abiotic dilution/washout half-life
+# Picogram acetate is tiny; scale into ECM grid units so it survives the ECM_MIN_CONCENTRATION prune floor.
+# The same factor is inverted on uptake so secreted/consumed mass is conserved.
+ACETATE_ECM_UNITS_PER_PG = 100.0
+# Backward-compatible defaults: 0 secretion and 0 uptake reproduce pre-M2 behaviour exactly.
+DEFAULT_ACETATE_SECRETION = 0.0
+DEFAULT_ACETATE_UPTAKE = 0.0
 
 # Spatial hash cell sizes balance local lookup speed with bacterial interaction radii.
 FOOD_SPATIAL_HASH_CELL_SIZE_UM = 50

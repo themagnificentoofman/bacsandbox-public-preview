@@ -70,7 +70,17 @@ class App:
             'share_thresh': 'Min nutrient fullness to share (0-1)',
             'predation_thresh': 'Max nutrient fullness to predate (0-1)',
             'base_size': 'Base size (\u03bcm, default 1.0)',
-            'sensor_radius': 'Nutrient detection radius (\u03bcm, default 200.0)'
+            'sensor_radius': 'Nutrient detection radius (\u03bcm, default 200.0)',
+            'temp_min': 'Ratkowsky min growth temp T_min (\u00b0C)',
+            'temp_max': 'Ratkowsky max growth temp T_max (\u00b0C)',
+            'acetate_secretion': 'Overflow acetate excreted per glucose uptake (0-1)',
+            'acetate_uptake': 'Acetate cross-feeding uptake activity (0-1, aerobic)',
+            'baranyi_q0': 'Baranyi initial physiological state q0 (low=long lag)',
+            'persister_switch': 'Persister switching propensity (0-1, 0=disabled)',
+            'persister_enter_thresh': 'Fullness S1 below which starvation triggers persistence (0-1)',
+            'persister_exit_thresh': 'Fullness S2 above which persisters resuscitate (0-1)',
+            'phage_resistance': 'Initial fraction of cells born phage-resistant (0-1)',
+            'hgt_competence': 'Horizontal gene transfer competence (0-1, 0=disabled)'
         })
         if 'food_capacity' not in self.dm.fieldnames:
             self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor']
@@ -80,6 +90,16 @@ class App:
             self.dm.fieldnames += ['predation_thresh']
         if 'base_size' not in self.dm.fieldnames:
             self.dm.fieldnames += ['base_size', 'sensor_radius']
+        if 'temp_min' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['temp_min', 'temp_max']
+        if 'acetate_secretion' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['acetate_secretion', 'acetate_uptake']
+        if 'baranyi_q0' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['baranyi_q0']
+        if 'persister_switch' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['persister_switch', 'persister_enter_thresh', 'persister_exit_thresh']
+        if 'phage_resistance' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['phage_resistance', 'hgt_competence']
 
         # Undo and redo stacks for editing species table
         self.undo_stack = []
@@ -109,7 +129,17 @@ class App:
             'share_thresh': 'ShrT',
             'predation_thresh': 'PredT',
             'base_size': 'Size',
-            'sensor_radius': 'SensR'
+            'sensor_radius': 'SensR',
+            'temp_min': 'Tmin',
+            'temp_max': 'Tmax',
+            'acetate_secretion': 'AcSec',
+            'acetate_uptake': 'AcUp',
+            'baranyi_q0': 'q0',
+            'persister_switch': 'PSw',
+            'persister_enter_thresh': 'PEn',
+            'persister_exit_thresh': 'PEx',
+            'phage_resistance': 'PhR',
+            'hgt_competence': 'HGT'
         }
 
         # Add scroll state for species tab
@@ -118,6 +148,15 @@ class App:
         self.species_max_visible_cols = max(1, (self.w - 100) // 120)
         self.species_max_visible_rows = max(1, (self.h - 180) // 30)
         self.species_scrollbar_thickness = 16
+        # Interactive scrollbar drag state for the species tab.
+        # _species_vbar / _species_hbar cache the track geometry computed each
+        # frame in draw_species_tab() so MOUSEBUTTONDOWN / MOUSEMOTION can hit-test
+        # the thumb. species_dragging is 'v'/'h'/None; species_drag_grab is the
+        # pixel offset of the cursor within the thumb at grab time.
+        self._species_vbar = None
+        self._species_hbar = None
+        self.species_dragging = None
+        self.species_drag_grab = 0
 
         # Add scroll state for stats tab
         self.stats_scroll_y = 0
@@ -136,14 +175,20 @@ class App:
             'o2': 'O₂ level (0.0 to 1.0)',
             'co2': 'CO₂ level (0.0 to 1.0)',
             'ph': 'Environment pH (0.0 to 14.0)',
+            'temperature': 'Environment temperature (°C; drives Ratkowsky growth kinetics)',
             'capacity': 'Max bacteria pop. (≥ 0)',
             'drop_frequency': 'Expected nutrient clusters per second (0 to 100)',
             'drop_range_min': 'Min nutrient drop amount (>= 1)',
-            'drop_range_max': 'Max nutrient drop amount (>= drop_range_min)'
+            'drop_range_max': 'Max nutrient drop amount (>= drop_range_min)',
+            'phage_inflow': 'Free-phage seed packets per second (0 = no outbreak)'
         }
         self.show_globals_desc = False
         self.globals_desc_btn = Button((self.w - 200, self.h - 60, 180, 30), 'Show Desc', self.toggle_globals_desc)
         self.globals_desc_dialog_rect = None
+        # Canonical Globals-tab row order. Defined once so the renderer, mouse
+        # picker, and keyboard navigation share an identical index->key mapping;
+        # any divergence would let a cell edit write to the wrong global.
+        self.GLOBALS_ENV_KEYS = ['o2', 'co2', 'ph', 'temperature', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max', 'phage_inflow']
 
         # Load env config as default env
         loaded_env = load_env_config()
@@ -151,10 +196,12 @@ class App:
             'o2': 0.8,
             'co2': 0.2,
             'ph': NEUTRAL_PH,
+            'temperature': DEFAULT_ENV_TEMPERATURE_C,
             'drop_frequency': 5,
             'drop_range_min': 2,
             'drop_range_max': 8,
-            'capacity': 500
+            'capacity': 500,
+            'phage_inflow': 0
         }
         if loaded_env:
             self.default_env.update(loaded_env)
@@ -200,18 +247,22 @@ class App:
         slider_x = self.w - 220  # 200 width + 20 margin
         slider_y_start = 60      # Increased from 20 to 60 for visibility
         slider_gap = 40
-        
-        # Make a deep copy for live environment
-        self.active_env = self.default_env.copy()
+
+        # NOTE: self.active_env was already created by init_sim() above and is the
+        # SAME dict instance held by self.sim.env. Sliders bind to it (late-bound
+        # lambda), so edits propagate live to the running simulation. Do NOT re-copy
+        # it here, or the sliders would mutate an orphan dict the sim never reads.
 
         # Add new sliders for drop frequency and drop range
         self.sliders = [
             Slider((slider_x, slider_y_start + 0*slider_gap, 200, 10), 'O2', 'o2', lambda: self.active_env),
             Slider((slider_x, slider_y_start + 1*slider_gap, 200, 10), 'CO2', 'co2', lambda: self.active_env),
             Slider((slider_x, slider_y_start + 2*slider_gap, 200, 10), 'pH', 'ph', lambda: self.active_env, minval=0, maxval=14),
-            Slider((slider_x, slider_y_start + 3*slider_gap, 200, 10), 'Drop Freq', 'drop_frequency', lambda: self.active_env, minval=0, maxval=100, is_int=True),
-            Slider((slider_x, slider_y_start + 4*slider_gap, 200, 10), 'Drop Range Min', 'drop_range_min', lambda: self.active_env, minval=1, maxval=20, is_int=True),
-            Slider((slider_x, slider_y_start + 5*slider_gap, 200, 10), 'Drop Range Max', 'drop_range_max', lambda: self.active_env, minval=1, maxval=50, is_int=True)
+            Slider((slider_x, slider_y_start + 3*slider_gap, 200, 10), 'Temp °C', 'temperature', lambda: self.active_env, minval=ENV_TEMPERATURE_MIN_C, maxval=ENV_TEMPERATURE_MAX_C),
+            Slider((slider_x, slider_y_start + 4*slider_gap, 200, 10), 'Drop Freq', 'drop_frequency', lambda: self.active_env, minval=0, maxval=100, is_int=True),
+            Slider((slider_x, slider_y_start + 5*slider_gap, 200, 10), 'Drop Range Min', 'drop_range_min', lambda: self.active_env, minval=1, maxval=20, is_int=True),
+            Slider((slider_x, slider_y_start + 6*slider_gap, 200, 10), 'Drop Range Max', 'drop_range_max', lambda: self.active_env, minval=1, maxval=50, is_int=True),
+            Slider((slider_x, slider_y_start + 7*slider_gap, 200, 10), 'Phage Inflow', 'phage_inflow', lambda: self.active_env, minval=0, maxval=50, is_int=True)
         ]
         self.editors = []  # active cell editors
         self.selected_row = 0
@@ -448,7 +499,17 @@ class App:
                     share_thresh=float(d.get('share_thresh') or 0.6),
                     predation_thresh=float(d.get('predation_thresh') or 0.9),
                     base_size=float(d.get('base_size') or 1.0),
-                    sensor_radius=float(d.get('sensor_radius') or 200.0)
+                    sensor_radius=float(d.get('sensor_radius') or 200.0),
+                    temp_min=float(d.get('temp_min') or 4.0),
+                    temp_max=float(d.get('temp_max') or 47.0),
+                    acetate_secretion=float(d.get('acetate_secretion') or 0.0),
+                    acetate_uptake=float(d.get('acetate_uptake') or 0.0),
+                    baranyi_q0=float(d.get('baranyi_q0') or DEFAULT_BARANYI_Q0),
+                    persister_switch=float(d.get('persister_switch') or DEFAULT_PERSISTER_SWITCH),
+                    persister_enter_thresh=float(d.get('persister_enter_thresh') or DEFAULT_PERSISTER_ENTER_THRESH),
+                    persister_exit_thresh=float(d.get('persister_exit_thresh') or DEFAULT_PERSISTER_EXIT_THRESH),
+                    phage_resistance=float(d.get('phage_resistance') or DEFAULT_PHAGE_RESISTANCE),
+                    hgt_competence=float(d.get('hgt_competence') or DEFAULT_HGT_COMPETENCE)
                 ))
             except Exception:
                 continue
@@ -458,7 +519,14 @@ class App:
                 food_capacity=10, metabolic_rate=0.1, consumption_speed=1.0,
                 greediness=0.5, t6ss_activity=0.5, bacteriocin_production=0.5,
                 immunity_factor=0.5, rep_thresh=0.8, share_thresh=0.6,
-                predation_thresh=0.9, base_size=1.0, sensor_radius=200.0
+                predation_thresh=0.9, base_size=1.0, sensor_radius=200.0,
+                temp_min=4.0, temp_max=47.0,
+                acetate_secretion=0.0, acetate_uptake=0.0, baranyi_q0=DEFAULT_BARANYI_Q0,
+                persister_switch=DEFAULT_PERSISTER_SWITCH,
+                persister_enter_thresh=DEFAULT_PERSISTER_ENTER_THRESH,
+                persister_exit_thresh=DEFAULT_PERSISTER_EXIT_THRESH,
+                phage_resistance=DEFAULT_PHAGE_RESISTANCE,
+                hgt_competence=DEFAULT_HGT_COMPETENCE
             ))
             
         self.active_env = self.default_env.copy()
@@ -480,7 +548,9 @@ class App:
             'share_thresh': '0.6',
             'predation_thresh': '0.9',
             'base_size': '1.0',
-            'sensor_radius': '200.0'
+            'sensor_radius': '200.0',
+            'temp_min': '4.0',
+            'temp_max': '47.0'
         })
         idx = len(self.dm.species)
         self.dm.species.append(blank)
@@ -648,7 +718,7 @@ class App:
     def draw_globals_tab(self):
         start_x, start_y = 50, 100
         cell_w, cell_h = 240, 30
-        env_keys = ['o2', 'co2', 'ph', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max']
+        env_keys = self.GLOBALS_ENV_KEYS
         
         # Determine current target
         # Show default parameters, not live environment,
@@ -716,7 +786,7 @@ class App:
     def handle_globals_keys(self, e):
         if self.editors:
             return
-        keys = ['o2', 'co2', 'ph', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max']
+        keys = self.GLOBALS_ENV_KEYS
         if e.key == K_DOWN and self.selected_row < len(keys)-1:
             self.selected_row += 1
         if e.key == K_UP and self.selected_row > 0:
@@ -764,24 +834,38 @@ class App:
                 if not (self.editors and self.editors[0].row_idx == i and self.editors[0].col_idx == j):
                     txt = constants.FONT.render(str(row[col]), True, WHITE)
                     self.screen.blit(txt, (rect[0] + 5, rect[1] + 5))
-        # Draw horizontal scrollbar if needed
+        # Draw horizontal scrollbar if needed (wheel- and drag-interactive)
+        self._species_hbar = None
         if total_cols > max_cols:
             bar_w = max_cols * cell_w
             bar_x = start_x
             bar_y = start_y + max_rows * cell_h
             pygame.draw.rect(self.screen, (80,80,80), (bar_x, bar_y, bar_w, self.species_scrollbar_thickness), border_radius=6)
             thumb_w = max(bar_w * max_cols / total_cols, 40)
-            thumb_x = bar_x + (col_offset / (total_cols - max_cols)) * (bar_w - thumb_w) if total_cols > max_cols else bar_x
+            thumb_x = bar_x + (col_offset / (total_cols - max_cols)) * (bar_w - thumb_w)
             pygame.draw.rect(self.screen, WHITE, (thumb_x, bar_y+2, thumb_w, self.species_scrollbar_thickness-4), border_radius=6)
-        # Draw vertical scrollbar if needed
+            # Cache geometry so mouse-drag handlers can hit-test the thumb and
+            # map cursor position back to a discrete column offset.
+            self._species_hbar = {
+                'track': pygame.Rect(bar_x, bar_y, bar_w, self.species_scrollbar_thickness),
+                'bar_start': bar_x, 'bar_len': bar_w, 'thumb_len': thumb_w,
+                'thumb_pos': thumb_x, 'scrollable': total_cols - max_cols,
+            }
+        # Draw vertical scrollbar if needed (wheel- and drag-interactive)
+        self._species_vbar = None
         if total_rows > max_rows:
             bar_h = max_rows * cell_h
             bar_x = start_x + max_cols * cell_w
             bar_y = start_y
             pygame.draw.rect(self.screen, (80,80,80), (bar_x, bar_y, self.species_scrollbar_thickness, bar_h), border_radius=6)
             thumb_h = max(bar_h * max_rows / total_rows, 40)
-            thumb_y = bar_y + (row_offset / (total_rows - max_rows)) * (bar_h - thumb_h) if total_rows > max_rows else bar_y
-            pygame.draw.rect(self.screen, WHITE, (bar_x+2, thumb_y, self.stats_scrollbar_thickness-4, thumb_h), border_radius=6)
+            thumb_y = bar_y + (row_offset / (total_rows - max_rows)) * (bar_h - thumb_h)
+            pygame.draw.rect(self.screen, WHITE, (bar_x+2, thumb_y, self.species_scrollbar_thickness-4, thumb_h), border_radius=6)
+            self._species_vbar = {
+                'track': pygame.Rect(bar_x, bar_y, self.species_scrollbar_thickness, bar_h),
+                'bar_start': bar_y, 'bar_len': bar_h, 'thumb_len': thumb_h,
+                'thumb_pos': thumb_y, 'scrollable': total_rows - max_rows,
+            }
         # Draw show/hide descriptions button in bottom right
         self.species_desc_btn.rect.x = self.w - 200
         self.species_desc_btn.rect.y = self.h - 60
@@ -972,7 +1056,11 @@ class App:
                         if self.species_desc_btn.rect.collidepoint(e.pos):
                             self.species_desc_btn.click(e.pos)
                             continue
-                        if self.editors:
+                        # Scrollbar drag takes priority over cell selection so a
+                        # click on the thumb/track never edits an underlying cell.
+                        if self._start_species_scrollbar_drag(e.pos):
+                            pass
+                        elif self.editors:
                             self.editors[0].handle_mouse_down(e.pos)
                         else:
                             self.handle_mouse_species(e.pos)
@@ -993,10 +1081,14 @@ class App:
                     self.grid_dragging = False
                     self.grid_drag_start = None
                     self.grid_center_start = None
+                    self.species_dragging = None
                 if e.type == MOUSEMOTION:
                     mx, my = e.pos
                     if self.dragged_slider:
                         self.dragged_slider.handle_mouse_motion(e.pos)
+                    # Species-tab scrollbar drag
+                    if self.species_dragging and self.tab == 'species':
+                        self._update_species_scroll_from_drag(e.pos)
                     # Minimap drag
                     if self.minimap_dragging and self.tab == 'grid':
                         gx, gy = self.minimap_to_grid(mx, my)
@@ -1103,6 +1195,8 @@ class App:
                                     if not 0.0 <= num <= 1.0: raise ValueError
                                 elif col == 'ph':
                                     if not 0.0 <= num <= 14.0: raise ValueError
+                                elif col == 'temperature':
+                                    if not ENV_TEMPERATURE_MIN_C <= num <= ENV_TEMPERATURE_MAX_C: raise ValueError
                                 elif col == 'capacity':
                                     num = int(num)
                                     if num < 0: raise ValueError
@@ -1115,6 +1209,9 @@ class App:
                                 elif col == 'drop_range_max':
                                     num = int(num)
                                     if num < 1: raise ValueError
+                                elif col == 'phage_inflow':
+                                    num = int(num)
+                                    if num < 0: raise ValueError
                                 
                                 if str(old_val) != str(num):
                                     self.global_undo_stack.append({'action': 'cell_edit', 'col': col, 'old': old_val, 'new': num})
@@ -1160,7 +1257,7 @@ class App:
                                         num = float(new_val)
                                         if not 0 <= num <= 14:
                                             raise ValueError
-                                    elif col in ['greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh']:
+                                    elif col in ['greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'acetate_secretion', 'acetate_uptake', 'persister_switch', 'persister_enter_thresh', 'persister_exit_thresh', 'phage_resistance', 'hgt_competence']:
                                         num = float(new_val)
                                         if not 0 <= num <= 1:
                                             raise ValueError
@@ -1183,6 +1280,22 @@ class App:
                                     elif col == 'sensor_radius':
                                         num = float(new_val)
                                         if num < 0:
+                                            raise ValueError
+                                    elif col in ['temp_min', 'temp_max']:
+                                        # Ratkowsky cardinal temperatures in °C. Parse to reject
+                                        # non-numeric text (which would otherwise crash init_sim's
+                                        # float() conversion). Cardinal temps may be negative
+                                        # (psychrophiles) so no fixed range is imposed; core_sim
+                                        # clamps temp_max to stay strictly above temp_min.
+                                        num = float(new_val)
+                                        if not math.isfinite(num):
+                                            raise ValueError
+                                    elif col == 'baranyi_q0':
+                                        # Baranyi initial physiological state q0 (dimensionless, > 0).
+                                        # Lag time h0 = ln(1 + 1/q0); core_sim clamps to a finite,
+                                        # non-zero range so adaptation always completes.
+                                        num = float(new_val)
+                                        if not math.isfinite(num) or num <= 0:
                                             raise ValueError
                                     # apply change if valid
                                     if str(old_val) != str(new_val):
@@ -1217,8 +1330,10 @@ class App:
                             total_cols = len(self.dm.fieldnames)
                             max_cols = self.species_max_visible_cols
                             self.species_scroll_x = max(0, min(self.species_scroll_x - e.x, max(0, total_cols - max_cols)))
-                    # Mouse drag scrollbars
-                    # TODO: Add mouse drag logic for scrollbars
+                    # Mouse-drag handling lives in the MOUSEBUTTONDOWN /
+                    # MOUSEMOTION / MOUSEBUTTONUP blocks below via
+                    # _start_species_scrollbar_drag() and
+                    # _update_species_scroll_from_drag().
                 # --- Stats tab scroll handling ---
                 if self.tab == 'stats':
                     if e.type == MOUSEWHEEL:
@@ -1291,6 +1406,17 @@ class App:
                             if 0 <= sx < self.w and 0 <= sy < self.h:
                                 radius = max(1, int(4 * self.zoom * b.size))
                                 pygame.draw.circle(self.screen, sp.color, (int(sx), int(sy)), radius)
+                                # M4: mark dormant persisters with a desaturated dark outline ring so
+                                # the stress-tolerant subpopulation is visually distinct from active cells.
+                                if getattr(b, 'is_persister', False):
+                                    pygame.draw.circle(self.screen, PERSISTER_RING_COLOR, (int(sx), int(sy)), radius, max(1, int(self.zoom)))
+                                # M5: phage states. Infected (lysing) cells get an orange ring (visual
+                                # priority, transient), otherwise resistant cells get a cyan ring so the
+                                # surviving subpopulation that drives the rebound is distinguishable.
+                                if getattr(b, 'infected', False):
+                                    pygame.draw.circle(self.screen, PHAGE_INFECTED_RING_COLOR, (int(sx), int(sy)), radius, max(1, int(self.zoom)))
+                                elif getattr(b, 'phage_resistant', False):
+                                    pygame.draw.circle(self.screen, PHAGE_RESISTANT_RING_COLOR, (int(sx), int(sy)), radius, max(1, int(self.zoom)))
                     self.draw_scale_indicator()
                 
                     # --- HOVER TOOLTIP ---
@@ -1551,13 +1677,69 @@ class App:
         self.species_desc_btn.rect.x = self.w - 200
         self.species_desc_btn.rect.y = self.h - 60
 
+    def _start_species_scrollbar_drag(self, pos):
+        """Begin dragging a species-tab scrollbar thumb if ``pos`` lands on a
+        track. Grabbing the thumb drags it directly; clicking bare track centres
+        the thumb on the cursor. Returns True when a scrollbar drag was started
+        (so the caller skips cell-selection)."""
+        mx, my = pos
+        vbar = getattr(self, '_species_vbar', None)
+        hbar = getattr(self, '_species_hbar', None)
+        if vbar and vbar['track'].collidepoint(mx, my):
+            if vbar['thumb_pos'] <= my <= vbar['thumb_pos'] + vbar['thumb_len']:
+                self.species_drag_grab = my - vbar['thumb_pos']
+            else:
+                self.species_drag_grab = vbar['thumb_len'] / 2  # centre thumb on click
+            self.species_dragging = 'v'
+            self._update_species_scroll_from_drag(pos)
+            return True
+        if hbar and hbar['track'].collidepoint(mx, my):
+            if hbar['thumb_pos'] <= mx <= hbar['thumb_pos'] + hbar['thumb_len']:
+                self.species_drag_grab = mx - hbar['thumb_pos']
+            else:
+                self.species_drag_grab = hbar['thumb_len'] / 2  # centre thumb on click
+            self.species_dragging = 'h'
+            self._update_species_scroll_from_drag(pos)
+            return True
+        return False
+
+    def _update_species_scroll_from_drag(self, pos):
+        """Map the dragged thumb position to a discrete row/column offset.
+
+        The fractional thumb travel (cursor minus grab offset, relative to the
+        usable track length ``bar_len - thumb_len``) is scaled by the number of
+        scrollable rows/columns and rounded to the nearest integer offset."""
+        mx, my = pos
+        if self.species_dragging == 'v':
+            bar = getattr(self, '_species_vbar', None)
+            if not bar:
+                return
+            travel = bar['bar_len'] - bar['thumb_len']
+            if travel <= 0:
+                self.species_scroll_y = 0
+                return
+            frac = (my - self.species_drag_grab - bar['bar_start']) / travel
+            frac = max(0.0, min(1.0, frac))
+            self.species_scroll_y = int(round(frac * bar['scrollable']))
+        elif self.species_dragging == 'h':
+            bar = getattr(self, '_species_hbar', None)
+            if not bar:
+                return
+            travel = bar['bar_len'] - bar['thumb_len']
+            if travel <= 0:
+                self.species_scroll_x = 0
+                return
+            frac = (mx - self.species_drag_grab - bar['bar_start']) / travel
+            frac = max(0.0, min(1.0, frac))
+            self.species_scroll_x = int(round(frac * bar['scrollable']))
+
     def handle_mouse_globals(self, pos):
         """Select globals table cell on mouse click."""
         if self.editors:
             return
         start_x, start_y = 50, 100
         cell_w, cell_h = 240, 30
-        env_keys = ['o2', 'co2', 'ph', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max']
+        env_keys = self.GLOBALS_ENV_KEYS
         
         for i in range(len(env_keys)):
             rect = pygame.Rect(start_x + 200, start_y + i*cell_h, cell_w, cell_h)
