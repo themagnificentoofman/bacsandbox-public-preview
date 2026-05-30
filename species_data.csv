@@ -1,4 +1,4 @@
-name,init,rep,aging,so,sf,speed,ph,food_capacity,metabolic_rate,consumption_speed,greediness,t6ss_activity,bacteriocin_production,immunity_factor,rep_thresh,share_thresh,predation_thresh,base_size,sensor_radius,temp_min,temp_max,acetate_secretion,acetate_uptake,baranyi_q0,persister_switch,persister_enter_thresh,persister_exit_thresh,phage_resistance,hgt_competence
-a,100,1,0.001,-0.1,0.5,250,7,100,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0
-b,100,1,0.001,-0.1,0.5,250,7,105,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0
-c,100,1,0.001,-0.1,0.5,250,7,110,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0
+name,init,rep,aging,so,sf,speed,ph,food_capacity,metabolic_rate,consumption_speed,greediness,t6ss_activity,bacteriocin_production,immunity_factor,rep_thresh,share_thresh,predation_thresh,base_size,sensor_radius,temp_min,temp_max,acetate_secretion,acetate_uptake,baranyi_q0,persister_switch,persister_enter_thresh,persister_exit_thresh,phage_resistance,hgt_competence,aff_calorie,aff_glycan,aff_mdcf
+a,100,1,0.001,-0.1,0.5,250,7,100,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0,1.0,0.8,1.0
+b,100,1,0.001,-0.1,0.5,250,7,105,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0,1.0,1.0,0.3
+c,100,1,0.001,-0.1,0.5,250,7,110,0.1,5.0,0.0,0.5,0.5,0.5,0.8,0.9,0.5,1.0,200.0,4.0,47.0,0.0,0.0,0.05,0.0,0.15,0.5,0.0,0.0,1.0,0.0,0.0

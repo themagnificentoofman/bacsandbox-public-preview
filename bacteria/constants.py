@@ -96,6 +96,79 @@ FOOD_EATING_DISTANCE_MARGIN_UM = 1.0
 # Uptake can occur just outside contact radius because dissolved molecules diffuse locally.
 FOOD_EATING_DISTANCE_GRACE_UM = 3.0
 
+# --- Phase I: Diet-driven food substrates (malnutrition-research grounding) ---
+# Three discrete dietary substrate classes let the environment reproduce specific diets
+# (malnutrition / standard supplementary / MDCF) instead of one abstract glucose pool. The
+# integer IDs index per-species affinity arrays and the per-substrate yield/colour tables.
+SUBSTRATE_GENERIC_CALORIE = 0   # simple, universally fermentable sugar (e.g. rice/starch hydrolysate)
+SUBSTRATE_COMPLEX_GLYCAN = 1    # dietary fibre / complex plant glycan (partially fermentable)
+SUBSTRATE_MDCF_PREBIOTIC = 2    # Microbiota-Directed Complementary Food prebiotic (selective)
+SUBSTRATE_IDS = (SUBSTRATE_GENERIC_CALORIE, SUBSTRATE_COMPLEX_GLYCAN, SUBSTRATE_MDCF_PREBIOTIC)
+SUBSTRATE_NAMES = ('generic_calorie', 'complex_glycan', 'mdcf_prebiotic')
+# Legacy, necromass, and decomposition food all default to the generic calorie class so prior
+# behaviour (and old saves) is reproduced exactly when no diet is configured.
+DEFAULT_SUBSTRATE_ID = SUBSTRATE_GENERIC_CALORIE
+
+# Metabolic energy yield per pg ingested, expressed as a fraction of pure glucose (1.0).
+# Simple sugars are fully oxidised (1.0); complex glycans lose energy to incomplete fermentation
+# and host-indigestible residue (~0.7, Flint et al. 2012, "Microbial degradation of complex
+# carbohydrates in the gut"); MDCF prebiotics are targeted, efficiently fermentable substrates
+# (~0.85, Gehrig et al. 2019 Science, MDCF effects on the malnourished gut microbiota).
+SUBSTRATE_ENERGY_YIELD = {
+    SUBSTRATE_GENERIC_CALORIE: 1.0,
+    SUBSTRATE_COMPLEX_GLYCAN: 0.7,
+    SUBSTRATE_MDCF_PREBIOTIC: 0.85,
+}
+# Render colours (RGB) so the three substrate classes are visually distinguishable on the dish.
+SUBSTRATE_COLORS = {
+    SUBSTRATE_GENERIC_CALORIE: (200, 200, 70),   # yellow-green (legacy food colour)
+    SUBSTRATE_COMPLEX_GLYCAN: (210, 140, 50),    # amber/orange (fibre)
+    SUBSTRATE_MDCF_PREBIOTIC: (140, 90, 200),    # violet (engineered prebiotic)
+}
+# Default per-species substrate affinities (uptake-rate multipliers on consumption_speed).
+# Legacy species eat only generic calories at full rate, preserving original dynamics; fibre and
+# MDCF utilisation must be explicitly granted per species, making them selective taxon traits.
+DEFAULT_AFF_CALORIE = 1.0
+DEFAULT_AFF_GLYCAN = 0.0
+DEFAULT_AFF_MDCF = 0.0
+
+# Diet profiles: categorical probability that each fresh nutrient drop is of a given substrate
+# class. These ratios encode the three experimental feeding arms. Malnutrition-like diets are
+# low-diversity and calorie-dominated; standard supplementary food adds fibre; the MDCF arm is
+# enriched for the targeted prebiotic. Fractions per profile sum to 1.0. Values are calibration
+# estimates informed by the MDCF trial design (Gehrig et al. 2019; Raman et al. 2019 Science) and
+# are flagged for refinement against empirical dietary-intake data.
+DIET_PROFILES = {
+    'malnutrition': {SUBSTRATE_GENERIC_CALORIE: 0.85, SUBSTRATE_COMPLEX_GLYCAN: 0.10, SUBSTRATE_MDCF_PREBIOTIC: 0.05},
+    'standard':     {SUBSTRATE_GENERIC_CALORIE: 0.60, SUBSTRATE_COMPLEX_GLYCAN: 0.30, SUBSTRATE_MDCF_PREBIOTIC: 0.10},
+    'mdcf':         {SUBSTRATE_GENERIC_CALORIE: 0.40, SUBSTRATE_COMPLEX_GLYCAN: 0.25, SUBSTRATE_MDCF_PREBIOTIC: 0.35},
+}
+DEFAULT_DIET_PROFILE = 'standard'
+
+# --- Phase I: Spatial heterogeneity (gut lumen vs mucus layer) ---
+# The petri dish is geometrically partitioned into a central, well-mixed LUMEN and a thin outer
+# MUCUS annulus. A point is in the mucus layer when its radial position (as a fraction of the dish
+# radius) is at or beyond this threshold; the inner 75% is lumen, the outer 25% is mucus. This
+# mirrors the radial organisation of the intestinal cross-section (Donaldson et al. 2016,
+# Nat. Rev. Microbiol., "Gut biogeography of the bacterial microbiota").
+MUCUS_LAYER_RADIUS_FRACTION = 0.75
+# Mucus-associated cells adhere to the glycoprotein matrix and move much more slowly than free
+# luminal swimmers, creating an anchoring refuge. Motility is reduced to 30% in the mucus layer
+# (Lee et al. 2018, Cell Host & Microbe, mucosa-associated colonisation).
+MUCUS_MOTILITY_FACTOR = 0.3
+# Nutrient washout (peristaltic / luminal-flow clearance) of free food mass, per real second.
+# The lumen is rapidly flushed; the mucus layer is a stabilized reservoir with near-zero
+# clearance. Exponential decay: m(t+dt) = m(t) * (1 - rate*dt). Conservative default rates.
+LUMEN_FOOD_WASHOUT_RATE_PER_SEC = 0.02
+MUCUS_FOOD_WASHOUT_RATE_PER_SEC = 0.002
+# Fraction of a nutrient drop's mass retained when it is deposited in the mucus layer; the lumen
+# (factor 1.0) receives the bulk of fresh dietary substrate, the mucus annulus far less.
+MUCUS_DROP_AMOUNT_FACTOR = 0.5
+# Relative carrying-capacity cull weight for luminal cells versus mucus cells (weight 1.0).
+# Stronger luminal competition makes well-mixed lumen cells more likely to be lost under
+# population pressure, leaving the mucus a protective refuge.
+LUMEN_COMPETITION_CULL_WEIGHT = 3.0
+
 # pH fitness uses a Gaussian tolerance of 1.5 pH units around the species optimum.
 PH_TOLERANCE_GAUSSIAN_SD = 1.5
 # Aerobic fitness saturates by 10% O2; strict anaerobes are strongly inhibited around 2% O2.

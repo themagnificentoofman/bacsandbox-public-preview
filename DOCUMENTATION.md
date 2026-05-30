@@ -816,6 +816,209 @@ Groisman (2000), "Lateral gene transfer and the nature of bacterial innovation",
 405:299–304; San Millán & MacLean (2017), "Fitness Costs of Plasmids", *Microbiol. Spectr.* 5(5).
 
 
+### 4.19 Diet-Driven Substrate Metabolism (Phase I Malnutrition Model)
+
+To ground BacSandbox in malnutrition research, the single abstract glucose pool is replaced by
+**three discrete dietary substrate classes**, each nutrient patch (`FoodNode`) carrying a
+`substrate_id` $s \in \{0, 1, 2\}$:
+
+- $s = 0$ — **generic calorie**: a simple, universally fermentable sugar (e.g. rice/starch hydrolysate).
+- $s = 1$ — **complex glycan**: dietary fibre only partially fermentable by the gut community.
+- $s = 2$ — **MDCF prebiotic**: a Microbiota-Directed Complementary Food substrate that selectively rewards competent taxa.
+
+Necromass, decomposition, and all legacy food default to $s = 0$, so simulations with no diet
+configured reproduce the original dynamics exactly.
+
+**Per-substrate affinity.** Each species declares an affinity vector
+$\mathbf{a} = (a_0, a_1, a_2)$ with $a_s \ge 0$ (the columns `aff_calorie`, `aff_glycan`,
+`aff_mdcf`). Affinity multiplies the cell's transporter throughput for that substrate class; an
+affinity of $0$ means the substrate is metabolically inaccessible. Chemotaxis is likewise
+selective — cells are not attracted to substrates they cannot consume — by weighting the
+chemotactic score with $a_s$:
+
+$$\text{score}_s = g_{\text{eff}} \, a_s \, \ln\!\left(1 + \frac{C}{C_{\text{ref}}}\right)$$
+
+where $C$ is the local patch concentration and $C_{\text{ref}}$ the receptor reference
+concentration. Substrates with $a_s = 0$ are skipped entirely in both targeting and feeding.
+
+**Affinity-gated uptake with energy yield.** Within one time step a cell has a shared transporter
+budget $U_{\max} = v_c \, \Delta t \, \phi_T$ (mass, pg), where $v_c$ is `consumption_speed` and
+$\phi_T$ the temperature factor. For each reachable patch of class $s$, the ingested **mass** is
+
+$$\Delta m = \min\!\big(R \, a_s,\; R,\; m_{\text{node}},\; h_s\big), \qquad R = U_{\max} - \textstyle\sum \Delta m_{\text{prior}}$$
+
+with $R$ the remaining budget and $h_s$ the storage headroom expressed back in substrate mass.
+Mass is conserved on the patch ($m_{\text{node}} \leftarrow m_{\text{node}} - \Delta m$), but the
+**energy** added to the cell's internal store is scaled by a substrate-specific yield $Y_s$:
+
+$$\Delta E = \Delta m \, Y_s$$
+
+The yields are fractions of pure glucose energy: $Y_0 = 1.0$ (simple sugar, fully oxidised),
+$Y_1 = 0.7$ (complex glycan, energy lost to incomplete fermentation and indigestible residue),
+$Y_2 = 0.85$ (MDCF prebiotic, a targeted, efficiently fermentable substrate). All yields satisfy
+$0 < Y_s \le 1$. This makes fibre and MDCF intrinsically less calorically dense than refined sugar
+while still selectively favouring the taxa equipped to use them.
+
+**Diet configuration profiles.** The environment's `diet_profile` selects a categorical
+probability distribution over substrate classes for each fresh nutrient drop. Three feeding arms
+mirror the MDCF trial design; the per-profile fractions sum to $1$:
+
+| Profile | calorie $p_0$ | glycan $p_1$ | MDCF $p_2$ |
+|---|---|---|---|
+| `malnutrition` | $0.85$ | $0.10$ | $0.05$ |
+| `standard` | $0.60$ | $0.30$ | $0.10$ |
+| `mdcf` | $0.40$ | $0.25$ | $0.35$ |
+
+Each drop's class is drawn by inverse-CDF sampling of these ratios. A malnutrition-like diet is
+low-diversity and calorie-dominated; the MDCF arm is enriched for the targeted prebiotic, so taxa
+with high `aff_mdcf` gain a selective advantage only under that diet. These ratios are calibration
+estimates flagged for refinement against empirical intake data. The active arm is selectable in the
+**Globals** tab: clicking the `diet_profile` cell (or pressing Enter on its row) cycles
+`malnutrition` $\to$ `standard` $\to$ `mdcf` $\to$ `malnutrition`, applied on the next reset/reload.
+
+References: Gehrig et al. (2019), "Effects of microbiota-directed foods in gnotobiotic animals and
+undernourished children", *Science* 365:eaau4732; Raman et al. (2019), "A sparse covarying unit
+that describes healthy and impaired human gut microbiota development", *Science* 365:eaau4735;
+Flint et al. (2012), "Microbial degradation of complex carbohydrates in the gut", *Gut Microbes*
+3(4):289–306; Sonnenburg & Sonnenburg (2014), "Starving our microbial self", *Cell Metab.*
+20(5):779–786.
+
+
+### 4.20 Spatial Heterogeneity: Lumen vs Mucus Layer (Phase I)
+
+The circular petri dish is geometrically partitioned into two concentric zones that abstract the
+radial organisation of the intestinal cross-section (Donaldson et al. 2016): a central, well-mixed
+**lumen** and a thin outer **mucus** annulus. For a point at world position $(x, y)$, with petri
+centre $(c_x, c_y)$ and radius $R$, the radial fraction is
+
+$$\rho = \frac{\sqrt{(x - c_x)^2 + (y - c_y)^2}}{R}.$$
+
+A point lies in the mucus layer when $\rho \ge$ `MUCUS_LAYER_RADIUS_FRACTION` (default $0.75$), so
+the inner $75\%$ of the radius is lumen and the outer $25\%$ is the mucus annulus. Four zone-specific
+rules differentiate the niches.
+
+**1. Motility (anchoring refuge).** Mucus-associated cells adhere to the glycoprotein matrix and
+move much more slowly than free luminal swimmers (Lee et al. 2018). Before the forward translation,
+a cell whose current position satisfies $\rho \ge$ `MUCUS_LAYER_RADIUS_FRACTION` has its per-step
+speed scaled by the mucus motility factor $m$ (constant `MUCUS_MOTILITY_FACTOR` $= 0.3$), giving
+effective speed $v_{\text{eff}} = v\,m$. This makes the mucus a low-clearance refuge where cells
+persist rather than being swept downstream.
+
+**2. Nutrient washout (peristaltic clearance).** Free food mass decays exponentially per real
+second at a zone-specific rate, modelling luminal-flow / peristaltic clearance. For a node with
+mass $m_t$ in a zone of washout rate $k$,
+
+$$m_{t+\Delta t} = m_t\,(1 - k\,\Delta t),$$
+
+with $k =$ `LUMEN_FOOD_WASHOUT_RATE_PER_SEC` $(= 0.02)$ in the lumen and $k =$
+`MUCUS_FOOD_WASHOUT_RATE_PER_SEC` $(= 0.002)$ in the mucus. The lumen is flushed an order of
+magnitude faster, so the mucus stabilises a nutrient reservoir.
+
+**3. Drop deposition.** Fresh dietary substrate is delivered chiefly to the well-mixed lumen by
+luminal flow. A drop landing in the mucus annulus ($\rho \ge$ `MUCUS_LAYER_RADIUS_FRACTION`)
+retains only a fraction `MUCUS_DROP_AMOUNT_FACTOR` $(= 0.5)$ of its sampled mass, while lumen
+drops are deposited in full.
+
+**4. Competition bias.** Under hard carrying-capacity pressure the well-mixed lumen imposes
+stronger resource competition than the stabilised mucus refuge, so luminal cells are preferentially
+lost. Culling uses weighted sampling without replacement (Efraimidis & Spirakis 2006): each
+candidate cell draws a key $U^{1/w}$ with $U \sim \mathrm{Uniform}(0,1)$ and zone weight $w = 1$
+(mucus) or $w =$ `LUMEN_COMPETITION_CULL_WEIGHT` $(= 3.0)$ (lumen); the cells with the largest keys
+are removed. With equal weights this reduces exactly to uniform random culling, preserving legacy
+behaviour, while the up-weighted lumen is thinned first.
+
+Together these rules make the lumen a high-throughput, high-turnover compartment and the mucus a
+slow, protected refuge — the spatial substrate for distinct extinction/abundance dynamics studied
+in Phase I.
+
+**Zone occupancy readout.** Every update the simulation classifies each live cell by its radial
+fraction and records the lumen/mucus population split into the statistics arrays `lumen` and
+`mucus` (which always sum to `total`). These are surfaced live in the **Stats** tab (Lumen Count /
+Mucus Count) and exported as the `lumen` and `mucus` columns of the Global Stats CSV section, so
+the compartmental dynamics can be analysed offline without changing any simulation behaviour.
+
+References: Donaldson, Lee & Mazmanian (2016), "Gut biogeography of the bacterial microbiota",
+*Nat. Rev. Microbiol.* 14:20–32; Lee et al. (2018), mucosa-associated colonisation dynamics,
+*Cell Host & Microbe*; Efraimidis & Spirakis (2006), "Weighted random sampling with a reservoir",
+*Inf. Process. Lett.* 97(5):181–185.
+
+
+### 4.21 Reproducible Baselines, Time-to-Extinction, and Survival Curves (Phase I)
+
+To compare dietary and spatial conditions quantitatively, runs must be reproducible and extinction
+events must be measurable.
+
+**Seeded determinism.** The `Simulation` accepts an optional integer `seed`. When provided, the
+RNG is seeded *before* any stochastic draw (including the random initial positions and sizes of
+every cell), so two runs with the same seed, species, and parameters produce byte-identical
+population trajectories. In the application the seed is read from `env_config.json` and applied in
+`init_sim` prior to species construction; resetting the simulation re-applies the same seed.
+Leaving the seed `null` reproduces the prior nondeterministic behaviour.
+
+**Time-to-extinction.** Each species carries an `extinction_time`. Because a population cannot
+regrow once it reaches zero in this model, the metric is the elapsed simulation time at the first
+zero crossing. Let $N_s(t)$ be the count of species $s$ at elapsed time $t$; then
+
+$$T_s^{\text{ext}} = \min\{\, t : N_s(t) = 0 \,\},$$
+
+recorded once and never overwritten. Survivors retain $T_s^{\text{ext}} = \varnothing$ (blank in
+the export). Elapsed time is the real-time accumulator $t_{\text{elapsed},n} = \sum_{i=0}^{n}\Delta t_i$,
+so the metric is frame-rate independent.
+
+**Export.** `simulation_stats.csv` gains an `--- Extinction Events ---` section with one row per
+species: `Species`, `Time_To_Extinction_s`, `Extinct` (0/1), and `Final_Count`. The run's `seed`
+is also written into the environment-configuration section so a baseline can be exactly reproduced
+from its archived CSV.
+
+**Survival curve.** From the per-species extinction times we build a discrete Kaplan-Meier-style
+survival function $S(t)$ — the fraction of the $M$ tracked species still extant at time $t$:
+
+$$S(t) = \frac{1}{M}\,\bigl|\{\, s : T_s^{\text{ext}} > t \ \text{or}\ T_s^{\text{ext}} = \varnothing \,\}\bigr|,$$
+
+a right-continuous step function that drops by $1/M$ at each extinction event.
+
+**Plot deliverable.** The standalone script `plot_baselines.py` (repository root, depending only on
+pandas and matplotlib) parses an exported CSV and writes up to four figures: `abundance_trajectories.png`
+(each species' population versus elapsed time), `extinction_survival.png` (the survival curve
+$S(t)$ alongside a per-species time-to-extinction bar chart), `zone_occupancy.png` (lumen vs mucus
+population over time, see Section 4.20), and `substrate_consumption.png` (cumulative per-substrate
+mass ingested, see Section 4.22). The last two are skipped automatically when the CSV predates those
+columns. It imports none of the simulation code, so baselines can be regenerated from any archived
+run via `python plot_baselines.py --input simulation_stats.csv --outdir .`.
+
+Reference: Kaplan & Meier (1958), "Nonparametric estimation from incomplete observations",
+*J. Am. Stat. Assoc.* 53(282):457–481.
+
+
+### 4.22 Per-Substrate Consumption Analytics (Phase I)
+
+To quantify *how a diet is actually metabolised* (not merely supplied), the simulation tracks the
+mass of each substrate class ingested by the community over time. This closes the loop on the diet
+model of Section 4.19: `diet_profile` controls the substrate **supply** mix, while these statistics
+record the realised **uptake**, which depends on the resident taxa's affinity vectors.
+
+**Per-cell attribution.** During the affinity-gated feeding step (Section 4.19), each ingestion
+event of mass $\Delta m$ from a patch of class $s$ is attributed to that class in a per-cell ledger
+that is reset at the start of every cell's update. Thus each cell reports only the mass it ingested
+on the current tick, indexed by substrate id $s \in \{0, 1, 2\}$.
+
+**Community accumulation.** Each update the simulation sums the per-cell ledgers into a per-step
+total $\Delta M_s$ and carries forward the previous cumulative value, so the recorded series is the
+total mass ever ingested per class:
+
+$$M_s(t_n) = M_s(t_{n-1}) + \Delta M_s(t_n), \qquad M_s(t_0) = \Delta M_s(t_0).$$
+
+Because ingested mass is never returned, each $M_s$ is monotonic non-decreasing. These cumulative
+totals are surfaced live in the **Stats** tab (Calorie / Glycan / MDCF Consumed, in pg) and exported
+as the `consumed_calorie`, `consumed_glycan`, and `consumed_mdcf` columns of the Global Stats CSV
+section (Section 7). The tracking is observability-only and changes no simulation behaviour;
+legacy CSVs that predate it import with blank consumption columns.
+
+Comparing $M_s$ trajectories across diet arms reveals, for example, whether an MDCF-enriched diet is
+being taken up (high $M_2$ slope) only when MDCF-competent taxa are present — the core selective
+mechanism of the malnutrition model.
+
+
 ## 5. Species Parameters
 
 Species are configured in `species_data.csv` and can also be edited in the Species tab.
@@ -860,6 +1063,9 @@ Species are configured in `species_data.csv` and can also be edited in the Speci
 * `persister_exit_thresh`: Recovery fullness threshold $S_2$ from 0 to 1. Above it, persisters resuscitate to the proliferative state. It is clamped to stay at least `PERSISTER_THRESHOLD_MIN_GAP` above $S_1$. Default 0.5.
 * `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible).
 * `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0.
+* `aff_calorie`: Generic-calorie substrate uptake affinity ($\ge 0$, see Section 4.19). Multiplies transporter throughput for simple sugars; energy yield is $1.0$. Default 1.0 (full legacy uptake).
+* `aff_glycan`: Complex-glycan (dietary fibre) uptake affinity ($\ge 0$, see Section 4.19). 0 means the species cannot metabolise fibre; ingested mass yields $0.7$ of glucose energy. Default 0.
+* `aff_mdcf`: MDCF prebiotic uptake affinity ($\ge 0$, see Section 4.19). 0 means the species cannot use the targeted prebiotic; ingested mass yields $0.85$ of glucose energy. High values are selectively rewarded under the `mdcf` diet. Default 0.
 
 ## 6. Global Environment Parameters
 
@@ -875,19 +1081,22 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 * `drop_range_min` and `drop_range_max`: Uniform random range for the amount in each new food cluster.
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
+* `diet_profile`: Active dietary feeding arm (see Section 4.19), one of `malnutrition`, `standard`, or `mdcf`. It sets the categorical probability mix of substrate classes (generic calorie / complex glycan / MDCF prebiotic) assigned to each new food drop. It is editable directly in the **Globals** tab — clicking its cell (or pressing Enter on the row) cycles to the next arm. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload. Default `standard`.
+* `seed`: Optional integer RNG seed for reproducible extinction/abundance baselines (see Section 4.21). It is editable directly in the **Globals** tab — enter a non-negative integer to fix the run, or leave the field blank (shown as `(random)`) for a fresh nondeterministic run. When set, the random stream is seeded before species construction so the entire run — initial layout and every stochastic draw — is deterministic. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload.
 
 ## 7. Data Export And Import
 
-`simulation_stats.csv` stores three logical sections when exported from the app:
+`simulation_stats.csv` stores these logical sections when exported from the app:
 
-* Environment configuration.
+* Environment configuration (now including the reproducibility `seed`, see Section 4.21).
 * Species configuration.
 * Global and per-species time-series statistics.
+* Extinction events (Phase I): one row per species with header `Species,Time_To_Extinction_s,Extinct,Final_Count`, where `Time_To_Extinction_s` is the elapsed sim-time at the first zero-population crossing (blank for survivors) and `Extinct` is 0/1. This section feeds the survival-curve plot in `plot_baselines.py`.
 
 The Global Stats header is:
 
 ```csv
-time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths
+time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths,lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf
 ```
 
 Column meanings:
@@ -901,6 +1110,11 @@ Column meanings:
 * `tickrate_hz`: instantaneous update frequency for this row.
 * `overall_births`: cumulative global births through this row.
 * `overall_deaths`: cumulative global deaths through this row.
+* `lumen`: live bacteria in the central lumen (radial fraction below the mucus threshold) after that update (see Section 4.20).
+* `mucus`: live bacteria in the outer mucus annulus (radial fraction at or above the mucus threshold) after that update. `lumen` and `mucus` always sum to `total`. These columns are blank for stats produced by legacy imports that predate zone tracking.
+* `consumed_calorie`: cumulative generic-calorie substrate mass (pg) ingested by the whole community through this row (see Section 4.22).
+* `consumed_glycan`: cumulative complex-glycan substrate mass (pg) ingested through this row.
+* `consumed_mdcf`: cumulative MDCF-prebiotic substrate mass (pg) ingested through this row. Each `consumed_*` series is monotonic non-decreasing; the three columns are blank for stats produced by legacy imports that predate diet analytics.
 
 The time fields are computed as:
 

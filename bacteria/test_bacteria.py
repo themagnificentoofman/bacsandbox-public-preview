@@ -54,6 +54,25 @@ from bacteria import (
     Simulation,
     SpeciesDataManager,
 )
+from bacteria.constants import (
+    SUBSTRATE_GENERIC_CALORIE,
+    SUBSTRATE_COMPLEX_GLYCAN,
+    SUBSTRATE_MDCF_PREBIOTIC,
+    SUBSTRATE_IDS,
+    SUBSTRATE_ENERGY_YIELD,
+    DEFAULT_SUBSTRATE_ID,
+    DEFAULT_AFF_CALORIE,
+    DEFAULT_AFF_GLYCAN,
+    DEFAULT_AFF_MDCF,
+    DIET_PROFILES,
+    DEFAULT_DIET_PROFILE,
+    MUCUS_LAYER_RADIUS_FRACTION,
+    MUCUS_MOTILITY_FACTOR,
+    LUMEN_FOOD_WASHOUT_RATE_PER_SEC,
+    MUCUS_FOOD_WASHOUT_RATE_PER_SEC,
+    MUCUS_DROP_AMOUNT_FACTOR,
+    LUMEN_COMPETITION_CULL_WEIGHT,
+)
 from bacteria.app import format_world_distance_um
 
 TEST_DT_SEC = 1.0 / FPS
@@ -125,6 +144,8 @@ class TestBacteriumMath(unittest.TestCase):
         # It's hard to test the pure score without intercepting, but making sure no crash
 
     def test_close_food_reduces_heading_error(self):
+        import random
+        random.seed(0)  # deterministic: isolate chemotactic steering from OS-seeded Brownian noise
         sp = MockSpecies(sensor_radius=200.0, greediness=1.0)
         b = Bacterium(sp, 0, 0, size=1.0)
         b.heading = math.pi / 2.0
@@ -316,7 +337,8 @@ class TestBacteriumMath(unittest.TestCase):
                 exported = f.read()
 
             self.assertIn('time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths', exported)
-
+            # Phase I diet analytics: zone and per-substrate consumption columns are part of the schema.
+            self.assertIn('lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf', exported)
             imported = Simulation([], {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION}, 100)
             imported.import_stats(path)
             self.assertEqual(imported.stats['overall_births'], [2])
@@ -849,7 +871,429 @@ class TestPhagePredationHGT(unittest.TestCase):
         self.assertFalse(b.infected)
 
 
+class TestDietSubstrates(unittest.TestCase):
+    """Deterministic tests for the Phase I diet-driven substrate model: per-substrate affinity
+    gating, energy-yield scaling, diet-profile drop sampling, and legacy back-compat."""
+
+    def _species(self, name, aff_calorie=DEFAULT_AFF_CALORIE, aff_glycan=DEFAULT_AFF_GLYCAN,
+                 aff_mdcf=DEFAULT_AFF_MDCF, consumption_speed=1.0):
+        # base_rep/metabolic 0 so the only dynamics under test are uptake. Aerobe at 37 degC.
+        return BacteriaSpecies(name, 0, 0.0, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=1000.0, metabolic_rate=0.0,
+                               consumption_speed=consumption_speed,
+                               bacteriocin_production=0.0, immunity_factor=0.0,
+                               aff_calorie=aff_calorie, aff_glycan=aff_glycan, aff_mdcf=aff_mdcf)
+
+    def _env(self, diet_profile=DEFAULT_DIET_PROFILE, drop_frequency=0):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': drop_frequency,
+                'drop_range': (1, 1), 'phage_inflow': 0, 'diet_profile': diet_profile}
+
+    def test_affinities_clamped_non_negative(self):
+        sp = self._species('Clamp', aff_calorie=-3.0, aff_glycan=-1.0, aff_mdcf=2.5)
+        self.assertEqual(sp.aff_calorie, 0.0)
+        self.assertEqual(sp.aff_glycan, 0.0)
+        self.assertEqual(sp.aff_mdcf, 2.5)
+
+    def test_bacterium_affinity_array_from_species(self):
+        sp = self._species('Aff', aff_calorie=1.0, aff_glycan=0.5, aff_mdcf=0.25)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0)
+        self.assertEqual(b.substrate_affinity,
+                         (1.0, 0.5, 0.25))
+
+    def test_foodnode_default_substrate_is_generic_calorie(self):
+        # Necromass/legacy food paths construct nodes without a substrate id.
+        node = FoodNode.acquire().init(0.0, 0.0, 5.0)
+        self.assertEqual(node.substrate_id, DEFAULT_SUBSTRATE_ID)
+        self.assertEqual(node.substrate_id, SUBSTRATE_GENERIC_CALORIE)
+
+    def test_zero_affinity_cell_cannot_eat_substrate(self):
+        # A calorie-only cell (default) cannot ingest a complex-glycan node.
+        sp = self._species('CalOnly')  # aff_glycan=0 by default
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=0.0)
+        b.speed = 0.0
+        node = FoodNode.acquire().init(0.0, 0.0, 100.0, SUBSTRATE_COMPLEX_GLYCAN)
+        before = node.amount
+        b.step([node], (0, 0, 1000), TEST_DT_SEC)
+        self.assertEqual(node.amount, before)  # untouched
+        self.assertEqual(b.food_level, 0.0)
+
+    def test_competent_cell_eats_mdcf_with_energy_yield(self):
+        # A MDCF-competent cell ingests prebiotic mass; stored energy = mass * yield (< mass).
+        sp = self._species('MdcfEater', aff_mdcf=1.0, consumption_speed=10.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=0.0)
+        b.speed = 0.0
+        node = FoodNode.acquire().init(0.0, 0.0, 100.0, SUBSTRATE_MDCF_PREBIOTIC)
+        before = node.amount
+        b.step([node], (0, 0, 1000), TEST_DT_SEC)
+        eaten_mass = before - node.amount
+        self.assertGreater(eaten_mass, 0.0)
+        # Energy stored equals ingested mass scaled by the MDCF yield (mass conserved on the node).
+        self.assertAlmostEqual(b.food_level,
+                               eaten_mass * SUBSTRATE_ENERGY_YIELD[SUBSTRATE_MDCF_PREBIOTIC])
+
+    def test_generic_calorie_full_energy_yield(self):
+        # Generic calories yield 1:1 energy per ingested mass (legacy behaviour preserved).
+        sp = self._species('CalEater', consumption_speed=10.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=0.0)
+        b.speed = 0.0
+        node = FoodNode.acquire().init(0.0, 0.0, 100.0, SUBSTRATE_GENERIC_CALORIE)
+        before = node.amount
+        b.step([node], (0, 0, 1000), TEST_DT_SEC)
+        eaten_mass = before - node.amount
+        self.assertGreater(eaten_mass, 0.0)
+        self.assertAlmostEqual(b.food_level, eaten_mass * 1.0)
+
+    def test_energy_yields_within_physical_bounds(self):
+        # Every substrate yield is a fraction of glucose energy in (0, 1].
+        for sid in SUBSTRATE_IDS:
+            y = SUBSTRATE_ENERGY_YIELD[sid]
+            self.assertGreater(y, 0.0)
+            self.assertLessEqual(y, 1.0)
+        # Glucose-equivalent calorie is the reference maximum.
+        self.assertEqual(SUBSTRATE_ENERGY_YIELD[SUBSTRATE_GENERIC_CALORIE], 1.0)
+
+    def test_diet_profile_ratios_sum_to_one(self):
+        for profile, ratios in DIET_PROFILES.items():
+            self.assertAlmostEqual(sum(ratios.values()), 1.0,
+                                   msg=f"Diet profile {profile} ratios must sum to 1.0")
+
+    def test_drop_substrate_distribution_matches_profile(self):
+        # Seeded sampling reproduces the configured categorical drop mix within tolerance.
+        import random as _random
+        sp = self._species('Sampler')
+        sim = Simulation([sp], self._env(diet_profile='mdcf'), 100)
+        _random.seed(12345)
+        counts = {sid: 0 for sid in SUBSTRATE_IDS}
+        n = 20000
+        for _ in range(n):
+            counts[sim._sample_substrate()] += 1
+        expected = DIET_PROFILES['mdcf']
+        for sid in SUBSTRATE_IDS:
+            frac = counts[sid] / n
+            self.assertAlmostEqual(frac, expected[sid], delta=0.02)
+
+    def test_seeded_sampling_is_reproducible(self):
+        import random as _random
+        sp = self._species('Repro')
+        sim = Simulation([sp], self._env(diet_profile='standard'), 100)
+        _random.seed(999)
+        seq_a = [sim._sample_substrate() for _ in range(50)]
+        _random.seed(999)
+        seq_b = [sim._sample_substrate() for _ in range(50)]
+        self.assertEqual(seq_a, seq_b)
+
+    def test_legacy_species_defaults_to_calorie_only(self):
+        # A species built without affinity kwargs eats only generic calories (back-compat).
+        sp = BacteriaSpecies('Legacy', 0, 0.0, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                             NEUTRAL_PH, (0, 200, 0), base_size=1.0, food_capacity=1000.0,
+                             metabolic_rate=0.0, consumption_speed=10.0)
+        self.assertEqual(sp.aff_calorie, DEFAULT_AFF_CALORIE)
+        self.assertEqual(sp.aff_glycan, 0.0)
+        self.assertEqual(sp.aff_mdcf, 0.0)
+        b = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=0.0)
+        b.speed = 0.0
+        glycan = FoodNode.acquire().init(0.0, 0.0, 100.0, SUBSTRATE_COMPLEX_GLYCAN)
+        b.step([glycan], (0, 0, 1000), TEST_DT_SEC)
+        self.assertEqual(glycan.amount, 100.0)  # cannot touch fibre
+
+
+class TestSpatialZones(unittest.TestCase):
+    """Deterministic tests for the Phase I spatial heterogeneity model: lumen vs mucus motility,
+    zone-specific nutrient washout, mucus-reduced drop deposition, and luminal competition bias."""
+
+    def _species(self, name, consumption_speed=1.0, base_rep=0.0):
+        return BacteriaSpecies(name, 0, base_rep, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=1000.0, metabolic_rate=0.0,
+                               consumption_speed=consumption_speed,
+                               bacteriocin_production=0.0, immunity_factor=0.0)
+
+    def _env(self, drop_frequency=0):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': drop_frequency,
+                'drop_range': (1, 1), 'phage_inflow': 0, 'diet_profile': DEFAULT_DIET_PROFILE}
+
+    def test_zone_constants_are_well_ordered(self):
+        # Mucus is a thin outer annulus and a movement/clearance refuge relative to the lumen.
+        self.assertTrue(0.0 < MUCUS_LAYER_RADIUS_FRACTION < 1.0)
+        self.assertTrue(0.0 < MUCUS_MOTILITY_FACTOR < 1.0)
+        self.assertGreater(LUMEN_FOOD_WASHOUT_RATE_PER_SEC, MUCUS_FOOD_WASHOUT_RATE_PER_SEC)
+        self.assertTrue(0.0 < MUCUS_DROP_AMOUNT_FACTOR < 1.0)
+        self.assertGreater(LUMEN_COMPETITION_CULL_WEIGHT, 1.0)
+
+    def test_mucus_cell_moves_slower_than_lumen_cell(self):
+        # Per-step displacement magnitude equals the scalar speed (heading-independent), so a
+        # non-tumbling cell in the mucus annulus advances MUCUS_MOTILITY_FACTOR as far as one in
+        # the lumen under identical conditions.
+        import random as _random
+        sp = self._species('Mover')
+        cx, cy, R = 400.0, 300.0, 500.0
+        bounds = (cx, cy, R)
+        dt = 1.0 / 1000.0  # tiny dt keeps both cells well inside the boundary (no reflection)
+
+        def _disp(start_x):
+            _random.seed(2024)
+            b = Bacterium(sp, start_x, cy, size=1.0, initial_food=500.0)
+            b.is_tumbling = False
+            b.state_timer = 1e9  # never flips to tumble within this step
+            x0, y0 = b.x, b.y
+            b.step([], bounds, dt)
+            return math.hypot(b.x - x0, b.y - y0)
+
+        lumen_disp = _disp(cx + 5.0)               # near centre -> lumen
+        mucus_disp = _disp(cx + 0.92 * R)          # outer annulus -> mucus
+        self.assertGreater(lumen_disp, 0.0)
+        self.assertAlmostEqual(mucus_disp, lumen_disp * MUCUS_MOTILITY_FACTOR, places=6)
+
+    def test_lumen_nutrient_washes_out_faster_than_mucus(self):
+        # Equal-mass nodes placed in each zone lose mass by zone-specific exponential clearance.
+        sp = self._species('NoEat', consumption_speed=0.0)
+        sim = Simulation([sp], self._env(drop_frequency=0), 100)
+        sim.running = True
+        w, h, dt = 800, 600, 1.0
+        sim.update(w, h, dt)  # establishes petri_center / petri_radius, no drops
+        cx, cy = sim.petri_center
+        R = sim.petri_radius
+        lumen_node = FoodNode.acquire().init(cx, cy, 100.0, SUBSTRATE_GENERIC_CALORIE)
+        mucus_node = FoodNode.acquire().init(cx + 0.95 * R, cy, 100.0, SUBSTRATE_GENERIC_CALORIE)
+        sim.food_nodes = [lumen_node, mucus_node]
+        for _ in range(20):
+            sim.update(w, h, dt)
+        # Both decay, but the lumen node retains strictly less mass than the mucus refuge.
+        self.assertLess(lumen_node.amount, mucus_node.amount)
+        self.assertLess(lumen_node.amount, 100.0)
+        self.assertGreater(mucus_node.amount, 0.0)
+
+    def test_mucus_node_persists_far_longer_than_washout_estimate(self):
+        # Closed-form check: after t seconds the mucus mass ~ m0 (1 - rate)^n for unit dt steps.
+        sp = self._species('NoEat', consumption_speed=0.0)
+        sim = Simulation([sp], self._env(drop_frequency=0), 100)
+        sim.running = True
+        w, h, dt = 800, 600, 1.0
+        sim.update(w, h, dt)
+        cx, cy = sim.petri_center
+        R = sim.petri_radius
+        node = FoodNode.acquire().init(cx + 0.95 * R, cy, 100.0, SUBSTRATE_GENERIC_CALORIE)
+        sim.food_nodes = [node]
+        n = 10
+        for _ in range(n):
+            sim.update(w, h, dt)
+        expected = 100.0 * (1.0 - MUCUS_FOOD_WASHOUT_RATE_PER_SEC * dt) ** n
+        self.assertAlmostEqual(node.amount, expected, places=4)
+
+    def test_stats_record_lumen_and_mucus_population_split(self):
+        # Place cells at known radii and confirm the per-step stats classify them by zone.
+        sp = self._species('Zoned', consumption_speed=0.0)
+        sim = Simulation([sp], self._env(drop_frequency=0), 100)
+        sim.running = True
+        w, h, dt = 800, 600, 1.0
+        sim.update(w, h, dt)  # establishes petri_center / petri_radius
+        cx, cy = sim.petri_center
+        R = sim.petri_radius
+        # Two lumen cells (near centre) and three mucus cells (outer annulus).
+        sp.members = []
+        for _ in range(2):
+            sp.members.append(Bacterium(sp, cx + 0.10 * R, cy, size=1.0))
+        for _ in range(3):
+            sp.members.append(Bacterium(sp, cx + 0.95 * R, cy, size=1.0))
+        sim.update(w, h, dt)
+        self.assertEqual(sim.stats['lumen'][-1], 2)
+        self.assertEqual(sim.stats['mucus'][-1], 3)
+        # The split must always sum to the recorded total population.
+        self.assertEqual(sim.stats['lumen'][-1] + sim.stats['mucus'][-1], sim.stats['total'][-1])
+
+
+class TestSubstrateConsumption(unittest.TestCase):
+    """Phase I diet analytics: per-substrate cumulative consumption stats are accumulated as cells
+    ingest substrate-typed nutrient patches, recorded as monotonic running totals, and exported."""
+
+    def _species(self, name, consumption_speed=5.0):
+        return BacteriaSpecies(name, 0, 0.0, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=1000.0, metabolic_rate=0.0,
+                               consumption_speed=consumption_speed,
+                               bacteriocin_production=0.0, immunity_factor=0.0)
+
+    def _env(self):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': 0,
+                'drop_range': (1, 1), 'phage_inflow': 0, 'diet_profile': DEFAULT_DIET_PROFILE}
+
+    def test_consumption_attributed_to_correct_substrate_class(self):
+        # A hungry, competent cell sitting on a calorie patch must accrue calorie consumption only;
+        # the glycan and MDCF running totals stay at zero because no such patches are present and
+        # the default species has zero affinity for them anyway.
+        sp = self._species('Grazer')
+        sim = Simulation([sp], self._env(), 100)
+        sim.running = True
+        w, h, dt = 800, 600, 1.0
+        sim.update(w, h, dt)  # establishes petri_center / petri_radius (no drops)
+        cx, cy = sim.petri_center
+        # One hungry cell co-located with a calorie node so it grazes immediately.
+        sp.members = [Bacterium(sp, cx, cy, size=1.0, initial_food=0.0)]
+        calorie_node = FoodNode.acquire().init(cx, cy, 500.0, SUBSTRATE_GENERIC_CALORIE)
+        sim.food_nodes = [calorie_node]
+        for _ in range(5):
+            sim.update(w, h, dt)
+        self.assertGreater(sim.stats['consumed_calorie'][-1], 0.0)
+        self.assertEqual(sim.stats['consumed_glycan'][-1], 0.0)
+        self.assertEqual(sim.stats['consumed_mdcf'][-1], 0.0)
+
+    def test_consumption_series_is_monotonic_non_decreasing(self):
+        # Cumulative consumption can never decrease step-to-step (mass already ingested is permanent).
+        sp = self._species('Grazer')
+        sim = Simulation([sp], self._env(), 100)
+        sim.running = True
+        w, h, dt = 800, 600, 1.0
+        sim.update(w, h, dt)
+        cx, cy = sim.petri_center
+        sp.members = [Bacterium(sp, cx, cy, size=1.0, initial_food=0.0)]
+        sim.food_nodes = [FoodNode.acquire().init(cx, cy, 500.0, SUBSTRATE_GENERIC_CALORIE)]
+        for _ in range(8):
+            sim.update(w, h, dt)
+        series = sim.stats['consumed_calorie']
+        self.assertGreaterEqual(len(series), 2)
+        for prev, curr in zip(series, series[1:]):
+            self.assertGreaterEqual(curr, prev)
+
+    def test_empty_stats_includes_substrate_consumption_keys(self):
+        # The stats schema must always expose the three per-substrate consumption series.
+        sim = Simulation([], self._env(), 100)
+        stats = sim._empty_stats()
+        for key in ('consumed_calorie', 'consumed_glycan', 'consumed_mdcf'):
+            self.assertIn(key, stats)
+            self.assertEqual(stats[key], [])
+
+
+class TestReproducibility(unittest.TestCase):
+    """Phase I reproducibility & extinction baselines: a fixed seed yields byte-identical
+    trajectories, and a species driven to zero records a finite time-to-extinction."""
+
+    def _species(self, name, init=20, base_rep=0.3):
+        return BacteriaSpecies(name, init, base_rep, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=50.0, metabolic_rate=0.1,
+                               consumption_speed=1.0,
+                               bacteriocin_production=0.0, immunity_factor=0.0)
+
+    def _env(self, drop_frequency=20):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': drop_frequency,
+                'drop_range': (1, 4), 'phage_inflow': 0, 'diet_profile': DEFAULT_DIET_PROFILE}
+
+    def _run(self, seed, n):
+        import random as _random
+        _random.seed(seed)  # seed before building species so initial layouts match across runs
+        spp = [self._species('A'), self._species('B')]
+        sim = Simulation(spp, self._env(), 300, seed=seed)
+        sim.running = True
+        for _ in range(n):
+            sim.update(800, 600, 0.1)
+        return sim
+
+    def test_seeded_runs_are_identical(self):
+        sim_a = self._run(2024, 60)
+        sim_b = self._run(2024, 60)
+        self.assertEqual(sim_a.stats['total'], sim_b.stats['total'])
+        self.assertEqual(sim_a.stats['births'], sim_b.stats['births'])
+        self.assertEqual(sim_a.stats['deaths'], sim_b.stats['deaths'])
+        for sp_a, sp_b in zip(sim_a.species, sim_b.species):
+            self.assertEqual(sp_a.history, sp_b.history)
+
+    def test_different_seeds_diverge(self):
+        sim_a = self._run(1, 60)
+        sim_b = self._run(2, 60)
+        # Distinct seeds should not produce identical population trajectories.
+        self.assertNotEqual(sim_a.stats['total'], sim_b.stats['total'])
+
+    def test_extinction_time_recorded_on_zero_population(self):
+        import random as _random
+        _random.seed(7)
+        sp = self._species('Doomed', init=5)
+        sim = Simulation([sp], self._env(drop_frequency=0), 300, seed=7)
+        sim.running = True
+        sim.update(800, 600, 0.1)
+        self.assertIsNone(sp.extinction_time)  # still alive
+        sp.members = []  # force the population to zero
+        sim.update(800, 600, 0.1)
+        self.assertIsNotNone(sp.extinction_time)
+        self.assertAlmostEqual(sp.extinction_time, sim.stats['elapsed_seconds'][-1])
+
+    def test_extinction_time_is_first_crossing_only(self):
+        import random as _random
+        _random.seed(3)
+        sp = self._species('Once', init=4)
+        sim = Simulation([sp], self._env(drop_frequency=0), 300, seed=3)
+        sim.running = True
+        sim.update(800, 600, 0.1)
+        sp.members = []
+        sim.update(800, 600, 0.1)
+        first = sp.extinction_time
+        sim.update(800, 600, 0.1)  # still zero
+        self.assertEqual(sp.extinction_time, first)  # never overwritten
+
+
+class TestSeedInput(unittest.TestCase):
+    """Phase I: the Globals-tab seed field parses to a non-negative int or None (random)."""
+
+    @classmethod
+    def setUpClass(cls):
+        # App pulls in pygame; force a headless video driver so import never needs a display.
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+        from bacteria.app import App
+        cls.App = App
+
+    def test_blank_and_keywords_map_to_random(self):
+        for text in ('', '   ', 'none', 'NULL', 'None'):
+            ok, value = self.App.parse_seed_input(text)
+            self.assertTrue(ok)
+            self.assertIsNone(value)
+
+    def test_integers_parse(self):
+        self.assertEqual(self.App.parse_seed_input('42'), (True, 42))
+        self.assertEqual(self.App.parse_seed_input('  7 '), (True, 7))
+        self.assertEqual(self.App.parse_seed_input('0'), (True, 0))
+
+    def test_trailing_decimal_zero_tolerated(self):
+        # normalize_numeric_string can hand us '42.0'; it must still parse to int 42.
+        self.assertEqual(self.App.parse_seed_input('42.0'), (True, 42))
+
+    def test_negative_and_garbage_rejected(self):
+        for text in ('-1', '-100', 'abc', '4x', '3.5.1'):
+            ok, value = self.App.parse_seed_input(text)
+            self.assertFalse(ok)
+            self.assertIsNone(value)
+
+
+class TestDietInput(unittest.TestCase):
+    """Phase I: the Globals-tab diet_profile cell cycles through the categorical feeding arms."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+        from bacteria.app import App
+        cls.App = App
+
+    def test_cycle_visits_every_arm_and_wraps(self):
+        order = list(DIET_PROFILES.keys())
+        # Starting from each arm, next_diet_profile advances to the following arm (wrapping).
+        for i, arm in enumerate(order):
+            self.assertEqual(self.App.next_diet_profile(arm), order[(i + 1) % len(order)])
+
+    def test_full_cycle_returns_to_start(self):
+        order = list(DIET_PROFILES.keys())
+        current = order[0]
+        for _ in range(len(order)):
+            current = self.App.next_diet_profile(current)
+        self.assertEqual(current, order[0])  # one full lap returns to the origin
+
+    def test_unknown_profile_resets_to_default(self):
+        self.assertEqual(self.App.next_diet_profile('not_a_diet'), DEFAULT_DIET_PROFILE)
+        self.assertEqual(self.App.next_diet_profile(None), DEFAULT_DIET_PROFILE)
+
+
 if __name__ == '__main__':
     unittest.main()
-
 

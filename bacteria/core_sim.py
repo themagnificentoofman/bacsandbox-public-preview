@@ -17,10 +17,12 @@ class FoodNode:
     """
     _pool = []
     
-    def __init__(self, x, y, amount):
+    def __init__(self, x, y, amount, substrate_id=DEFAULT_SUBSTRATE_ID):
         self.x = x
         self.y = y
         self.amount = amount
+        # Phase I: dietary substrate class (SUBSTRATE_* id) carried by this nutrient patch.
+        self.substrate_id = substrate_id
     
     @classmethod
     def acquire(cls):
@@ -36,11 +38,13 @@ class FoodNode:
         if node is not None and len(cls._pool) < 2000:
             cls._pool.append(node)
     
-    def init(self, x, y, amount):
+    def init(self, x, y, amount, substrate_id=DEFAULT_SUBSTRATE_ID):
         """Initialize/reinitialize pool object."""
         self.x = x
         self.y = y
         self.amount = amount
+        # Phase I: dietary substrate class (defaults to generic calorie for necromass/legacy food).
+        self.substrate_id = substrate_id
         return self
 
 class Bacterium:
@@ -69,6 +73,16 @@ class Bacterium:
         # Reference: Square-cube law; surface area limits exchange with environment
         # Units: pg glucose-equivalent nutrient absorbed per second, later scaled by elapsed dt.
         self.consumption_speed = getattr(species, 'consumption_speed', DEFAULT_CONSUMPTION_SPEED_PG_S) * (self.base_size ** 2)
+        
+        # Phase I diet model: per-substrate uptake-efficiency multipliers (generic calorie, complex
+        # glycan, MDCF prebiotic), indexed by SUBSTRATE_* id. Effective uptake of a node equals
+        # consumption_speed * affinity[substrate]; zero affinity means the cell cannot metabolise
+        # that substrate, so MDCF prebiotics selectively reward only competent taxa.
+        self.substrate_affinity = (
+            max(0.0, getattr(species, 'aff_calorie', DEFAULT_AFF_CALORIE)),
+            max(0.0, getattr(species, 'aff_glycan', DEFAULT_AFF_GLYCAN)),
+            max(0.0, getattr(species, 'aff_mdcf', DEFAULT_AFF_MDCF)),
+        )
         
         # Kinematic scaling in low Reynolds number environments (microscale)
         # Reference: Stokes' Law for viscous drag (Fd = 6*pi*eta*r*v). V scales inversely with radius (base_size)
@@ -100,6 +114,10 @@ class Bacterium:
         # last_acetate_consumption_pg feeds acetate-oxidation O2/CO2 coupling in the env update.
         self.last_food_uptake_pg = 0.0
         self.last_acetate_consumption_pg = 0.0
+        # Phase I diet analytics: per-step substrate mass (pg) ingested this tick, indexed by
+        # SUBSTRATE_* id (0 = generic calorie, 1 = complex glycan, 2 = MDCF prebiotic). One slot
+        # per substrate class in SUBSTRATE_ENERGY_YIELD so the Simulation can aggregate diet uptake.
+        self.last_uptake_by_substrate = [0.0] * len(SUBSTRATE_ENERGY_YIELD)
         # M3 Baranyi & Roberts (1994) physiological state q. Fresh inoculum starts at the species' q0
         # (low -> long lag); daughter cells inherit the parent's adapted q so they do not re-lag.
         self.q = initial_q if initial_q is not None else getattr(species, 'baranyi_q0', DEFAULT_BARANYI_Q0)
@@ -231,6 +249,11 @@ class Bacterium:
         for node in candidate_nodes:
             if node.amount <= MIN_FOOD_NODE_AMOUNT_PG:
                 continue
+            # Phase I diet model: ignore substrate classes this cell cannot metabolise (affinity 0)
+            # so chemotaxis and targeting are selective — MDCF prebiotics attract only competent taxa.
+            node_aff = self.substrate_affinity[getattr(node, 'substrate_id', DEFAULT_SUBSTRATE_ID)]
+            if node_aff <= 0.0:
+                continue
             dx = node.x - self.x
             dy = node.y - self.y
             dist = math.hypot(dx, dy)
@@ -242,8 +265,8 @@ class Bacterium:
             
             # Equation: C = amount / (pi * (r^2 + a^2)) models a softened 2D nutrient patch without a zero-distance singularity.
             concentration = node.amount / (math.pi * ((dist ** 2) + (CHEMOTAXIS_CORE_RADIUS_UM ** 2)))
-            # Equation: score = greed * log1p(C / C_ref), matching receptor saturation/compression of strong signals.
-            score = gx_eff * math.log1p(concentration / CHEMOTAXIS_REFERENCE_PG_PER_UM2)
+            # Equation: score = greed * affinity * log1p(C / C_ref); affinity weights attraction toward usable substrates.
+            score = gx_eff * node_aff * math.log1p(concentration / CHEMOTAXIS_REFERENCE_PG_PER_UM2)
             if dist > NUMERIC_DISTANCE_EPSILON_UM:
                 gradient_x += (dx / dist) * score
                 gradient_y += (dy / dist) * score
@@ -284,12 +307,23 @@ class Bacterium:
 
         # Multi-node consumption: feed from all candidate nodes within eat distance.
         # Membrane transporter kinetics are temperature-limited, so uptake scales with temp_factor.
+        # max_eat_amt is the shared transporter throughput budget (mass, pg) available this tick.
         max_eat_amt = self.consumption_speed * dt * temp_factor
         amt_eaten_total = 0.0
+        # Reset this tick's per-substrate uptake ledger before the consumption loop so each frame
+        # reports only the mass ingested this step (the Simulation accumulates the running totals).
+        for _si in range(len(self.last_uptake_by_substrate)):
+            self.last_uptake_by_substrate[_si] = 0.0
         is_grazing = False
         
         for node in candidate_nodes:
             if node.amount <= MIN_FOOD_NODE_AMOUNT_PG:
+                continue
+            # Phase I diet model: per-substrate affinity gates and scales uptake; substrates with
+            # zero affinity cannot be metabolised and are skipped entirely.
+            sid = getattr(node, 'substrate_id', DEFAULT_SUBSTRATE_ID)
+            node_aff = self.substrate_affinity[sid]
+            if node_aff <= 0.0:
                 continue
             # Geometric volumetric scaling: V = 4/3 * pi * r^3 -> r = cbrt(3V / 4pi)
             target_radius = max(FOOD_NODE_MIN_RADIUS_UM, ((3.0 * max(FOOD_NODE_MIN_VOLUME_PG, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
@@ -301,13 +335,25 @@ class Bacterium:
                 is_grazing = True
                 
             # If close enough to feed (small margin)
-            if d <= eat_dist + FOOD_EATING_DISTANCE_GRACE_UM and amt_eaten_total < max_eat_amt:
-                eat_amt = min(max_eat_amt - amt_eaten_total, node.amount, max(0.0, self.food_capacity - self.food_level))
-                self.food_level += eat_amt
-                node.amount -= eat_amt
-                amt_eaten_total += eat_amt
+            remaining_budget = max_eat_amt - amt_eaten_total
+            if d <= eat_dist + FOOD_EATING_DISTANCE_GRACE_UM and remaining_budget > 0.0:
+                # Energy yield (glucose-equivalent fraction) gained per pg of this substrate ingested.
+                yield_f = SUBSTRATE_ENERGY_YIELD.get(sid, 1.0)
+                # Internal storage headroom expressed back in ingestible substrate mass (pg).
+                room_mass = max(0.0, self.food_capacity - self.food_level) / max(yield_f, MIN_FOOD_NODE_AMOUNT_PG)
+                # Affinity scales the per-substrate uptake rate; the draw can never exceed the
+                # remaining shared transporter budget, the node's mass, or storage headroom.
+                eat_amt = min(remaining_budget * node_aff, remaining_budget, node.amount, room_mass)
+                if eat_amt > 0.0:
+                    # Mass is conserved (node loses eat_amt); stored energy gains eat_amt * yield.
+                    self.food_level += eat_amt * yield_f
+                    node.amount -= eat_amt
+                    amt_eaten_total += eat_amt
+                    # Attribute the ingested mass to its substrate class for diet analytics.
+                    if 0 <= sid < len(self.last_uptake_by_substrate):
+                        self.last_uptake_by_substrate[sid] += eat_amt
 
-        # Record this tick's glucose uptake so the species step can excrete overflow acetate (M2).
+        # Record this tick's glucose-equivalent uptake mass so the species step can excrete overflow acetate (M2).
         self.last_food_uptake_pg = amt_eaten_total
 
         if is_grazing:
@@ -334,6 +380,13 @@ class Bacterium:
         # Brownian angular variance is sigma^2 = 2 D_rot dt, so the sampled angle uses sqrt(2 D_rot dt).
         rotational_sigma_rad = math.sqrt(BROWNIAN_ROTATIONAL_VARIANCE_FACTOR * rotational_diffusion * dt)
         self.heading += random.gauss(0, rotational_sigma_rad)
+        
+        # Spatial heterogeneity: cells in the outer mucus annulus adhere to the matrix and slow
+        # down, forming an anchoring refuge from luminal washout (Lee et al. 2018). `bounds` carries
+        # the petri centre/radius also used for the circular boundary reflection below.
+        cx_b, cy_b, r_b = bounds
+        if r_b > 0.0 and math.hypot(self.x - cx_b, self.y - cy_b) >= r_b * MUCUS_LAYER_RADIUS_FRACTION:
+            spd *= MUCUS_MOTILITY_FACTOR
         
         # Forward translation
         self.x += math.cos(self.heading) * spd
@@ -421,7 +474,9 @@ class BacteriaSpecies:
                  persister_enter_thresh=DEFAULT_PERSISTER_ENTER_THRESH,
                  persister_exit_thresh=DEFAULT_PERSISTER_EXIT_THRESH,
                  phage_resistance=DEFAULT_PHAGE_RESISTANCE,
-                 hgt_competence=DEFAULT_HGT_COMPETENCE):
+                 hgt_competence=DEFAULT_HGT_COMPETENCE,
+                 aff_calorie=DEFAULT_AFF_CALORIE, aff_glycan=DEFAULT_AFF_GLYCAN,
+                 aff_mdcf=DEFAULT_AFF_MDCF):
         # Store parameters
         self.name = name
         self.base_rep = rep       # base reproduction probability
@@ -471,6 +526,13 @@ class BacteriaSpecies:
         # transfer of resistance (0 disables both donating and receiving).
         self.phage_resistance = max(0.0, min(float(phage_resistance), 1.0))
         self.hgt_competence = max(0.0, min(float(hgt_competence), 1.0))
+        # Phase I diet model: per-substrate uptake-efficiency multipliers (>=0) scaling
+        # consumption_speed for generic calories, complex glycans, and MDCF prebiotics. Defaults
+        # grant only calorie use, so fibre/MDCF utilisation is an explicit, taxon-specific trait
+        # that lets the MDCF diet selectively favour competent species (Gehrig et al. 2019).
+        self.aff_calorie = max(0.0, float(aff_calorie))
+        self.aff_glycan = max(0.0, float(aff_glycan))
+        self.aff_mdcf = max(0.0, float(aff_mdcf))
         # Each bacterium gets a random size
         self.members = [Bacterium(self, random.randint(0,800), random.randint(0,600),
                                   size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)))
@@ -478,6 +540,9 @@ class BacteriaSpecies:
         self.history = []         # track population over time
         self.total_births = 0     # overall births
         self.total_deaths = 0     # overall deaths
+        # Phase I reproducibility: elapsed sim-seconds at which this species first reached zero
+        # population (irreversible from 0 here). None until/unless the species goes extinct.
+        self.extinction_time = None
 
     def _ratkowsky_sqrt_mu(self, temp_c):
         """Raw square-root growth term sqrt(mu) of the Ratkowsky (1983) model (unnormalized).
@@ -676,7 +741,13 @@ class Simulation:
     """
     Manages multiple species, environment, and global stats.
     """
-    def __init__(self, spp, env, cap, steps=500):
+    def __init__(self, spp, env, cap, steps=500, seed=None):
+        # Phase I reproducibility: a non-None seed makes every stochastic draw deterministic so
+        # extinction/abundance baselines are repeatable. Seed BEFORE any other RNG use so runs that
+        # construct species after this point (programmatic tests) share the same stream.
+        self.seed = seed
+        if seed is not None:
+            random.seed(seed)
         # give each species a reference to the full list
         for sp in spp:
             setattr(sp, 'species_list', spp)
@@ -694,6 +765,9 @@ class Simulation:
         self.food_nodes = []
         self.drop_frequency = env.get('drop_frequency', 5)
         self.drop_range = env.get('drop_range', (2, 8))
+        # Phase I: active diet profile controls the substrate-class mix of nutrient drops
+        # (malnutrition / standard / mdcf). Falls back to the standard supplementary diet.
+        self.diet_profile = env.get('diet_profile', DEFAULT_DIET_PROFILE)
 
     def _empty_stats(self):
         return {
@@ -705,13 +779,27 @@ class Simulation:
             'births': [],
             'deaths': [],
             'overall_births': [],
-            'overall_deaths': []
+            'overall_deaths': [],
+            # Phase I spatial heterogeneity: per-step population split between the central lumen
+            # and the outer mucus annulus (membership by radial fraction vs MUCUS_LAYER_RADIUS_FRACTION).
+            'lumen': [],
+            'mucus': [],
+            # Phase I diet analytics: cumulative substrate mass (pg) ingested by the whole community,
+            # one running total per SUBSTRATE_* class (0 = generic calorie, 1 = complex glycan,
+            # 2 = MDCF prebiotic). Monotonic non-decreasing; supports diet-efficacy comparisons.
+            'consumed_calorie': [],
+            'consumed_glycan': [],
+            'consumed_mdcf': []
         }
 
     def reset(self):
         """
         Reset populations to initial values and clear stats.
         """
+        # Phase I reproducibility: re-seeding on reset makes repeated runs from the same seed
+        # regenerate identical initial layouts and stochastic trajectories.
+        if self.seed is not None:
+            random.seed(self.seed)
         for sp in self.species:
             initial = int(sp.history[0] if sp.history and sp.history[0] else len(sp.members))
             sp.members = []
@@ -728,6 +816,7 @@ class Simulation:
             sp.history = []
             sp.total_births = 0
             sp.total_deaths = 0
+            sp.extinction_time = None
         self.stats = self._empty_stats()
         self.species_step_stats = []
         self.step_idx = 0
@@ -870,6 +959,22 @@ class Simulation:
                                             b.food_level = min(b.food_capacity, b.food_level + digestible_gain)
                                             other.food_level = CONSUMED_PREY_SENTINEL_FOOD_LEVEL
 
+    def _sample_substrate(self):
+        """Draw a substrate class for one nutrient drop from the active diet profile.
+
+        The diet profile (malnutrition / standard / mdcf) defines the categorical probability of
+        each substrate class, reproducing distinct experimental feeding arms (Gehrig et al. 2019).
+        Inverse-CDF sampling over the profile's ratios; unknown profiles fall back to generic calorie.
+        """
+        ratios = DIET_PROFILES.get(self.diet_profile, DIET_PROFILES[DEFAULT_DIET_PROFILE])
+        r = random.random()
+        cumulative = 0.0
+        for sid in SUBSTRATE_IDS:
+            cumulative += ratios.get(sid, 0.0)
+            if r < cumulative:
+                return sid
+        return DEFAULT_SUBSTRATE_ID
+
     def update(self, w, h, dt, viewport_bounds=None):
         """
         Advance one time step if running.
@@ -893,7 +998,13 @@ class Simulation:
             x = self.petri_center[0] + r_f * math.cos(th)
             y = self.petri_center[1] + r_f * math.sin(th)
             amount = random.uniform(*self.drop_range)
-            node = FoodNode.acquire().init(x, y, amount)
+            # Spatial heterogeneity: the mucus annulus receives less direct nutrient deposition than
+            # the well-mixed lumen, which luminal flow supplies with most fresh dietary substrate.
+            if r_f >= self.petri_radius * MUCUS_LAYER_RADIUS_FRACTION:
+                amount *= MUCUS_DROP_AMOUNT_FACTOR
+            # Phase I: assign a substrate class to this drop per the active diet profile.
+            substrate_id = self._sample_substrate()
+            node = FoodNode.acquire().init(x, y, amount, substrate_id)
             self.food_nodes.append(node)
 
         # --- M5 Phage seeding: Poisson introduction of free virions (epidemic trigger) ---
@@ -912,6 +1023,15 @@ class Simulation:
                 px = self.petri_center[0] + r_p * math.cos(th_p)
                 py = self.petri_center[1] + r_p * math.sin(th_p)
                 self.ecm.add(px, py, PHAGE_SEED_PACKET_VIRIONS * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
+
+        # Spatial washout: luminal flow / peristalsis clears free nutrient mass quickly, while the
+        # mucus layer is a stabilized refuge. Exponential mass loss per real second, by zone.
+        cx0, cy0 = self.petri_center
+        inv_r = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
+        for node in self.food_nodes:
+            frac = math.hypot(node.x - cx0, node.y - cy0) * inv_r
+            rate = MUCUS_FOOD_WASHOUT_RATE_PER_SEC if frac >= MUCUS_LAYER_RADIUS_FRACTION else LUMEN_FOOD_WASHOUT_RATE_PER_SEC
+            node.amount -= node.amount * rate * dt
 
         to_remove = [n for n in self.food_nodes if n.amount < MIN_FOOD_NODE_AMOUNT_PG]
         for node in to_remove:
@@ -965,7 +1085,22 @@ class Simulation:
                 for b in sp.members:
                     all_bacteria.append((sp, b))
             if len(all_bacteria) > 0:
-                to_kill = random.sample(all_bacteria, min(excess, len(all_bacteria)))
+                n_kill = min(excess, len(all_bacteria))
+                # Spatial competition: the well-mixed lumen imposes stronger resource competition
+                # than the stabilized mucus refuge, so luminal cells are preferentially lost under
+                # carrying-capacity pressure. Weighted sampling without replacement (Efraimidis &
+                # Spirakis 2006): key = U^(1/w); the n_kill largest keys are removed, so lumen cells
+                # (up-weighted by LUMEN_COMPETITION_CULL_WEIGHT) are more likely to be culled. With
+                # equal weights this reduces exactly to uniform random sampling.
+                cx0, cy0 = self.petri_center
+                inv_r = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
+                keyed = []
+                for sp, b in all_bacteria:
+                    frac = math.hypot(b.x - cx0, b.y - cy0) * inv_r
+                    w_comp = 1.0 if frac >= MUCUS_LAYER_RADIUS_FRACTION else LUMEN_COMPETITION_CULL_WEIGHT
+                    keyed.append((random.random() ** (1.0 / w_comp), sp, b))
+                keyed.sort(key=lambda t: t[0], reverse=True)
+                to_kill = [(sp, b) for _, sp, b in keyed[:n_kill]]
                 for sp, b in to_kill:
                     sp.members.remove(b)
                     sp.total_deaths += 1
@@ -974,6 +1109,12 @@ class Simulation:
             deaths_list[idx] += forced_deaths_per_species[sp]
         sum_forced = sum(forced_deaths_per_species.values())
         elapsed_seconds = (self.stats['elapsed_seconds'][-1] if self.stats['elapsed_seconds'] else 0.0) + dt
+        # Phase I extinction baseline: record the elapsed sim-time at which each species first hits
+        # zero population. A species cannot regrow from zero in this model, so the first crossing is
+        # the time-to-extinction; survivors keep extinction_time = None.
+        for sp in self.species:
+            if sp.extinction_time is None and len(sp.members) == 0:
+                sp.extinction_time = elapsed_seconds
         step_births = bsum
         step_deaths = dsum + sum_forced
         overall_births = (self.stats['overall_births'][-1] if self.stats['overall_births'] else 0) + step_births
@@ -987,6 +1128,32 @@ class Simulation:
         self.stats['deaths'].append(step_deaths)
         self.stats['overall_births'].append(overall_births)
         self.stats['overall_deaths'].append(overall_deaths)
+        # Phase I spatial heterogeneity: classify each live cell by radial fraction so the Stats tab
+        # and export can report lumen vs mucus occupancy. mucus = outer annulus (frac >= threshold).
+        cx_z, cy_z = self.petri_center
+        inv_r_z = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
+        mucus_count = 0
+        total_count = 0
+        # Phase I diet analytics: sum this step's per-cell substrate uptake, then carry forward the
+        # previous cumulative total so the series is monotonic (total mass ever ingested per class).
+        step_uptake = [0.0, 0.0, 0.0]  # indices map to SUBSTRATE_* ids 0/1/2
+        for sp in self.species:
+            for b in sp.members:
+                total_count += 1
+                if math.hypot(b.x - cx_z, b.y - cy_z) * inv_r_z >= MUCUS_LAYER_RADIUS_FRACTION:
+                    mucus_count += 1
+                ub = getattr(b, 'last_uptake_by_substrate', None)
+                if ub:
+                    for _si in range(min(len(ub), len(step_uptake))):
+                        step_uptake[_si] += ub[_si]
+        self.stats['mucus'].append(mucus_count)
+        self.stats['lumen'].append(total_count - mucus_count)
+        prev_cal = self.stats['consumed_calorie'][-1] if self.stats['consumed_calorie'] else 0.0
+        prev_gly = self.stats['consumed_glycan'][-1] if self.stats['consumed_glycan'] else 0.0
+        prev_mdcf = self.stats['consumed_mdcf'][-1] if self.stats['consumed_mdcf'] else 0.0
+        self.stats['consumed_calorie'].append(prev_cal + step_uptake[0])
+        self.stats['consumed_glycan'].append(prev_gly + step_uptake[1])
+        self.stats['consumed_mdcf'].append(prev_mdcf + step_uptake[2])
         self.species_step_stats.append({'births': births_list, 'deaths': deaths_list})
         for sp in self.species:
             if sp.history:
@@ -1086,6 +1253,9 @@ class Simulation:
                 writer.writerow(['--- Environment Configuration ---'])
                 for k, v in default_env.items():
                     writer.writerow([k, v])
+                # Phase I reproducibility: persist the RNG seed used for this run so the
+                # baseline can be exactly reproduced from the exported configuration.
+                writer.writerow(['seed', self.seed if self.seed is not None else ''])
                 writer.writerow([])
             if dm_species is not None and len(dm_species) > 0:
                 writer.writerow(['--- Species Configuration ---'])
@@ -1096,7 +1266,15 @@ class Simulation:
                 writer.writerow([])
             # Write header for global stats
             writer.writerow(['--- Global Stats ---'])
-            writer.writerow(['time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds', 'tickrate_hz', 'overall_births', 'overall_deaths'])
+            writer.writerow(['time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds', 'tickrate_hz', 'overall_births', 'overall_deaths', 'lumen', 'mucus', 'consumed_calorie', 'consumed_glycan', 'consumed_mdcf'])
+            # Zone and substrate-consumption columns may be absent on stats built by legacy imports
+            # or manual construction; fall back to blank so the row width stays consistent without
+            # raising IndexError.
+            lumen_series = self.stats.get('lumen', [])
+            mucus_series = self.stats.get('mucus', [])
+            cal_series = self.stats.get('consumed_calorie', [])
+            gly_series = self.stats.get('consumed_glycan', [])
+            mdcf_series = self.stats.get('consumed_mdcf', [])
             for i in range(len(self.stats['time'])):
                 writer.writerow([
                     self.stats['time'][i],
@@ -1107,7 +1285,12 @@ class Simulation:
                     self.stats['dt_seconds'][i],
                     self.stats['tickrate_hz'][i],
                     self.stats['overall_births'][i],
-                    self.stats['overall_deaths'][i]
+                    self.stats['overall_deaths'][i],
+                    lumen_series[i] if i < len(lumen_series) else '',
+                    mucus_series[i] if i < len(mucus_series) else '',
+                    cal_series[i] if i < len(cal_series) else '',
+                    gly_series[i] if i < len(gly_series) else '',
+                    mdcf_series[i] if i < len(mdcf_series) else ''
                 ])
             # Write per-species stats
             writer.writerow([])
@@ -1130,6 +1313,19 @@ class Simulation:
                         cum_births,
                         cum_deaths
                     ])
+            # Phase I extinction baseline: one row per species with the time-to-extinction (elapsed
+            # sim-seconds at first zero-population crossing) or blank if the species survived.
+            writer.writerow([])
+            writer.writerow(['--- Extinction Events ---'])
+            writer.writerow(['Species', 'Time_To_Extinction_s', 'Extinct', 'Final_Count'])
+            for sp in self.species:
+                extinct = sp.extinction_time is not None
+                writer.writerow([
+                    sp.name,
+                    sp.extinction_time if extinct else '',
+                    int(extinct),
+                    len(sp.members)
+                ])
         print(f"Exported data to {EXPORT_FILE}")
 
     def import_stats(self, filename=EXPORT_FILE):

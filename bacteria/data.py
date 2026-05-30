@@ -17,7 +17,7 @@ class SpeciesDataManager:
     def __init__(self, filename=DATA_FILE):
         self.filename = filename
         # Updated CSV columns: name, initial count, rates, O2 sens, food sens, speed, preferred pH, food system, interactions
-        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius', 'temp_min', 'temp_max', 'acetate_secretion', 'acetate_uptake', 'baranyi_q0', 'persister_switch', 'persister_enter_thresh', 'persister_exit_thresh', 'phage_resistance', 'hgt_competence']
+        self.fieldnames = ['name', 'init', 'rep', 'aging', 'so', 'sf', 'speed', 'ph', 'food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor', 'rep_thresh', 'share_thresh', 'predation_thresh', 'base_size', 'sensor_radius', 'temp_min', 'temp_max', 'acetate_secretion', 'acetate_uptake', 'baranyi_q0', 'persister_switch', 'persister_enter_thresh', 'persister_exit_thresh', 'phage_resistance', 'hgt_competence', 'aff_calorie', 'aff_glycan', 'aff_mdcf']
 
         self.species = []
         self.load()
@@ -54,7 +54,12 @@ class SpeciesDataManager:
                 'persister_enter_thresh': '0.15',
                 'persister_exit_thresh': '0.5',
                 'phage_resistance': '0.0',
-                'hgt_competence': '0.0'
+                'hgt_competence': '0.0',
+                # Phase I diet affinities: default to calorie-only utilisation for back-compat
+                # so legacy CSVs (no affinity columns) reproduce the original feeding behaviour.
+                'aff_calorie': '1.0',
+                'aff_glycan': '0.0',
+                'aff_mdcf': '0.0'
             }
             normalized_species = []
             for sp in self.species:
@@ -142,6 +147,10 @@ def save_env_config(env):
             'drop_range_max': env['drop_range_max'],
             'capacity': env['capacity'],
             # M5: persist free-phage seeding rate so a configured outbreak survives reload
-            'phage_inflow': env.get('phage_inflow', 0)
+            'phage_inflow': env.get('phage_inflow', 0),
+            # Phase I: persist the active diet profile (substrate-class drop mix) across reloads.
+            'diet_profile': env.get('diet_profile', DEFAULT_DIET_PROFILE),
+            # Phase I: persist the RNG seed (null = nondeterministic) for reproducible baselines.
+            'seed': env.get('seed', None)
         }, f)
 

@@ -1,6 +1,7 @@
 import math
 import re
 import ast
+import random
 import pygame, sys, os
 from pygame.locals import *
 import sys
@@ -80,7 +81,10 @@ class App:
             'persister_enter_thresh': 'Fullness S1 below which starvation triggers persistence (0-1)',
             'persister_exit_thresh': 'Fullness S2 above which persisters resuscitate (0-1)',
             'phage_resistance': 'Initial fraction of cells born phage-resistant (0-1)',
-            'hgt_competence': 'Horizontal gene transfer competence (0-1, 0=disabled)'
+            'hgt_competence': 'Horizontal gene transfer competence (0-1, 0=disabled)',
+            'aff_calorie': 'Generic-calorie uptake affinity (>=0, multiplies eat rate)',
+            'aff_glycan': 'Complex-glycan (fibre) uptake affinity (>=0, 0=cannot use)',
+            'aff_mdcf': 'MDCF prebiotic uptake affinity (>=0, 0=cannot use)'
         })
         if 'food_capacity' not in self.dm.fieldnames:
             self.dm.fieldnames += ['food_capacity', 'metabolic_rate', 'consumption_speed', 'greediness', 't6ss_activity', 'bacteriocin_production', 'immunity_factor']
@@ -100,6 +104,8 @@ class App:
             self.dm.fieldnames += ['persister_switch', 'persister_enter_thresh', 'persister_exit_thresh']
         if 'phage_resistance' not in self.dm.fieldnames:
             self.dm.fieldnames += ['phage_resistance', 'hgt_competence']
+        if 'aff_calorie' not in self.dm.fieldnames:
+            self.dm.fieldnames += ['aff_calorie', 'aff_glycan', 'aff_mdcf']
 
         # Undo and redo stacks for editing species table
         self.undo_stack = []
@@ -139,7 +145,10 @@ class App:
             'persister_enter_thresh': 'PEn',
             'persister_exit_thresh': 'PEx',
             'phage_resistance': 'PhR',
-            'hgt_competence': 'HGT'
+            'hgt_competence': 'HGT',
+            'aff_calorie': 'AfCal',
+            'aff_glycan': 'AfGly',
+            'aff_mdcf': 'AfMDC'
         }
 
         # Add scroll state for species tab
@@ -180,7 +189,9 @@ class App:
             'drop_frequency': 'Expected nutrient clusters per second (0 to 100)',
             'drop_range_min': 'Min nutrient drop amount (>= 1)',
             'drop_range_max': 'Max nutrient drop amount (>= drop_range_min)',
-            'phage_inflow': 'Free-phage seed packets per second (0 = no outbreak)'
+            'phage_inflow': 'Free-phage seed packets per second (0 = no outbreak)',
+            'seed': 'Integer RNG seed for reproducible runs; blank = random. Applies on reset/reload.',
+            'diet_profile': 'Dietary feeding arm; click/Enter cycles malnutrition/standard/mdcf. Applies on reset/reload.'
         }
         self.show_globals_desc = False
         self.globals_desc_btn = Button((self.w - 200, self.h - 60, 180, 30), 'Show Desc', self.toggle_globals_desc)
@@ -188,7 +199,7 @@ class App:
         # Canonical Globals-tab row order. Defined once so the renderer, mouse
         # picker, and keyboard navigation share an identical index->key mapping;
         # any divergence would let a cell edit write to the wrong global.
-        self.GLOBALS_ENV_KEYS = ['o2', 'co2', 'ph', 'temperature', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max', 'phage_inflow']
+        self.GLOBALS_ENV_KEYS = ['o2', 'co2', 'ph', 'temperature', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max', 'phage_inflow', 'seed', 'diet_profile']
 
         # Load env config as default env
         loaded_env = load_env_config()
@@ -201,7 +212,9 @@ class App:
             'drop_range_min': 2,
             'drop_range_max': 8,
             'capacity': 500,
-            'phage_inflow': 0
+            'phage_inflow': 0,
+            'diet_profile': DEFAULT_DIET_PROFILE,
+            'seed': None
         }
         if loaded_env:
             self.default_env.update(loaded_env)
@@ -474,6 +487,17 @@ class App:
             self.clamp_grid_center()
 
     def init_sim(self):
+        # Phase I reproducibility: if a seed is configured, seed the RNG BEFORE constructing species
+        # (their initial member positions/sizes are random) so the whole run is deterministic.
+        seed_val = self.default_env.get('seed', None)
+        if seed_val is not None and seed_val != '':
+            try:
+                seed_val = int(seed_val)
+                random.seed(seed_val)
+            except (TypeError, ValueError):
+                seed_val = None
+        else:
+            seed_val = None
         cols = [(200, 50, 50), (50, 200, 50), (50, 50, 200), (200, 200, 50)]
         spp = []
         for i, d in enumerate(self.dm.species):
@@ -509,7 +533,10 @@ class App:
                     persister_enter_thresh=float(d.get('persister_enter_thresh') or DEFAULT_PERSISTER_ENTER_THRESH),
                     persister_exit_thresh=float(d.get('persister_exit_thresh') or DEFAULT_PERSISTER_EXIT_THRESH),
                     phage_resistance=float(d.get('phage_resistance') or DEFAULT_PHAGE_RESISTANCE),
-                    hgt_competence=float(d.get('hgt_competence') or DEFAULT_HGT_COMPETENCE)
+                    hgt_competence=float(d.get('hgt_competence') or DEFAULT_HGT_COMPETENCE),
+                    aff_calorie=float(d.get('aff_calorie') or DEFAULT_AFF_CALORIE),
+                    aff_glycan=float(d.get('aff_glycan') or DEFAULT_AFF_GLYCAN),
+                    aff_mdcf=float(d.get('aff_mdcf') or DEFAULT_AFF_MDCF)
                 ))
             except Exception:
                 continue
@@ -526,11 +553,14 @@ class App:
                 persister_enter_thresh=DEFAULT_PERSISTER_ENTER_THRESH,
                 persister_exit_thresh=DEFAULT_PERSISTER_EXIT_THRESH,
                 phage_resistance=DEFAULT_PHAGE_RESISTANCE,
-                hgt_competence=DEFAULT_HGT_COMPETENCE
+                hgt_competence=DEFAULT_HGT_COMPETENCE,
+                aff_calorie=DEFAULT_AFF_CALORIE,
+                aff_glycan=DEFAULT_AFF_GLYCAN,
+                aff_mdcf=DEFAULT_AFF_MDCF
             ))
             
         self.active_env = self.default_env.copy()
-        self.sim = Simulation(spp, self.active_env, cap=self.active_env['capacity'], steps=500)
+        self.sim = Simulation(spp, self.active_env, cap=self.active_env['capacity'], steps=500, seed=seed_val)
 
     def add_species(self):
         """Append new blank species and re-init simulation, with undo/redo support."""
@@ -742,7 +772,10 @@ class App:
             
             # Show edit context text if not being edited currently
             if not (self.editors and self.editors[0].row_idx == i and self.editors[0].col == key and self.tab == 'globals'):
-                txt = constants.FONT.render(str(env_target.get(key, 0)), True, WHITE)
+                raw_val = env_target.get(key, 0)
+                # A null seed means "no fixed seed" -> show a friendly label instead of "None".
+                disp = '(random)' if key == 'seed' and raw_val in (None, '') else str(raw_val)
+                txt = constants.FONT.render(disp, True, WHITE)
                 self.screen.blit(txt, (rect[0] + 5, rect[1] + 5))
 
         # Draw show/hide descriptions button in bottom right
@@ -793,7 +826,15 @@ class App:
             self.selected_row -= 1
         if e.key == K_RETURN:
             key = keys[self.selected_row]
+            # diet_profile is categorical: cycle through the arms instead of text editing.
+            if key == 'diet_profile':
+                self._cycle_diet_profile()
+                return
             val = self.default_env.get(key, 0)
+            # Start the seed editor blank (not 'None') when no seed is set, so the
+            # user types a number directly or leaves it empty for a random run.
+            if key == 'seed' and val in (None, ''):
+                val = ''
             rect = (50 + 200, 100 + self.selected_row*30, 240, 30)
             self.editors = [CellEditor(key, rect, val, self.selected_row, 0)]
 
@@ -959,6 +1000,51 @@ class App:
             return True
         # Add other dialogs here as needed
         return False
+
+    @staticmethod
+    def parse_seed_input(text):
+        """Parse a Globals-tab seed entry into a reproducibility seed.
+
+        Returns (ok, value): a blank / 'none' / 'null' entry maps to
+        (True, None) meaning a fresh nondeterministic run; any non-negative
+        integer (tolerating a trailing '.0') maps to (True, int); anything
+        else is rejected as (False, None) so the existing value is preserved.
+        Seeds are constrained to non-negative integers because random.seed is
+        applied as an int in init_sim and negatives offer no extra coverage.
+        """
+        raw = str(text).strip().lower()
+        if raw in ('', 'none', 'null'):
+            return True, None
+        try:
+            value = int(float(raw))  # tolerate '42.0' from numeric normalization
+        except (TypeError, ValueError):
+            return False, None
+        if value < 0:
+            return False, None
+        return True, value
+
+    @staticmethod
+    def next_diet_profile(current):
+        """Return the next dietary feeding arm in the canonical cycle.
+
+        diet_profile is a 3-valued categorical (malnutrition / standard / mdcf), so the Globals
+        tab cycles it on interaction rather than free-text editing. Cycling order follows the
+        insertion order of DIET_PROFILES; an unknown current value resets to DEFAULT_DIET_PROFILE.
+        """
+        order = list(DIET_PROFILES.keys())
+        if current in order:
+            return order[(order.index(current) + 1) % len(order)]
+        return DEFAULT_DIET_PROFILE
+
+    def _cycle_diet_profile(self):
+        """Advance default_env['diet_profile'] to the next arm and persist it (undoable)."""
+        old_val = self.default_env.get('diet_profile', DEFAULT_DIET_PROFILE)
+        new_val = App.next_diet_profile(old_val)
+        if str(old_val) != str(new_val):
+            self.global_undo_stack.append({'action': 'cell_edit', 'col': 'diet_profile', 'old': old_val, 'new': new_val})
+            self.global_redo_stack.clear()
+            self.default_env['diet_profile'] = new_val
+            save_env_config(self.default_env)
 
     @staticmethod
     def normalize_numeric_string(s):
@@ -1188,6 +1274,18 @@ class App:
                         if self.tab == 'globals':
                             col = ed.col
                             old_val = self.default_env.get(col, 0)
+                            if col == 'seed':
+                                # Seed is optional: blank clears it (random run), else a
+                                # non-negative integer. Handled separately from the numeric
+                                # globals so an empty entry does not raise in float().
+                                ok, seed_val = App.parse_seed_input(val)
+                                if ok and str(old_val) != str(seed_val):
+                                    self.global_undo_stack.append({'action': 'cell_edit', 'col': col, 'old': old_val, 'new': seed_val})
+                                    self.global_redo_stack.clear()
+                                    self.default_env[col] = seed_val
+                                    save_env_config(self.default_env)
+                                self.editors = []
+                                continue
                             new_val = App.normalize_numeric_string(val)
                             try:
                                 num = float(new_val)
@@ -1384,6 +1482,11 @@ class App:
                         scaled_r = int(self.sim.petri_radius * self.zoom)
                         if scaled_r > 0:
                             pygame.draw.circle(self.screen, (80, 80, 80), (int(sx), int(sy)), scaled_r, max(1, int(3 * self.zoom)))
+                        # Phase I spatial heterogeneity: dashed-style inner ring marks the lumen
+                        # (inner disk) / mucus (outer annulus) boundary at MUCUS_LAYER_RADIUS_FRACTION.
+                        mucus_r = int(self.sim.petri_radius * MUCUS_LAYER_RADIUS_FRACTION * self.zoom)
+                        if mucus_r > 0:
+                            pygame.draw.circle(self.screen, (70, 110, 90), (int(sx), int(sy)), mucus_r, max(1, int(self.zoom)))
                     
                     # Draw food nodes in grid (Draw first so they are under bacteria)
                     for node in self.sim.food_nodes:
@@ -1394,7 +1497,10 @@ class App:
                             # amount = V (pg = um^3), r = cbrt(3V / 4pi)
                             food_r_um = max(FOOD_NODE_MIN_RADIUS_UM, ((3.0 * max(FOOD_NODE_MIN_VOLUME_PG, node.amount)) / (4.0 * math.pi)) ** (1.0 / 3.0))
                             radius = max(1, int(4 * self.zoom * food_r_um))
-                            pygame.draw.circle(self.screen, (200,200,70), (int(sx), int(sy)), radius)
+                            # Phase I: colour each nutrient patch by its dietary substrate class
+                            # (generic calorie / complex glycan / MDCF prebiotic) for visual diet feedback.
+                            food_color = SUBSTRATE_COLORS.get(getattr(node, 'substrate_id', DEFAULT_SUBSTRATE_ID), (200, 200, 70))
+                            pygame.draw.circle(self.screen, food_color, (int(sx), int(sy)), radius)
 
                     # Draw bacteria in grid coordinates
                     for sp in self.sim.species:
@@ -1598,12 +1704,25 @@ class App:
         overall_deaths = self.sim.stats.get('overall_deaths', [])[-1] if self.sim.stats.get('overall_deaths') else sum(self.sim.stats['deaths']) if self.sim.stats['deaths'] else 0
         elapsed_seconds = self.sim.stats.get('elapsed_seconds', [])[-1] if self.sim.stats.get('elapsed_seconds') else 0.0
         tickrate_hz = self.sim.stats.get('tickrate_hz', [])[-1] if self.sim.stats.get('tickrate_hz') else 0.0
+        # Phase I spatial heterogeneity: current lumen vs mucus occupancy (last recorded step).
+        lumen_count = self.sim.stats.get('lumen', [])[-1] if self.sim.stats.get('lumen') else 0
+        mucus_count = self.sim.stats.get('mucus', [])[-1] if self.sim.stats.get('mucus') else 0
+        # Phase I diet analytics: cumulative substrate mass (pg) ingested by the community so far,
+        # per SUBSTRATE_* class (generic calorie / complex glycan / MDCF prebiotic).
+        consumed_calorie = self.sim.stats.get('consumed_calorie', [])[-1] if self.sim.stats.get('consumed_calorie') else 0.0
+        consumed_glycan = self.sim.stats.get('consumed_glycan', [])[-1] if self.sim.stats.get('consumed_glycan') else 0.0
+        consumed_mdcf = self.sim.stats.get('consumed_mdcf', [])[-1] if self.sim.stats.get('consumed_mdcf') else 0.0
         return [
             f"Total Count: {total_count}",
+            f"Lumen Count: {lumen_count}",
+            f"Mucus Count: {mucus_count}",
             f"Total Births (last step): {total_births}",
             f"Total Deaths (last step): {total_deaths}",
             f"Overall Births: {overall_births}",
             f"Overall Deaths: {overall_deaths}",
+            f"Calorie Consumed: {consumed_calorie:.1f} pg",
+            f"Glycan Consumed: {consumed_glycan:.1f} pg",
+            f"MDCF Consumed: {consumed_mdcf:.1f} pg",
             f"Step: {self.sim.step_idx}",
             f"Elapsed: {elapsed_seconds:.2f}s",
             f"Tickrate: {tickrate_hz:.1f} Hz"
@@ -1745,6 +1864,9 @@ class App:
             rect = pygame.Rect(start_x + 200, start_y + i*cell_h, cell_w, cell_h)
             if rect.collidepoint(pos):
                 self.selected_row, self.selected_col = i, 0
+                # diet_profile is categorical: clicking its cell cycles to the next arm.
+                if env_keys[i] == 'diet_profile':
+                    self._cycle_diet_profile()
                 return
 
     def handle_mouse_species(self, pos):
