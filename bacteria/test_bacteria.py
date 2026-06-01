@@ -72,7 +72,14 @@ from bacteria.constants import (
     MUCUS_FOOD_WASHOUT_RATE_PER_SEC,
     MUCUS_DROP_AMOUNT_FACTOR,
     LUMEN_COMPETITION_CULL_WEIGHT,
+    INITIAL_SPAWN_LUMEN_RADIUS_FRACTION,
+    PETRI_RADIUS_PADDING_UM,
 )
+from bacteria.core_sim import (
+    generate_initial_positions,
+    generate_cluster_nuclei,
+)
+import bacteria.core_sim as core_sim
 from bacteria.app import format_world_distance_um
 
 TEST_DT_SEC = 1.0 / FPS
@@ -1292,6 +1299,118 @@ class TestDietInput(unittest.TestCase):
     def test_unknown_profile_resets_to_default(self):
         self.assertEqual(self.App.next_diet_profile('not_a_diet'), DEFAULT_DIET_PROFILE)
         self.assertEqual(self.App.next_diet_profile(None), DEFAULT_DIET_PROFILE)
+
+
+class TestInitialSpawning(unittest.TestCase):
+    """Configurable founder-inoculum spawning: founders land inside the dish, honour the lumen
+    bias, respect per-species arrangement, and are byte-reproducible under the RNG seed."""
+
+    CENTER = (400.0, 300.0)
+    RADIUS = 500.0
+
+    def _inside(self, positions, center, radius, tol=1e-6):
+        cx, cy = center
+        return all(math.hypot(x - cx, y - cy) <= radius + tol for (x, y) in positions)
+
+    def _env(self):
+        return {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION, 'co2': 0.0,
+                'temperature': DEFAULT_ENV_TEMPERATURE_C, 'drop_frequency': 0,
+                'drop_range': (1, 1), 'phage_inflow': 0, 'diet_profile': DEFAULT_DIET_PROFILE}
+
+    def _species(self, name, init):
+        return BacteriaSpecies(name, init, 0.0, 0.0, 1.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
+                               NEUTRAL_PH, (0, 200, 0), base_size=1.0,
+                               food_capacity=50.0, metabolic_rate=0.0, consumption_speed=0.0)
+
+    def test_count_matches_request_and_all_inside_dish(self):
+        # Every requested founder is produced and constrained within the petri boundary.
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'clustered'):
+            pos = generate_initial_positions(120, self.CENTER, self.RADIUS)
+        self.assertEqual(len(pos), 120)
+        self.assertTrue(self._inside(pos, self.CENTER, self.RADIUS))
+
+    def test_full_lumen_bias_places_all_in_lumen(self):
+        # With bias 1.0 every founder lies inside the inner lumen radius (no mucus placement).
+        lumen_r = self.RADIUS * INITIAL_SPAWN_LUMEN_RADIUS_FRACTION
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'uniform_disc'), \
+             patch.object(core_sim, 'INITIAL_SPAWN_LUMEN_BIAS', 1.0):
+            pos = generate_initial_positions(200, self.CENTER, self.RADIUS)
+        self.assertTrue(self._inside(pos, self.CENTER, lumen_r))
+
+    def test_zero_lumen_bias_places_all_in_mucus(self):
+        # With bias 0.0 every founder lies in the outer mucus annulus (radius >= lumen boundary).
+        cx, cy = self.CENTER
+        lumen_r = self.RADIUS * INITIAL_SPAWN_LUMEN_RADIUS_FRACTION
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'uniform_disc'), \
+             patch.object(core_sim, 'INITIAL_SPAWN_LUMEN_BIAS', 0.0):
+            pos = generate_initial_positions(200, self.CENTER, self.RADIUS)
+        self.assertTrue(all(math.hypot(x - cx, y - cy) >= lumen_r - 1e-6 for (x, y) in pos))
+        self.assertTrue(self._inside(pos, self.CENTER, self.RADIUS))
+
+    def test_central_mode_confines_to_central_droplet(self):
+        # 'central' mode keeps the whole inoculum within the configured central-radius fraction.
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'central'), \
+             patch.object(core_sim, 'INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION', 0.15):
+            pos = generate_initial_positions(150, self.CENTER, self.RADIUS)
+        self.assertTrue(self._inside(pos, self.CENTER, self.RADIUS * 0.15))
+
+    def test_segregated_arrangement_confines_species_to_sectors(self):
+        # Two species under 'segregated' occupy disjoint angular half-discs around the centre.
+        cx, cy = self.CENTER
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'uniform_disc'), \
+             patch.object(core_sim, 'INITIAL_SPECIES_ARRANGEMENT', 'segregated'):
+            sp0 = generate_initial_positions(80, self.CENTER, self.RADIUS,
+                                             species_index=0, species_total=2)
+            sp1 = generate_initial_positions(80, self.CENTER, self.RADIUS,
+                                             species_index=1, species_total=2)
+        def angle(p):
+            return math.atan2(p[1] - cy, p[0] - cx) % (2.0 * math.pi)
+        self.assertTrue(all(0.0 <= angle(p) < math.pi + 1e-6 for p in sp0))
+        self.assertTrue(all(math.pi - 1e-6 <= angle(p) < 2.0 * math.pi for p in sp1))
+
+    def test_layout_is_reproducible_under_seed(self):
+        # Re-seeding the RNG reproduces an identical founder layout (deterministic spawning).
+        import random as _random
+        with patch.object(core_sim, 'INITIAL_SPAWN_MODE', 'clustered'):
+            _random.seed(31337)
+            a = generate_initial_positions(100, self.CENTER, self.RADIUS)
+            _random.seed(31337)
+            b = generate_initial_positions(100, self.CENTER, self.RADIUS)
+        self.assertEqual(a, b)
+
+    def test_zero_count_returns_no_positions(self):
+        # A species requesting zero founders produces no positions (and does not raise).
+        self.assertEqual(generate_initial_positions(0, self.CENTER, self.RADIUS), [])
+
+    def test_cluster_nuclei_count_and_bounds(self):
+        # Founder nuclei honour the requested count and all sit inside the dish.
+        nuclei = generate_cluster_nuclei(5, self.CENTER, self.RADIUS)
+        self.assertEqual(len(nuclei), 5)
+        self.assertTrue(self._inside(nuclei, self.CENTER, self.RADIUS))
+
+    def test_simulation_seeds_population_lazily_on_first_update(self):
+        # Members are empty at construction and placed inside the dish on the first update.
+        sp = self._species('Founders', init=40)
+        sim = Simulation([sp], self._env(), 100)
+        self.assertEqual(len(sp.members), 0)         # not placed at construction
+        self.assertFalse(sim._populated)
+        sim.update(800, 600, 0.1)                     # establishes geometry, seeds inoculum
+        self.assertTrue(sim._populated)
+        self.assertEqual(len(sp.members), 40)         # init_count founders placed
+        cx, cy = sim.petri_center
+        R = sim.petri_radius
+        self.assertTrue(self._inside([(b.x, b.y) for b in sp.members], (cx, cy), R))
+
+    def test_reset_repopulates_from_init_count(self):
+        # After a run mutates the population, reset restores exactly init_count founders.
+        sp = self._species('Resettable', init=25)
+        sim = Simulation([sp], self._env(), 100, seed=5)
+        sim.update(800, 600, 0.1)
+        sp.members = sp.members[:3]                    # simulate population change
+        sim.reset()
+        self.assertEqual(len(sp.members), 25)
+        cx, cy = sim.petri_center
+        self.assertTrue(self._inside([(b.x, b.y) for b in sp.members], (cx, cy), sim.petri_radius))
 
 
 if __name__ == '__main__':

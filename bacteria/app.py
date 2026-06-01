@@ -174,8 +174,9 @@ class App:
 
         # Show/hide species attribute descriptions dialog
         self.show_species_desc = False
-        # Button in bottom right corner
-        self.species_desc_btn = Button((self.w - 200, self.h - 60, 180, 30), 'Show Desc', self.toggle_species_desc)
+        # Button in bottom right corner (sized/placed dynamically via _layout_desc_button)
+        self.species_desc_btn = Button((0, 0, 180, 30), 'Show Desc', self.toggle_species_desc)
+        self._layout_desc_button(self.species_desc_btn)
         # Dialog position will be set dynamically in draw_species_tab
         self.species_desc_dialog_rect = None
 
@@ -191,15 +192,30 @@ class App:
             'drop_range_max': 'Max nutrient drop amount (>= drop_range_min)',
             'phage_inflow': 'Free-phage seed packets per second (0 = no outbreak)',
             'seed': 'Integer RNG seed for reproducible runs; blank = random. Applies on reset/reload.',
-            'diet_profile': 'Dietary feeding arm; click/Enter cycles malnutrition/standard/mdcf. Applies on reset/reload.'
+            'diet_profile': 'Dietary feeding arm; click/Enter cycles malnutrition/standard/mdcf. Applies on reset/reload.',
+            'spawn_mode': 'Inoculum geometry; click/Enter cycles clustered/uniform_disc/central. Applies on reset/reload.',
+            'spawn_lumen_bias': 'Fraction of founders placed in the central lumen (0.0 to 1.0). Applies on reset/reload.',
+            'spawn_cluster_count': 'Founder microcolonies per species in clustered mode (integer >= 1). Applies on reset/reload.',
+            'spawn_cluster_spread': 'Microcolony Gaussian spread as a fraction of dish radius (0.0 to 1.0). Applies on reset/reload.',
+            'spawn_central_radius': 'Droplet radius as a fraction of dish radius in central mode (0.0 to 1.0). Applies on reset/reload.',
+            'species_arrangement': 'Inter-species layout; click/Enter cycles independent/mixed/segregated. Applies on reset/reload.'
         }
         self.show_globals_desc = False
-        self.globals_desc_btn = Button((self.w - 200, self.h - 60, 180, 30), 'Show Desc', self.toggle_globals_desc)
+        self.globals_desc_btn = Button((0, 0, 180, 30), 'Show Desc', self.toggle_globals_desc)
+        self._layout_desc_button(self.globals_desc_btn)
         self.globals_desc_dialog_rect = None
         # Canonical Globals-tab row order. Defined once so the renderer, mouse
         # picker, and keyboard navigation share an identical index->key mapping;
         # any divergence would let a cell edit write to the wrong global.
-        self.GLOBALS_ENV_KEYS = ['o2', 'co2', 'ph', 'temperature', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max', 'phage_inflow', 'seed', 'diet_profile']
+        self.GLOBALS_ENV_KEYS = ['o2', 'co2', 'ph', 'temperature', 'capacity', 'drop_frequency', 'drop_range_min', 'drop_range_max', 'phage_inflow', 'seed', 'diet_profile', 'spawn_mode', 'spawn_lumen_bias', 'spawn_cluster_count', 'spawn_cluster_spread', 'spawn_central_radius', 'species_arrangement']
+        # Globals that are categorical (cycle through a fixed option list on click/Enter) rather than
+        # free-text numeric edits. Maps key -> (ordered options, default). One table keeps the
+        # renderer, mouse picker, keyboard handler, and cycler in agreement.
+        self.CATEGORICAL_GLOBALS = {
+            'diet_profile': (list(DIET_PROFILES.keys()), DEFAULT_DIET_PROFILE),
+            'spawn_mode': (list(SPAWN_MODES), INITIAL_SPAWN_MODE),
+            'species_arrangement': (list(SPECIES_ARRANGEMENTS), INITIAL_SPECIES_ARRANGEMENT),
+        }
 
         # Load env config as default env
         loaded_env = load_env_config()
@@ -214,7 +230,16 @@ class App:
             'capacity': 500,
             'phage_inflow': 0,
             'diet_profile': DEFAULT_DIET_PROFILE,
-            'seed': None
+            'seed': None,
+            # Initial inoculum spawning controls (founder placement at t=0). Defaults mirror the
+            # compiled-in constants so a fresh config reproduces the built-in behaviour; the Globals
+            # tab edits these and the Simulation applies them on the next reset/re-seed.
+            'spawn_mode': INITIAL_SPAWN_MODE,
+            'spawn_lumen_bias': INITIAL_SPAWN_LUMEN_BIAS,
+            'spawn_cluster_count': INITIAL_SPAWN_CLUSTER_COUNT,
+            'spawn_cluster_spread': INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION,
+            'spawn_central_radius': INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION,
+            'species_arrangement': INITIAL_SPECIES_ARRANGEMENT
         }
         if loaded_env:
             self.default_env.update(loaded_env)
@@ -223,8 +248,15 @@ class App:
         self.init_sim()
         # Create buttons, tabs, sliders
         # Use consistent horizontal spacing for buttons
-        button_w, button_h, button_gap = 80, 30, 10
+        button_h, button_gap = 30, 10
         button_y = 20
+        # Button/tab width adapts to the widest label so text rendered with constants.FONT
+        # never spills past its rect into a neighbouring button; floored at 80px to preserve
+        # the established layout for the current (short) labels. Mirrors the dynamic-width
+        # approach already used for the right-hand sliders and the grid scale indicator.
+        _bar_labels = ['Play', 'Import', 'Pause', 'Render', 'Export', 'Add', 'Remove',
+                       'Grid', 'Graph', 'Stats', 'Species', 'Globals']
+        button_w = max(80, max(constants.FONT.size(t)[0] for t in _bar_labels) + 16)
         button_xs = [20 + i * (button_w + button_gap) for i in range(7)]
         self.play_btn = Button((button_xs[0], button_y, button_w, button_h), 'Play', self.play)
         self.import_btn = Button((button_xs[1], button_y, button_w, button_h), 'Import', self.import_data)
@@ -236,6 +268,9 @@ class App:
         
         self.zoom_in_btn = Button((0, 0, 40, 40), '+', lambda: self.set_zoom(1.0))
         self.zoom_out_btn = Button((0, 0, 40, 40), '-', lambda: self.set_zoom(-1.0))
+        # Home recentres the grid camera on the world origin (0, 0) at 1x zoom, where the petri dish
+        # is anchored, so the user can always snap back to the framed inoculum after panning/zooming.
+        self.home_btn = Button((0, 0, 50, 30), 'Home', self.reset_view)
 
         self.buttons = [
             self.play_btn,
@@ -248,12 +283,19 @@ class App:
         ]
 
         self.render_enabled = True
+        # The tab bar must begin to the RIGHT of the action-button row. The 7 action buttons span
+        # x=button_xs[0]..button_xs[6]+button_w; the first tab previously sat at x=560, exactly
+        # overlapping the Remove button (clicking the Grid tab also fired the hidden Remove and
+        # deleted a species). Deriving the tab origin from the button geometry with the SAME inter-
+        # widget gap keeps every button/tab evenly spaced across the whole top bar.
+        tab_x0 = button_xs[6] + button_w + button_gap  # uniform gap after the last action button
+        tab_pitch = button_w + button_gap              # reuse the action-button spacing for alignment
         self.tabs = {
-            'grid': Button((560, 20, 80, 30), 'Grid', lambda: self.set_tab('grid')),
-            'graph': Button((650, 20, 80, 30), 'Graph', lambda: self.set_tab('graph')),
-            'stats': Button((740, 20, 80, 30), 'Stats', lambda: self.set_tab('stats')),
-            'species': Button((830, 20, 80, 30), 'Species', lambda: self.set_tab('species')),
-            'globals': Button((920, 20, 80, 30), 'Globals', lambda: self.set_tab('globals'))
+            'grid': Button((tab_x0 + 0 * tab_pitch, button_y, button_w, button_h), 'Grid', lambda: self.set_tab('grid')),
+            'graph': Button((tab_x0 + 1 * tab_pitch, button_y, button_w, button_h), 'Graph', lambda: self.set_tab('graph')),
+            'stats': Button((tab_x0 + 2 * tab_pitch, button_y, button_w, button_h), 'Stats', lambda: self.set_tab('stats')),
+            'species': Button((tab_x0 + 3 * tab_pitch, button_y, button_w, button_h), 'Species', lambda: self.set_tab('species')),
+            'globals': Button((tab_x0 + 4 * tab_pitch, button_y, button_w, button_h), 'Globals', lambda: self.set_tab('globals'))
         }
         self.tab = 'grid'
         # Align sliders to top right, flush with button text
@@ -333,6 +375,23 @@ class App:
     def set_zoom(self, dz):
         # smooth zoom approach (exponential step)
         self.zoom_target = max(0.01, min(self.zoom_target * (1.2 ** dz), 20.0))
+        # Repeated zoom-in/zoom-out multiply/divide round-trips (* 1.2**dz) accumulate
+        # floating-point error, leaving zoom_target at e.g. 0.9999 or 1.0001 instead of an
+        # exact 1.0. That residual makes the scale indicator (world_um = bar_px / zoom) read
+        # 99.9/100.1 um at "1x". Snap back to an exact 1.0 when within a tiny epsilon so the
+        # reference baseline stays pristine. Epsilon 1e-6 is far below any user-visible zoom step.
+        if abs(self.zoom_target - 1.0) < 1e-6:
+            self.zoom_target = 1.0
+
+    def reset_view(self):
+        """Snap the grid camera home: recentre on the world origin (0, 0) at 1x zoom (the petri
+        dish anchor and the camera's default pose). Sets both the live zoom and its smoothing
+        target so the view jumps immediately rather than easing, then re-clamps to grid bounds."""
+        self.grid_center_x = 0
+        self.grid_center_y = 0
+        self.zoom = 1.0
+        self.zoom_target = 1.0
+        self.clamp_grid_center()
 
     def draw_grid(self):
         # Calculate top-left of view in grid coordinates
@@ -368,6 +427,11 @@ class App:
         self.zoom_out_btn.rect = pygame.Rect(self.w - 2*btn_w - 30, btn_y, btn_w, btn_h)
         self.zoom_in_btn.draw(self.screen)
         self.zoom_out_btn.draw(self.screen)
+        # Home button sits immediately to the left of the zoom-out button, sharing the same baseline
+        # and inter-button gap (10px) used between the zoom controls.
+        home_w = 50
+        self.home_btn.rect = pygame.Rect(self.zoom_out_btn.rect.x - home_w - 10, btn_y, home_w, btn_h)
+        self.home_btn.draw(self.screen)
 
     def draw_scrollbars(self):
         # Horizontal scrollbar
@@ -745,10 +809,25 @@ class App:
         if self.tab != 'globals':
             self.show_globals_desc = False
 
+    def _globals_value_col_x(self, start_x=50):
+        """Compute the x where the value cells begin so they never overlap the label
+        column. Labels are drawn with constants.FONT, whose widest key (e.g.
+        'spawn_cluster_spread') can exceed the old hardcoded 200px gap. We measure the
+        widest rendered label once and add a fixed padding gap, mirroring the dynamic
+        width pattern already used for the right-hand sliders (see run loop) and the
+        grid scale indicator. Returns at least the legacy 250px so short label sets are
+        unaffected."""
+        label_col_w = 0
+        for key in self.GLOBALS_ENV_KEYS:
+            label_col_w = max(label_col_w, constants.FONT.size(key)[0])
+        GLOBALS_LABEL_VALUE_GAP = 20  # px breathing room between label text and value cell
+        return max(start_x + 200, start_x + label_col_w + GLOBALS_LABEL_VALUE_GAP)
+
     def draw_globals_tab(self):
         start_x, start_y = 50, 100
         cell_w, cell_h = 240, 30
         env_keys = self.GLOBALS_ENV_KEYS
+        value_x = self._globals_value_col_x(start_x)
         
         # Determine current target
         # Show default parameters, not live environment,
@@ -760,8 +839,8 @@ class App:
             label = constants.FONT.render(key, True, WHITE)
             self.screen.blit(label, (start_x, start_y + i*cell_h + 5))
             
-            # Draw value cell
-            rect = (start_x + 200, start_y + i*cell_h, cell_w, cell_h)
+            # Draw value cell (x computed dynamically so long labels never overlap it)
+            rect = (value_x, start_y + i*cell_h, cell_w, cell_h)
             highlight = (i == self.selected_row and self.selected_col == 0 and self.tab == 'globals')
             pygame.draw.rect(self.screen, SLIDER_COLOR if highlight else WHITE, rect, 2 if not highlight else 0)
             
@@ -778,9 +857,8 @@ class App:
                 txt = constants.FONT.render(disp, True, WHITE)
                 self.screen.blit(txt, (rect[0] + 5, rect[1] + 5))
 
-        # Draw show/hide descriptions button in bottom right
-        self.globals_desc_btn.rect.x = self.w - 200
-        self.globals_desc_btn.rect.y = self.h - 60
+        # Draw show/hide descriptions button in bottom right (dynamically sized/placed)
+        self._layout_desc_button(self.globals_desc_btn)
         # Ensure button text always matches dialog state
         self.globals_desc_btn.text = 'Hide Desc' if self.show_globals_desc else 'Show Desc'
         self.globals_desc_btn.draw(self.screen)
@@ -826,16 +904,16 @@ class App:
             self.selected_row -= 1
         if e.key == K_RETURN:
             key = keys[self.selected_row]
-            # diet_profile is categorical: cycle through the arms instead of text editing.
-            if key == 'diet_profile':
-                self._cycle_diet_profile()
+            # Categorical globals cycle through their option list instead of opening a text editor.
+            if key in self.CATEGORICAL_GLOBALS:
+                self._cycle_categorical_global(key)
                 return
             val = self.default_env.get(key, 0)
             # Start the seed editor blank (not 'None') when no seed is set, so the
             # user types a number directly or leaves it empty for a random run.
             if key == 'seed' and val in (None, ''):
                 val = ''
-            rect = (50 + 200, 100 + self.selected_row*30, 240, 30)
+            rect = (self._globals_value_col_x(50), 100 + self.selected_row*30, 240, 30)
             self.editors = [CellEditor(key, rect, val, self.selected_row, 0)]
 
     def draw_species_tab(self):
@@ -907,9 +985,8 @@ class App:
                 'bar_start': bar_y, 'bar_len': bar_h, 'thumb_len': thumb_h,
                 'thumb_pos': thumb_y, 'scrollable': total_rows - max_rows,
             }
-        # Draw show/hide descriptions button in bottom right
-        self.species_desc_btn.rect.x = self.w - 200
-        self.species_desc_btn.rect.y = self.h - 60
+        # Draw show/hide descriptions button in bottom right (dynamically sized/placed)
+        self._layout_desc_button(self.species_desc_btn)
         # Ensure button text always matches dialog state
         self.species_desc_btn.text = 'Hide Desc' if self.show_species_desc else 'Show Desc'
         self.species_desc_btn.draw(self.screen)
@@ -991,6 +1068,8 @@ class App:
         if self.tab == 'grid':
             if self.zoom_in_btn.rect.collidepoint((mx, my)) or self.zoom_out_btn.rect.collidepoint((mx, my)):
                 return True
+            if self.home_btn.rect.collidepoint((mx, my)):
+                return True
         # Check sliders
         for s in self.sliders:
             if s.rect.collidepoint((mx, my)):
@@ -1038,12 +1117,20 @@ class App:
 
     def _cycle_diet_profile(self):
         """Advance default_env['diet_profile'] to the next arm and persist it (undoable)."""
-        old_val = self.default_env.get('diet_profile', DEFAULT_DIET_PROFILE)
-        new_val = App.next_diet_profile(old_val)
+        self._cycle_categorical_global('diet_profile')
+
+    def _cycle_categorical_global(self, key):
+        """Advance a categorical Globals entry (diet_profile / spawn_mode / species_arrangement) to
+        the next option in its canonical cycle and persist it (undoable). An unknown current value
+        snaps back to that setting's default. Shared by the mouse picker and keyboard handler so all
+        categorical globals cycle identically."""
+        order, default = self.CATEGORICAL_GLOBALS[key]
+        old_val = self.default_env.get(key, default)
+        new_val = order[(order.index(old_val) + 1) % len(order)] if old_val in order else default
         if str(old_val) != str(new_val):
-            self.global_undo_stack.append({'action': 'cell_edit', 'col': 'diet_profile', 'old': old_val, 'new': new_val})
+            self.global_undo_stack.append({'action': 'cell_edit', 'col': key, 'old': old_val, 'new': new_val})
             self.global_redo_stack.clear()
-            self.default_env['diet_profile'] = new_val
+            self.default_env[key] = new_val
             save_env_config(self.default_env)
 
     @staticmethod
@@ -1107,11 +1194,19 @@ class App:
                 if e.type == MOUSEBUTTONDOWN:
                     mx, my = e.pos
                     # --- Always process button and tab clicks ---
-                    for b in self.buttons + list(self.tabs.values()):
-                        b.click(e.pos)
+                    # Route the click to at most ONE toolbar widget. Tabs are drawn on top of the
+                    # action buttons, so test them first and stop at the first hit. This single
+                    # dispatch prevents a click from activating two overlapping controls at once
+                    # (e.g. a tab plus an enabled button hidden beneath it), which previously caused
+                    # the Grid tab to also trigger the Remove button and delete a species.
+                    for b in list(self.tabs.values()) + self.buttons:
+                        if b.enabled and b.rect.collidepoint(e.pos):
+                            b.action()
+                            break
                     if self.tab == 'grid':
                         self.zoom_in_btn.click(e.pos)
                         self.zoom_out_btn.click(e.pos)
+                        self.home_btn.click(e.pos)
                     # --- Always process slider drag ---
                     for s in self.sliders:
                         if s.handle_mouse_down(e.pos):
@@ -1310,6 +1405,13 @@ class App:
                                 elif col == 'phage_inflow':
                                     num = int(num)
                                     if num < 0: raise ValueError
+                                elif col in ('spawn_lumen_bias', 'spawn_cluster_spread', 'spawn_central_radius'):
+                                    # Spawn fractions are dimensionless on [0, 1].
+                                    if not 0.0 <= num <= 1.0: raise ValueError
+                                elif col == 'spawn_cluster_count':
+                                    # Number of founder microcolonies: a positive integer.
+                                    num = int(num)
+                                    if num < 1: raise ValueError
                                 
                                 if str(old_val) != str(num):
                                     self.global_undo_stack.append({'action': 'cell_edit', 'col': col, 'old': old_val, 'new': num})
@@ -1465,6 +1567,13 @@ class App:
             # Smooth zoom update
             if abs(self.zoom - self.zoom_target) > 0.001:
                 self.zoom += (self.zoom_target - self.zoom) * 0.2
+                self.clamp_grid_center()
+            elif self.zoom != self.zoom_target:
+                # Exponential easing never reaches the target exactly; it just falls below the
+                # 0.001 threshold and stops, leaving zoom at a residual offset (e.g. 0.9991).
+                # Since world_um = bar_px / zoom, that residual yields 99.9/100.1 um flicker at
+                # "1x". Snap to the exact target once settled so the scale reads precisely.
+                self.zoom = self.zoom_target
                 self.clamp_grid_center()
 
             # Draw background
@@ -1782,19 +1891,30 @@ class App:
             thumb_y = bar_y + (row_offset / (total_rows - max_rows)) * (bar_h - thumb_h) if total_rows > max_rows else bar_y
             pygame.draw.rect(self.screen, WHITE, (bar_x+2, thumb_y, self.stats_scrollbar_thickness-4, thumb_h), border_radius=6)
 
+    def _layout_desc_button(self, btn):
+        """Size and position a Show/Hide-descriptions button flush against the window's
+        bottom-right corner. Width adapts to the wider of its two possible labels so the
+        text never overflows the rect; floored at 180px to keep the established footprint.
+        x is derived from the measured width so the description dialog (which hangs off
+        ``btn.rect.right``) stays correctly right-anchored at any window size."""
+        label_w = max(constants.FONT.size('Show Desc')[0], constants.FONT.size('Hide Desc')[0])
+        DESC_BUTTON_MARGIN = 20  # px gap from the window's right/bottom edges
+        btn.rect.width = max(180, label_w + 24)
+        btn.rect.height = 30
+        btn.rect.x = self.w - btn.rect.width - DESC_BUTTON_MARGIN
+        btn.rect.y = self.h - 60
+
     def toggle_globals_desc(self):
         self.show_globals_desc = not self.show_globals_desc
         self.globals_desc_btn.text = 'Hide Desc' if self.show_globals_desc else 'Show Desc'
         # Reposition button in case window size changed
-        self.globals_desc_btn.rect.x = self.w - 200
-        self.globals_desc_btn.rect.y = self.h - 60
+        self._layout_desc_button(self.globals_desc_btn)
 
     def toggle_species_desc(self):
         self.show_species_desc = not self.show_species_desc
         self.species_desc_btn.text = 'Hide Desc' if self.show_species_desc else 'Show Desc'
         # Reposition button in case window size changed
-        self.species_desc_btn.rect.x = self.w - 200
-        self.species_desc_btn.rect.y = self.h - 60
+        self._layout_desc_button(self.species_desc_btn)
 
     def _start_species_scrollbar_drag(self, pos):
         """Begin dragging a species-tab scrollbar thumb if ``pos`` lands on a
@@ -1859,14 +1979,15 @@ class App:
         start_x, start_y = 50, 100
         cell_w, cell_h = 240, 30
         env_keys = self.GLOBALS_ENV_KEYS
+        value_x = self._globals_value_col_x(start_x)
         
         for i in range(len(env_keys)):
-            rect = pygame.Rect(start_x + 200, start_y + i*cell_h, cell_w, cell_h)
+            rect = pygame.Rect(value_x, start_y + i*cell_h, cell_w, cell_h)
             if rect.collidepoint(pos):
                 self.selected_row, self.selected_col = i, 0
-                # diet_profile is categorical: clicking its cell cycles to the next arm.
-                if env_keys[i] == 'diet_profile':
-                    self._cycle_diet_profile()
+                # Categorical globals cycle to their next option on click instead of text editing.
+                if env_keys[i] in self.CATEGORICAL_GLOBALS:
+                    self._cycle_categorical_global(env_keys[i])
                 return
 
     def handle_mouse_species(self, pos):

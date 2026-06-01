@@ -169,6 +169,54 @@ MUCUS_DROP_AMOUNT_FACTOR = 0.5
 # population pressure, leaving the mucus a protective refuge.
 LUMEN_COMPETITION_CULL_WEIGHT = 3.0
 
+# --- Initial inoculum spawning (founder placement at t = 0) ---
+# Real microbial communities are not seeded as a uniform sheet: an inoculum arrives as a small
+# number of founder cells that establish localised microcolonies (clonal patches) which then grow
+# clonally by binary fission (daughters placed at the parent, see attempt_fission). These constants
+# parameterise that founder placement so the starting layout is biologically motivated, petri-dish
+# aware, and fully reproducible under the RNG seed.
+#
+# Spawn mode selects the macroscopic geometry of the founder distribution:
+#   'clustered'    -> a few founder nuclei, cells scattered in Gaussian microcolonies around them
+#                     (default; mimics sparse colonisation and seeds spatial structure for
+#                      competition / cross-feeding to act on).
+#   'uniform_disc' -> area-uniform random placement across the dish (r = R*sqrt(U) sampling so
+#                     density is constant per unit area, not per unit radius).
+#   'central'      -> a single compact droplet near the dish centre (point-inoculation assay).
+INITIAL_SPAWN_MODE = 'clustered'
+# Fraction of founder cells placed inside the central lumen (radial fraction < the lumen boundary
+# below) rather than the outer mucus annulus. Fresh dietary substrate is delivered chiefly to the
+# well-mixed lumen, so a gut-realistic inoculum is lumen-biased; 1.0 = lumen only, 0.0 = no bias.
+INITIAL_SPAWN_LUMEN_BIAS = 0.9
+# Radial fraction (of the dish radius) marking the lumen/mucus boundary used by the lumen bias.
+# Reuses the established lumen geometry so spawning and the spatial model stay consistent.
+INITIAL_SPAWN_LUMEN_RADIUS_FRACTION = MUCUS_LAYER_RADIUS_FRACTION
+# Number of founder nuclei (microcolony seed points) generated per species in 'clustered' mode.
+# A small count yields a few distinct colonies; biologically this is the number of cells that
+# survive transit and successfully attach to establish clonal patches.
+INITIAL_SPAWN_CLUSTER_COUNT = 3
+# Gaussian spread of a microcolony, expressed as a fraction of the dish radius; this is the
+# standard deviation of the offset applied to each founder cell around its nucleus. Small spread
+# keeps colonies tight and locally clonal.
+INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION = 0.06
+# Radial fraction (of the dish radius) of the compact droplet used in 'central' mode; the whole
+# inoculum is confined within this radius of the dish centre (area-uniform within the droplet).
+INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION = 0.15
+# Inter-species arrangement controls how multiple species are positioned relative to one another:
+#   'independent' -> each species draws its own independent founder nuclei (default; colonies of
+#                    different species partially overlap by chance, the generic well-mixed case).
+#   'mixed'       -> all species share the same founder nuclei, co-locating colonies to maximise
+#                    early contact-dependent interactions (T6SS, bacteriocins, HGT, cross-feeding).
+#   'segregated'  -> each species is confined to its own angular sector of the dish, separating
+#                    founders to study invasion / range-expansion dynamics from distinct origins.
+INITIAL_SPECIES_ARRANGEMENT = 'independent'
+
+# Canonical option lists for the two categorical spawn settings exposed in the Globals tab. Defined
+# here so the UI cycler (app.py) and the simulation validator (core_sim._apply_spawn_env) share one
+# source of truth; the first entry of each is the compiled-in default above.
+SPAWN_MODES = ('clustered', 'uniform_disc', 'central')
+SPECIES_ARRANGEMENTS = ('independent', 'mixed', 'segregated')
+
 # pH fitness uses a Gaussian tolerance of 1.5 pH units around the species optimum.
 PH_TOLERANCE_GAUSSIAN_SD = 1.5
 # Aerobic fitness saturates by 10% O2; strict anaerobes are strongly inhibited around 2% O2.

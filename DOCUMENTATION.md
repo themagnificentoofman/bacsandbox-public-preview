@@ -465,6 +465,16 @@ Spatial bounds and lookup:
 * `BACTERIA_INTERACTION_AXIS_CUTOFF_UM = 15`
 * `PETRI_RADIUS_PADDING_UM = 100`
 
+Initial inoculum spawning (Section 4.23):
+
+* `INITIAL_SPAWN_MODE = 'clustered'` — `'clustered'` | `'uniform_disc'` | `'central'`
+* `INITIAL_SPAWN_LUMEN_BIAS = 0.9`
+* `INITIAL_SPAWN_LUMEN_RADIUS_FRACTION` $=$ `MUCUS_LAYER_RADIUS_FRACTION` $(= 0.75)$
+* `INITIAL_SPAWN_CLUSTER_COUNT = 3`
+* `INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION = 0.06`
+* `INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION = 0.15`
+* `INITIAL_SPECIES_ARRANGEMENT = 'independent'` — `'independent'` | `'mixed'` | `'segregated'`
+
 Temperature kinetics (Ratkowsky model):
 
 * `RATKOWSKY_B_SQRT_PER_C = 0.0410`
@@ -1019,6 +1029,80 @@ being taken up (high $M_2$ slope) only when MDCF-competent taxa are present — 
 mechanism of the malnutrition model.
 
 
+### 4.23 Initial Inoculum Spawning
+
+Real microbial communities are not seeded as a uniform sheet of cells. An inoculum arrives as a
+small number of founder cells that survive transit, attach, and establish localised
+**microcolonies** (clonal patches) which then expand clonally by binary fission — and because
+daughter cells are placed at the parent (Section 4.7), that clonal structure is preserved as the
+population grows. The legacy initialiser instead scattered every cell uniformly in a fixed
+$800 \times 600$ rectangle anchored at the top-left corner, which neither matched the circular
+petri-dish geometry (Section 4.20) nor the lumen where fresh substrate is delivered. The spawning
+model replaces that rectangle with a configurable, dish-aware, seed-reproducible founder placement.
+
+**Deferred, geometry-aware placement.** The petri dish centre $(c_x, c_y)$ and radius $R$ are only
+known once the window size is available, so founder placement is deferred to the first simulation
+update via `Simulation._seed_initial_population` (guarded by a one-shot flag). The dish centre is
+anchored at the **world origin** $(c_x, c_y) = (0, 0)$ — the same pose the grid camera defaults to and
+that the **Home** button restores (centre $(0,0)$ at $1\times$ zoom) — so the freshly seeded inoculum
+is always framed without any camera offset. Each species stores its requested founder count
+`init_count` and is placed once geometry exists; `reset` re-applies the same policy. Every founder is
+constrained to lie within the dish, $\sqrt{(x-c_x)^2+(y-c_y)^2}\le R$.
+
+**Area-uniform disc sampling.** Where a founder is drawn uniformly over an annular band
+$[r_{\min}, r_{\max}]$, the radius uses
+
+$$r = \sqrt{U\,(r_{\max}^2 - r_{\min}^2) + r_{\min}^2}, \qquad U \sim \mathrm{Uniform}(0,1),$$
+
+so density is constant per unit **area** rather than per unit radius (a naive $r = U\,R$ draw would
+pile founders near the centre). The angle is uniform over the species' allowed sector.
+
+**Lumen bias.** Fresh dietary substrate is delivered chiefly to the well-mixed lumen (Section 4.20),
+so a gut-realistic inoculum is biased inward. Each founder is placed in the inner lumen band
+($r \in [0, f R]$, with $f =$ `INITIAL_SPAWN_LUMEN_RADIUS_FRACTION`) with probability
+`INITIAL_SPAWN_LUMEN_BIAS` (default $0.9$), otherwise in the outer mucus annulus ($r \in [fR, R]$).
+
+**Spawn modes** (`INITIAL_SPAWN_MODE`):
+
+- **`clustered`** (default): generate `INITIAL_SPAWN_CLUSTER_COUNT` founder nuclei (each lumen-biased),
+  then scatter cells in Gaussian microcolonies about them. A cell offset from nucleus
+  $(n_x, n_y)$ is $x = n_x + \mathcal{N}(0, \sigma^2)$, $y = n_y + \mathcal{N}(0, \sigma^2)$ with
+  $\sigma =$ `INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION` $\times R$; offsets are resampled (up to a few
+  attempts) so no cell escapes the dish. Founders are assigned round-robin across nuclei for an even,
+  deterministic colony-size split. This seeds the spatial structure on which competition,
+  cross-feeding, and HGT act.
+- **`uniform_disc`**: area-uniform placement across the dish, still lumen-biased per cell.
+- **`central`**: a single compact droplet within `INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION` $\times R$ of
+  the centre (a point-inoculation assay).
+
+**Inter-species arrangement** (`INITIAL_SPECIES_ARRANGEMENT`):
+
+- **`independent`** (default): each species draws its own founder nuclei; colonies overlap only by
+  chance — the generic well-mixed case.
+- **`mixed`**: all species share one set of founder nuclei, co-locating colonies to maximise early
+  contact-dependent interactions (T6SS, bacteriocins, HGT, cross-feeding).
+- **`segregated`**: species $i$ of $n$ is confined to the angular sector
+  $[\,2\pi i/n,\; 2\pi (i{+}1)/n\,)$, separating founder origins to study invasion / range-expansion
+  dynamics.
+
+**Reproducibility.** All draws come from the shared RNG stream, which is seeded before placement
+(Section 4.21), so a given seed regenerates a byte-identical starting layout. The relevant constants
+are `INITIAL_SPAWN_MODE`, `INITIAL_SPAWN_LUMEN_BIAS`, `INITIAL_SPAWN_LUMEN_RADIUS_FRACTION`,
+`INITIAL_SPAWN_CLUSTER_COUNT`, `INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION`,
+`INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION`, and `INITIAL_SPECIES_ARRANGEMENT` (Section 4.13).
+
+**Live configuration (Globals tab).** These spawn parameters are exposed as editable environment
+keys in the Globals tab so an experiment can be re-framed without code changes. The categorical keys
+`spawn_mode` (cycles `clustered` / `uniform_disc` / `central`) and `species_arrangement` (cycles
+`independent` / `mixed` / `segregated`) advance through their option lists on click/Enter, while the
+numeric keys `spawn_lumen_bias`, `spawn_cluster_count`, `spawn_cluster_spread`, and
+`spawn_central_radius` are text-edited with validation (fractions clamped to $[0,1]$; the cluster
+count is an integer $\ge 1$). Edits are persisted to `env_config.json` and applied by
+`Simulation._apply_spawn_env` at the start of the next reset/re-seed (they do not relocate an
+already-placed population mid-run). Blank or unrecognised entries fall back to the compiled-in
+constant defaults, so the built-in behaviour is reproduced when nothing is overridden.
+
+
 ## 5. Species Parameters
 
 Species are configured in `species_data.csv` and can also be edited in the Species tab.
@@ -1083,6 +1167,12 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
 * `diet_profile`: Active dietary feeding arm (see Section 4.19), one of `malnutrition`, `standard`, or `mdcf`. It sets the categorical probability mix of substrate classes (generic calorie / complex glycan / MDCF prebiotic) assigned to each new food drop. It is editable directly in the **Globals** tab — clicking its cell (or pressing Enter on the row) cycles to the next arm. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload. Default `standard`.
 * `seed`: Optional integer RNG seed for reproducible extinction/abundance baselines (see Section 4.21). It is editable directly in the **Globals** tab — enter a non-negative integer to fix the run, or leave the field blank (shown as `(random)`) for a fresh nondeterministic run. When set, the random stream is seeded before species construction so the entire run — initial layout and every stochastic draw — is deterministic. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload.
+* `spawn_mode`: Initial inoculum geometry (see Section 4.23), one of `clustered`, `uniform_disc`, or `central`. Categorical — clicking its cell (or pressing Enter on the row) cycles to the next mode. Default `clustered`.
+* `spawn_lumen_bias`: Probability (0 to 1) that a founder cell is placed in the inner lumen band rather than the outer mucus annulus. Default 0.9.
+* `spawn_cluster_count`: Number of founder microcolonies per species in `clustered` mode (integer $\ge 1$). Default 3.
+* `spawn_cluster_spread`: Microcolony Gaussian spread as a fraction (0 to 1) of the dish radius. Default 0.06.
+* `spawn_central_radius`: Droplet radius as a fraction (0 to 1) of the dish radius in `central` mode. Default 0.15.
+* `species_arrangement`: Inter-species layout (see Section 4.23), one of `independent`, `mixed`, or `segregated`. Categorical — clicking its cell (or pressing Enter on the row) cycles to the next option. Default `independent`. All six spawn keys define starting conditions, so changes take effect on the next simulation reset/reload.
 
 ## 7. Data Export And Import
 

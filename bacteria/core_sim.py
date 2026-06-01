@@ -11,6 +11,98 @@ if __package__ is None and not hasattr(sys, 'frozen'):
 from .constants import *
 from .ecm import ECM
 
+def _spawn_sector(species_index, species_total):
+    """Angular wedge [a0, a1) a species may occupy. Under the 'segregated' arrangement each species
+    is confined to an equal 2*pi / species_total slice anchored at its index, separating founder
+    origins so invasion / range-expansion dynamics start from distinct sectors. All other
+    arrangements return the full circle."""
+    if INITIAL_SPECIES_ARRANGEMENT == 'segregated' and species_total > 1:
+        width = 2.0 * math.pi / species_total
+        a0 = species_index * width
+        return a0, a0 + width
+    return 0.0, 2.0 * math.pi
+
+def _spawn_radial_band(radius):
+    """Pick the [r_min, r_max] radial band a founder is drawn from, applying the lumen bias: with
+    probability INITIAL_SPAWN_LUMEN_BIAS the cell goes in the inner lumen (radii below the lumen
+    boundary), otherwise the outer mucus annulus. Biasing the inoculum toward the well-mixed lumen
+    matches where fresh dietary substrate is delivered."""
+    lumen_r = max(0.0, min(INITIAL_SPAWN_LUMEN_RADIUS_FRACTION, 1.0)) * radius
+    if random.random() < max(0.0, min(INITIAL_SPAWN_LUMEN_BIAS, 1.0)):
+        return 0.0, lumen_r
+    return lumen_r, radius
+
+def _sample_disc_point(cx, cy, r_min, r_max, a0, a1):
+    """Sample an area-uniform point in the annular sector (r in [r_min, r_max], theta in [a0, a1]).
+    Using r = sqrt(U*(r_max^2 - r_min^2) + r_min^2) makes the areal density constant instead of
+    clumping points near the centre (which a naive uniform-in-radius draw would do)."""
+    u = random.random()
+    r = math.sqrt(u * (r_max * r_max - r_min * r_min) + r_min * r_min)
+    th = random.uniform(a0, a1)
+    return (cx + r * math.cos(th), cy + r * math.sin(th))
+
+def generate_cluster_nuclei(count, center, radius, species_index=0, species_total=1):
+    """Generate `count` microcolony seed points (founder nuclei) inside the dish, honouring the
+    lumen bias and the species' angular sector. Biologically these are the few cells that survive
+    transit and attach to nucleate clonal patches."""
+    cx, cy = center
+    a0, a1 = _spawn_sector(species_index, species_total)
+    nuclei = []
+    for _ in range(max(1, int(count))):
+        r_min, r_max = _spawn_radial_band(radius)
+        nuclei.append(_sample_disc_point(cx, cy, r_min, r_max, a0, a1))
+    return nuclei
+
+def generate_initial_positions(count, center, radius, species_index=0, species_total=1, nuclei=None):
+    """Produce `count` founder (x, y) positions for one species under the configured spawn policy.
+
+    All draws come from the module `random` stream, so seeding the RNG before calling this yields a
+    reproducible layout. Modes (INITIAL_SPAWN_MODE):
+      - 'central'      : compact area-uniform droplet within INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION
+                         of the dish radius (point-inoculation assay).
+      - 'uniform_disc' : area-uniform placement, lumen-biased band per cell.
+      - 'clustered'    : Gaussian microcolonies around founder nuclei (the default). For the 'mixed'
+                         arrangement the caller passes shared `nuclei` so species co-locate.
+    Every position is constrained to lie within the petri-dish radius."""
+    cx, cy = center
+    radius = max(NUMERIC_DISTANCE_EPSILON_UM, float(radius))
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    a0, a1 = _spawn_sector(species_index, species_total)
+
+    if INITIAL_SPAWN_MODE == 'central':
+        # Single compact droplet near the dish centre; well inside the lumen by construction.
+        cr = max(0.0, min(INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION, 1.0)) * radius
+        return [_sample_disc_point(cx, cy, 0.0, cr, a0, a1) for _ in range(count)]
+
+    if INITIAL_SPAWN_MODE == 'uniform_disc':
+        out = []
+        for _ in range(count):
+            r_min, r_max = _spawn_radial_band(radius)
+            out.append(_sample_disc_point(cx, cy, r_min, r_max, a0, a1))
+        return out
+
+    # 'clustered' (default; also the fallback for any unrecognised mode).
+    if not nuclei:
+        nuclei = generate_cluster_nuclei(INITIAL_SPAWN_CLUSTER_COUNT, center, radius,
+                                         species_index, species_total)
+    spread = max(0.0, INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION) * radius
+    out = []
+    for i in range(count):
+        # Round-robin founders across nuclei for an even, deterministic colony-size split.
+        nx, ny = nuclei[i % len(nuclei)]
+        x, y = nx, ny
+        # Gaussian offset forms the microcolony; resample a few times so no cell escapes the dish.
+        for _attempt in range(8):
+            cxp = random.gauss(nx, spread)
+            cyp = random.gauss(ny, spread)
+            if math.hypot(cxp - cx, cyp - cy) <= radius:
+                x, y = cxp, cyp
+                break
+        out.append((x, y))
+    return out
+
 class FoodNode:
     """
     Represents a food node on the grid.
@@ -533,10 +625,12 @@ class BacteriaSpecies:
         self.aff_calorie = max(0.0, float(aff_calorie))
         self.aff_glycan = max(0.0, float(aff_glycan))
         self.aff_mdcf = max(0.0, float(aff_mdcf))
-        # Each bacterium gets a random size
-        self.members = [Bacterium(self, random.randint(0,800), random.randint(0,600),
-                                  size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)))
-                        for _ in range(init)]
+        # Requested founder-population size. Members are NOT placed here: the inoculum is positioned
+        # by the owning Simulation (see Simulation._seed_initial_population) once the petri-dish
+        # geometry is known, so founder placement is dish-aware, lumen-biased, and seed-reproducible
+        # instead of the legacy fixed top-left rectangle.
+        self.init_count = max(0, int(init))
+        self.members = []
         self.history = []         # track population over time
         self.total_births = 0     # overall births
         self.total_deaths = 0     # overall deaths
@@ -768,6 +862,9 @@ class Simulation:
         # Phase I: active diet profile controls the substrate-class mix of nutrient drops
         # (malnutrition / standard / mdcf). Falls back to the standard supplementary diet.
         self.diet_profile = env.get('diet_profile', DEFAULT_DIET_PROFILE)
+        # Lazily-populated flag: the founder inoculum is placed by _seed_initial_population on the
+        # first update (or reset), once the petri-dish geometry is established from the window size.
+        self._populated = False
 
     def _empty_stats(self):
         return {
@@ -792,6 +889,77 @@ class Simulation:
             'consumed_mdcf': []
         }
 
+    def _ensure_petri_geometry(self, w, h):
+        """Establish the circular petri-dish geometry (centre + radius) from the window size on the
+        first call. The dish is anchored at the WORLD ORIGIN (0, 0) so it coincides with the grid
+        camera's home pose (camera default + Home button both target (0, 0) at 1x zoom); this keeps
+        the freshly seeded inoculum framed without any camera offset. The radius pads the window
+        diagonal so the dish encloses the visible area. Idempotent so later resizes do not move an
+        established dish."""
+        if not hasattr(self, 'petri_center'):
+            self.petri_center = (0.0, 0.0)
+            self.petri_radius = math.hypot(w, h) / 2 + PETRI_RADIUS_PADDING_UM
+
+    def _apply_spawn_env(self):
+        """Push any spawn-configuration overrides carried in the environment dict (set from the
+        Globals tab) onto the module-level spawn parameters that the founder-placement helpers read.
+        Keeping the helpers reading module globals (rather than threading a config object through
+        every call) preserves their simple, directly-testable signatures. Absent keys leave the
+        compiled-in constant defaults untouched, and every value is validated/clamped to its valid
+        domain so a malformed UI entry can never crash placement."""
+        env = self.env
+        g = globals()
+        # Categorical geometry selectors: accept only recognised options, else keep the current value.
+        mode = env.get('spawn_mode')
+        if mode in SPAWN_MODES:
+            g['INITIAL_SPAWN_MODE'] = mode
+        arrangement = env.get('species_arrangement')
+        if arrangement in SPECIES_ARRANGEMENTS:
+            g['INITIAL_SPECIES_ARRANGEMENT'] = arrangement
+        # Numeric controls: clamp to valid domains. Fractions are dimensionless on [0, 1]; the
+        # cluster count is a positive integer number of founder microcolonies. Each conversion is
+        # guarded independently so one bad field cannot discard the others.
+        def _clamp01(v):
+            return max(0.0, min(1.0, float(v)))
+        for key, name, conv in (
+            ('spawn_lumen_bias', 'INITIAL_SPAWN_LUMEN_BIAS', _clamp01),
+            ('spawn_cluster_count', 'INITIAL_SPAWN_CLUSTER_COUNT', lambda v: max(1, int(float(v)))),
+            ('spawn_cluster_spread', 'INITIAL_SPAWN_CLUSTER_SPREAD_FRACTION', _clamp01),
+            ('spawn_central_radius', 'INITIAL_SPAWN_CENTRAL_RADIUS_FRACTION', _clamp01),
+        ):
+            raw = env.get(key)
+            if raw is None or raw == '':
+                continue
+            try:
+                g[name] = conv(raw)
+            except (TypeError, ValueError):
+                pass  # ignore unparseable entries, retaining the prior value
+
+    def _seed_initial_population(self):
+        """Place every species' founder inoculum using the configured spawning policy
+        (INITIAL_SPAWN_MODE / INITIAL_SPECIES_ARRANGEMENT). Requires the petri geometry to exist.
+        Idempotent within a run via the self._populated guard, and reproducible under the RNG seed,
+        which is applied before this runs (construction or reset)."""
+        # Apply any Globals-tab spawn overrides before drawing positions so live edits take effect
+        # on the next reset/re-seed.
+        self._apply_spawn_env()
+        center, radius = self.petri_center, self.petri_radius
+        total = len(self.species)
+        shared_nuclei = None
+        # 'mixed' arrangement co-locates species by sharing one set of founder nuclei so colonies of
+        # different taxa overlap, maximising early contact-dependent interactions (T6SS, HGT, etc.).
+        if (INITIAL_SPECIES_ARRANGEMENT == 'mixed'
+                and INITIAL_SPAWN_MODE not in ('central', 'uniform_disc')):
+            shared_nuclei = generate_cluster_nuclei(INITIAL_SPAWN_CLUSTER_COUNT, center, radius)
+        for idx, sp in enumerate(self.species):
+            positions = generate_initial_positions(
+                sp.init_count, center, radius,
+                species_index=idx, species_total=total, nuclei=shared_nuclei)
+            sp.members = [Bacterium(sp, x, y,
+                                    size=max(0.1, random.gauss(sp.base_size, sp.base_size * 0.2)))
+                          for (x, y) in positions]
+        self._populated = True
+
     def reset(self):
         """
         Reset populations to initial values and clear stats.
@@ -800,19 +968,16 @@ class Simulation:
         # regenerate identical initial layouts and stochastic trajectories.
         if self.seed is not None:
             random.seed(self.seed)
+        if hasattr(self, 'petri_center'):
+            # Geometry already known: re-place the inoculum immediately via the spawning policy.
+            self._seed_initial_population()
+        else:
+            # Geometry not yet established (reset before the first frame): defer placement to the
+            # next update, which establishes the dish then seeds the founders.
+            for sp in self.species:
+                sp.members = []
+            self._populated = False
         for sp in self.species:
-            initial = int(sp.history[0] if sp.history and sp.history[0] else len(sp.members))
-            sp.members = []
-            for _ in range(initial):
-                if hasattr(self, 'petri_radius'):
-                    r_b = random.random() * self.petri_radius * 0.8
-                    th = random.random() * 2 * math.pi
-                    x = self.petri_center[0] + r_b * math.cos(th)
-                    y = self.petri_center[1] + r_b * math.sin(th)
-                else:
-                    x = random.randint(0, 800)
-                    y = random.randint(0, 600)
-                sp.members.append(Bacterium(sp, x, y, size=max(0.5, random.gauss(1.0, 0.2))))
             sp.history = []
             sp.total_births = 0
             sp.total_deaths = 0
@@ -980,9 +1145,11 @@ class Simulation:
         Advance one time step if running.
         viewport_bounds: dict with keys 'left', 'right', 'top', 'bottom' for visible area
         """
-        if not hasattr(self, 'petri_center'):
-            self.petri_center = (w/2, h/2)
-            self.petri_radius = math.hypot(w, h) / 2 + PETRI_RADIUS_PADDING_UM
+        self._ensure_petri_geometry(w, h)
+        # Lazily place the founder inoculum once the dish geometry exists; this runs even while
+        # paused so the starting layout is visible before the simulation is started.
+        if not self._populated:
+            self._seed_initial_population()
 
         if not self.running:
             return

@@ -1,1 +1,1 @@
-{"o2": 0.2, "co2": 0.003, "ph": 7.0, "temperature": 37.0, "drop_frequency": 5, "drop_range_min": 1, "drop_range_max": 50, "capacity": 500, "phage_inflow": 0, "diet_profile": "standard", "seed": null}
+{"o2": 0.2, "co2": 0.003, "ph": 7.0, "temperature": 37.0, "drop_frequency": 5, "drop_range_min": 1, "drop_range_max": 50, "capacity": 500, "phage_inflow": 0, "diet_profile": "malnutrition", "seed": null}
