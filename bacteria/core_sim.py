@@ -152,17 +152,17 @@ class Bacterium:
         self.base_size = size  # Unit: micrometers (um)
         # Volumetric scaling (size^3) assuming constant cellular density context.
         # Unit mappings: 1 distance unit = 1 um. 1 food unit = 1 pg glucose-equivalent organic nutrient.
-        # Reference: Simple geometric scaling for 3D objects; ~1 pg wet mass per 1 um^3 bacterial volume.
+        # Simple geometric scaling for 3D objects; ~1 pg wet mass per 1 um^3 bacterial volume; see DOCUMENTATION.md §4.1 (Nutrient Storage and Cell Size).
         self.food_capacity = getattr(species, 'food_capacity', DEFAULT_FOOD_CAPACITY_PG) * (self.base_size ** 3)
         self.food_level = initial_food if initial_food is not None else self.food_capacity
         
-        # Kleiber's Law (Allometric scaling): Metabolic rate scales to Mass^(3/4)
-        # Reference: Max Kleiber (1932), "Body size and metabolism". If Mass ~ size^3, then Meta ~ size^(2.25)
+        # Allometric metabolic scaling: metabolic rate scales as Mass^(3/4). If Mass ~ size^3, then Meta ~ size^(2.25).
+        # see DOCUMENTATION.md §4.2 (Metabolism and Uptake)
         # Units: pg glucose-equivalent nutrient consumed per second, later scaled by elapsed dt.
         self.metabolic_rate = getattr(species, 'metabolic_rate', DEFAULT_METABOLIC_RATE_PG_S) * (self.base_size ** 2.25)
         
-        # Surface area scaling (size^2) governing nutrient absorption/consumption rates
-        # Reference: Square-cube law; surface area limits exchange with environment
+        # Surface area scaling (size^2) governing nutrient absorption/consumption rates.
+        # Square-cube law; surface area limits exchange with environment; see DOCUMENTATION.md §4.2 (Metabolism and Uptake).
         # Units: pg glucose-equivalent nutrient absorbed per second, later scaled by elapsed dt.
         self.consumption_speed = getattr(species, 'consumption_speed', DEFAULT_CONSUMPTION_SPEED_PG_S) * (self.base_size ** 2)
         
@@ -176,8 +176,8 @@ class Bacterium:
             max(0.0, getattr(species, 'aff_mdcf', DEFAULT_AFF_MDCF)),
         )
         
-        # Kinematic scaling in low Reynolds number environments (microscale)
-        # Reference: Stokes' Law for viscous drag (Fd = 6*pi*eta*r*v). V scales inversely with radius (base_size)
+        # Kinematic scaling in low Reynolds number environments (microscale).
+        # Viscous drag at low Reynolds number (Fd = 6*pi*eta*r*v); V scales inversely with radius (base_size); see DOCUMENTATION.md §4.5 (Rotational Diffusion).
         # Units: um/second.
         self.speed = getattr(species, 'speed', DEFAULT_BACTERIA_SPEED_UM_S) / max(0.1, self.base_size)
         
@@ -194,8 +194,8 @@ class Bacterium:
         self.turn_rate = math.pi / max(0.1, self.base_size)
         self.heading = random.uniform(0, 2 * math.pi) if 'math' in globals() else random.random()
         
-        # Bacterial run-and-tumble temporal mechanics (E. coli chemotaxis model)
-        # Reference: E. coli naturally "run" for ~1 second and "tumble" for ~0.1 seconds to reorient.
+        # Bacterial run-and-tumble temporal mechanics (E. coli chemotaxis model).
+        # E. coli naturally "run" for ~1 second and "tumble" for ~0.1 seconds to reorient; see DOCUMENTATION.md §4.4 (Run-and-Tumble Motion).
         self.base_run_duration = self._sample_run_duration()
         self.base_tumble_duration = BACTERIA_TUMBLE_DURATION_SEC
         self.state_timer = self.base_run_duration
@@ -210,17 +210,17 @@ class Bacterium:
         # SUBSTRATE_* id (0 = generic calorie, 1 = complex glycan, 2 = MDCF prebiotic). One slot
         # per substrate class in SUBSTRATE_ENERGY_YIELD so the Simulation can aggregate diet uptake.
         self.last_uptake_by_substrate = [0.0] * len(SUBSTRATE_ENERGY_YIELD)
-        # M3 Baranyi & Roberts (1994) physiological state q. Fresh inoculum starts at the species' q0
-        # (low -> long lag); daughter cells inherit the parent's adapted q so they do not re-lag.
+        # M3 Baranyi physiological state q (see DOCUMENTATION.md §4.16 (Lag Phase)). Fresh inoculum starts at
+        # the species' q0 (low -> long lag); daughter cells inherit the parent's adapted q so they do not re-lag.
         self.q = initial_q if initial_q is not None else getattr(species, 'baranyi_q0', DEFAULT_BARANYI_Q0)
         # M4 phenotypic switching: cells begin proliferative and may stochastically enter the dormant,
-        # stress-tolerant persister state under starvation (Balaban et al. 2004). Daughters are always
-        # born proliferative since persisters do not divide.
+        # stress-tolerant persister state under starvation (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
+        # Daughters are always born proliferative since persisters do not divide.
         self.is_persister = False
         # M5 phage predation (SIR host state) + HGT. A cell is born resistant with the species' initial
         # resistant fraction (heritable, chromosomal); infection and lysis are tracked per cell. The
         # metabolic burden factor (>=1) models the fitness cost of a horizontally acquired resistance
-        # plasmid (San Millan & MacLean 2017); it is 1.0 for cells with no carriage cost.
+        # plasmid (plasmid carriage cost); it is 1.0 for cells with no carriage cost. see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer).
         self.phage_resistant = random.random() < getattr(species, 'phage_resistance', 0.0)
         self.infected = False
         self.lysis_timer = 0.0
@@ -265,16 +265,16 @@ class Bacterium:
             return
             
         self.age += dt
-        # Senescence: Replicative senescence and ROS (Reactive Oxygen Species) accumulation
+        # Senescence: Replicative senescence and ROS (Reactive Oxygen Species) accumulation.
         # As age increases, cellular damage increases metabolic maintenance overhead.
-        # Reference: Free radical theory of aging (Harman, 1956). Models linear increase in basal energy.
+        # Free-radical theory of aging: models linear increase in basal energy. see DOCUMENTATION.md §4.11 (Senescence).
         # Average time to double metabolic cost (senescence base lifespan) approx 3 minutes (180s) in sim.
         age_factor = 1.0 + (self.age / (SENESCENCE_BASE_LIFESPAN_SEC * self.lifespan_variance))
         
         # Metabolism: lose nutrient over elapsed real time.
         # Temperature (Ratkowsky) scales enzymatic turnover: cold/hot extremes depress basal demand,
         # which is why chilled cultures persist far longer than cultures at their growth optimum.
-        # M4: dormant persisters burn only a fraction of basal maintenance (Lewis 2010).
+        # M4: dormant persisters burn only a fraction of basal maintenance (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
         persister_metabolic_factor = PERSISTER_METABOLIC_FACTOR if self.is_persister else 1.0
         # M5: a horizontally acquired resistance plasmid raises basal maintenance (carriage cost).
         metabolic_demand_pg = (self.metabolic_rate * dt) * age_factor * temp_factor * persister_metabolic_factor * self.metabolic_burden_factor
@@ -295,11 +295,11 @@ class Bacterium:
         fullness = max(0.0, min(1.0, self.food_level / cap))
         self.size = self.base_size * (BACTERIA_STARVED_RENDER_SCALE + BACTERIA_FULL_RENDER_SCALE_RANGE * fullness)
 
-        # M4 phenotypic switching (Balaban et al. 2004). Reversible, stochastic transition between the
-        # proliferative and dormant persister states, gated by internal fullness as a faithful proxy
-        # for sustained LOCAL nutrient balance. Probabilities use the exponential CDF 1 - e^{-rate*dt}
-        # so the per-tick chance is exact and frame-rate independent. Disabled when the species'
-        # switching propensity is 0, reproducing pre-M4 behaviour exactly.
+        # M4 phenotypic switching (see DOCUMENTATION.md §4.17 (Phenotypic Switching)). Reversible, stochastic
+        # transition between the proliferative and dormant persister states, gated by internal fullness as a
+        # faithful proxy for sustained LOCAL nutrient balance. Probabilities use the exponential CDF
+        # 1 - e^{-rate*dt} so the per-tick chance is exact and frame-rate independent. Disabled when the
+        # species' switching propensity is 0, reproducing pre-M4 behaviour exactly.
         persister_switch = getattr(self.species, 'persister_switch', 0.0)
         if persister_switch > 0.0:
             s1 = getattr(self.species, 'persister_enter_thresh', DEFAULT_PERSISTER_ENTER_THRESH)
@@ -324,8 +324,8 @@ class Bacterium:
         hunger = 1.0 - fullness
         gx_eff = max(0.0, min(1.0, base_gx + (1.0 - base_gx) * hunger))
         
-        # Pathfind with chemotaxis: score food nodes by physical diffusion gradients
-        # Reference: Fickian nutrient fields and Weber-Fechner receptor compression.
+        # Pathfind with chemotaxis: score food nodes by physical diffusion gradients.
+        # Fickian nutrient fields and Weber-Fechner receptor compression; see DOCUMENTATION.md §4.3 (Food Sensing and Chemotaxis).
         target = None
         best_score = -float('inf')
         closest_node = None
@@ -465,8 +465,8 @@ class Bacterium:
                 self._tumble_reoriented = True
             spd *= BACTERIA_TUMBLE_TRANSLATION_FACTOR # Very slow forward translation during tumble
         
-        # Apply Brownian rotational noise (rotational diffusion)
-        # Reference: Rotational diffusion coefficient scales roughly ~ 1 / r^3
+        # Apply Brownian rotational noise (rotational diffusion).
+        # Rotational diffusion coefficient scales roughly ~ 1 / r^3; see DOCUMENTATION.md §4.5 (Rotational Diffusion).
         # D_rot = kT / (8 pi eta r^3). A standard value for 1 um sphere in water at room temp is ~0.16 rad^2/s.
         rotational_diffusion = BACTERIA_ROTATIONAL_DIFFUSION_COEFFICIENT_RAD2_S / max(0.1, self.base_size ** 3)
         # Brownian angular variance is sigma^2 = 2 D_rot dt, so the sampled angle uses sqrt(2 D_rot dt).
@@ -474,8 +474,9 @@ class Bacterium:
         self.heading += random.gauss(0, rotational_sigma_rad)
         
         # Spatial heterogeneity: cells in the outer mucus annulus adhere to the matrix and slow
-        # down, forming an anchoring refuge from luminal washout (Lee et al. 2018). `bounds` carries
-        # the petri centre/radius also used for the circular boundary reflection below.
+        # down, forming an anchoring refuge from luminal washout (see DOCUMENTATION.md §4.20 (Spatial
+        # Heterogeneity: Lumen vs Mucus Layer)). `bounds` carries the petri centre/radius also used
+        # for the circular boundary reflection below.
         cx_b, cy_b, r_b = bounds
         if r_b > 0.0 and math.hypot(self.x - cx_b, self.y - cy_b) >= r_b * MUCUS_LAYER_RADIUS_FRACTION:
             spd *= MUCUS_MOTILITY_FACTOR
@@ -517,9 +518,9 @@ class Bacterium:
     def attempt_fission(self, envf, rep_prob, rep_thresh, dt):
         """
         Evaluate and execute cell division (binary fission).
-        Reference: Stouthamer (1973), A theoretical study on the amount of ATP required for synthesis of microbial cell material.
-        Cost equivalent of chromosome, ribosomes, and cell wall assembly equates ~40 pg glucose-equivalent nutrient per 1 um^3 of new cell volume.
-        Requires sufficient accumulated biomass.
+        ATP/biomass synthesis cost: chromosome, ribosome, and cell-wall assembly equate to ~40 pg
+        glucose-equivalent nutrient per 1 um^3 of new cell volume. Requires sufficient accumulated biomass.
+        see DOCUMENTATION.md §4.7 (Reproduction).
         """
         if rep_prob > 0 and random.random() < rep_prob and self.food_level > self.food_capacity * rep_thresh:
             child_volume = self.base_size ** 3
@@ -535,11 +536,12 @@ class Bacterium:
                 if parent_food > min_survival_food and child_food > min_survival_food:
                     self.food_level = parent_food
                     # Daughter inherits the parent's adapted physiological state q (no re-lag): an
-                    # already-dividing cell's progeny are pre-adapted (Baranyi & Roberts 1994).
+                    # already-dividing cell's progeny are pre-adapted (see DOCUMENTATION.md §4.16 (Lag Phase)).
                     child = Bacterium(self.species, self.x, self.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food, initial_q=self.q)
                     # M5: phage resistance is heritable. A susceptible lineage gains resistance by rare
-                    # spontaneous mutation per division (Luria & Delbruck 1943), the seed of the
-                    # post-crash rebound. The plasmid carriage cost is inherited with the trait.
+                    # spontaneous mutation per division (see DOCUMENTATION.md §4.18 (Phage Predation and
+                    # Horizontal Gene Transfer)), the seed of the post-crash rebound. The plasmid carriage
+                    # cost is inherited with the trait.
                     child.phage_resistant = self.phage_resistant
                     if not child.phage_resistant and random.random() < PHAGE_RESISTANCE_MUTATION_RATE:
                         child.phage_resistant = True
@@ -621,7 +623,7 @@ class BacteriaSpecies:
         # Phase I diet model: per-substrate uptake-efficiency multipliers (>=0) scaling
         # consumption_speed for generic calories, complex glycans, and MDCF prebiotics. Defaults
         # grant only calorie use, so fibre/MDCF utilisation is an explicit, taxon-specific trait
-        # that lets the MDCF diet selectively favour competent species (Gehrig et al. 2019).
+        # that lets the MDCF diet selectively favour competent species; see DOCUMENTATION.md §4.19 (Diet-Driven Substrate Metabolism).
         self.aff_calorie = max(0.0, float(aff_calorie))
         self.aff_glycan = max(0.0, float(aff_glycan))
         self.aff_mdcf = max(0.0, float(aff_mdcf))
@@ -639,10 +641,11 @@ class BacteriaSpecies:
         self.extinction_time = None
 
     def _ratkowsky_sqrt_mu(self, temp_c):
-        """Raw square-root growth term sqrt(mu) of the Ratkowsky (1983) model (unnormalized).
+        """Raw square-root growth term sqrt(mu) of the Ratkowsky model (unnormalized).
 
         Equation: sqrt(mu) = b*(T - T_min)*(1 - exp(c*(T - T_max))).
         Returns 0.0 outside the (T_min, T_max) biokinetic window where no growth occurs.
+        see DOCUMENTATION.md §4.14 (Temperature Kinetics).
         """
         if temp_c <= self.temp_min or temp_c >= self.temp_max:
             return 0.0
@@ -727,7 +730,7 @@ class BacteriaSpecies:
             phage_lysed = False
             if ecm is not None:
                 if b.infected:
-                    # Latent (eclipse) period countdown; on expiry the host lyses (Ellis & Delbruck 1939).
+                    # Latent (eclipse) period countdown; on expiry the host lyses (see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer)).
                     b.lysis_timer -= dt
                     if b.lysis_timer <= 0.0:
                         deaths.append(b)
@@ -740,7 +743,7 @@ class BacteriaSpecies:
                         if necromass_pg > MIN_FOOD_NODE_AMOUNT_PG:
                             food_nodes.append(FoodNode.acquire().init(b.x, b.y, necromass_pg))
                 elif not b.phage_resistant:
-                    # Mass-action adsorption: P(adsorb) = 1 - exp(-k * [phage] * dt) (Levin et al. 1977).
+                    # Mass-action adsorption: P(adsorb) = 1 - exp(-k * [phage] * dt); see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer).
                     local_phage = ecm.sample(b.x, b.y, layer='phage') / PHAGE_ECM_UNITS_PER_VIRION
                     if local_phage > PHAGE_MIN_ADSORBABLE and \
                             random.random() < 1.0 - math.exp(-DEFAULT_PHAGE_ADSORPTION_RATE * local_phage * dt):
@@ -752,8 +755,8 @@ class BacteriaSpecies:
                 # The cell is destroyed this tick; skip its reproduction and senescence trials.
                 continue
 
-            # Reproduction trial based on the Verhulst (Logistic) growth model modified by environmental fitness.
-            # Reference: Verhulst (1838). dp/dt = r*p*(1 - p/K). Here, `capf` represents the limiting (1 - p/K) term.
+            # Reproduction trial based on the logistic growth model modified by environmental fitness.
+            # dp/dt = r*p*(1 - p/K); `capf` represents the limiting (1 - p/K) term. see DOCUMENTATION.md §4.7 (Reproduction).
             # The Ratkowsky temp_factor multiplies the intrinsic rate r, gating growth to the biokinetic range.
             # The Baranyi adjustment function alpha(q) = q/(1+q) gates growth during lag: ~0 while the cell
             # is still adapting (q small) and -> 1 once adapted, reproducing the flat-then-exponential curve.
@@ -761,16 +764,16 @@ class BacteriaSpecies:
             rep_prob = (self.base_rep * dt) * capf * envf * temp_factor * baranyi_alpha
             rep_prob = max(0, min(rep_prob, 1))  # Clamp to [0,1]
             
-            # M4: dormant persisters halt division entirely until they resuscitate (Lewis 2010).
+            # M4: dormant persisters halt division entirely until they resuscitate (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
             # M5: phage-hijacked (infected) cells cannot divide while the virus commandeers replication.
             if not b.is_persister and not b.infected:
                 new_bacterium = b.attempt_fission(envf, rep_prob, self.rep_thresh, dt)
                 if new_bacterium:
                     births.append(new_bacterium)
             
-            # Senescence modeled via Gompertz law of mortality: mu(x) = A * e^(alpha * x) + B
-            # Reference: Gompertz (1825). Exponential increase in death rate due to intrinsic cellular senescence.
-            # Alpha governs the steepness of the decay curve.
+            # Senescence modeled via Gompertz law of mortality: mu(x) = A * e^(alpha * x) + B.
+            # Exponential increase in death rate due to intrinsic cellular senescence; alpha governs the
+            # steepness of the decay curve. see DOCUMENTATION.md §4.11 (Senescence).
             gompertz_alpha = GOMPERTZ_MORTALITY_ALPHA / max(MIN_LIFESPAN_VARIANCE_DENOMINATOR, b.lifespan_variance)
             age_death_penalty = (self.base_aging * dt) * math.exp(gompertz_alpha * b.age)
             # Cap the penalty to avoid overflow probabilities per simulation tick
@@ -778,7 +781,7 @@ class BacteriaSpecies:
             
             # Death trial: extrinsic (environmental toxicity) + intrinsic (Gompertz senescence) + starvation.
             # M4: persisters are stress-tolerant, so both the environmental and senescence hazards are
-            # attenuated by the persister resistance factor (Balaban et al. 2004; Lewis 2010).
+            # attenuated by the persister resistance factor (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
             persister_resistance = PERSISTER_RESISTANCE_FACTOR if b.is_persister else 1.0
             toxic_death_prob = (((1.0 - envf) * ENV_TOXIC_DEATH_RATE_PER_SEC) * dt + age_death_penalty) * persister_resistance
             if b.food_level <= 0 or random.random() < toxic_death_prob:
@@ -990,7 +993,8 @@ class Simulation:
     def _process_interactions(self, spatial_hash, CELL_SIZE, dt):
         """
         Process Inter/Intra species interactions and ECM biochemical exposure.
-        Reference: Contact-dependent inhibition (T6SS) and diffusible antimicrobial peptides (bacteriocins).
+        Contact-dependent inhibition (T6SS) and diffusible antimicrobial peptides (bacteriocins).
+        see DOCUMENTATION.md §4.12 (Competition, Bacteriocins, and T6SS).
         """
         for sp in self.species:
             bac_prod_rate = (sp.bacteriocin_production * BACTERIOCIN_PRODUCTION_COST_RATE) * dt
@@ -1044,8 +1048,8 @@ class Simulation:
                 b_size_sq_dmg = (sp.t6ss_activity * (b.size ** 2) * T6SS_DAMAGE_SCALING_FACTOR) * dt
                 
                 # Bacteriocin Emission (metabolic cost):
-                # Emission occurs consistently, scaled by bacteriocin_production
-                # Reference: Ribosomally synthesized antimicrobial peptides. Production costs ATP/amino acids.
+                # Emission occurs consistently, scaled by bacteriocin_production.
+                # Ribosomally synthesized antimicrobial peptides; production costs ATP/amino acids. see DOCUMENTATION.md §4.12 (Competition, Bacteriocins, and T6SS).
                 if bac_prod_rate > 0 and b.food_level > bac_prod_rate:
                     b.food_level -= bac_prod_rate
                     self.ecm.add(b.x, b.y, bac_prod_rate * BACTERIOCIN_ECM_SECRETION_MULTIPLIER, layer='bac')
@@ -1054,7 +1058,7 @@ class Simulation:
                 local_bac = self.ecm.sample(b.x, b.y, layer='bac')
                 if local_bac > 0:
                     # Damage scaled by immunity factor acting as competitive inhibitor.
-                    # M4: dormant persisters tolerate the antimicrobial dose (Balaban et al. 2004).
+                    # M4: dormant persisters tolerate the antimicrobial dose (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
                     persister_resistance = PERSISTER_RESISTANCE_FACTOR if b.is_persister else 1.0
                     bac_dmg = (local_bac * BACTERIOCIN_DAMAGE_COEFFICIENT) * (1.0 - immunity_mitigation) * persister_resistance * dt
                     b.food_level -= bac_dmg
@@ -1077,9 +1081,9 @@ class Simulation:
                             if dist_sq < interact_dist**2:
                                 # --- M5 Horizontal gene transfer (contact-dependent) ---
                                 # A resistant donor transfers the phage-resistance trait to a susceptible
-                                # neighbor by conjugation-like contact (Ochman et al. 2000). Both cells must
-                                # be HGT-competent; transfer follows P = 1 - exp(-k * c_donor * c_recip * dt).
-                                # The recipient inherits the plasmid carriage cost (San Millan & MacLean 2017).
+                                # neighbor by conjugation-like contact. Both cells must be HGT-competent;
+                                # transfer follows P = 1 - exp(-k * c_donor * c_recip * dt). The recipient
+                                # inherits the plasmid carriage cost. see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer).
                                 if b.phage_resistant and not other.phage_resistant:
                                     donor_comp = sp.hgt_competence
                                     recip_comp = other.species.hgt_competence
@@ -1104,11 +1108,11 @@ class Simulation:
                                 else:
                                     # Interspecies competition
                                     # Type VI Secretion System (T6SS) Contact Dueling:
-                                    # Reference: Spring-loaded contact weapon delivering effector toxins directly into neighbor.
-                                    # Base damage scales with T6SS activity expression and physical area.
+                                    # Spring-loaded contact weapon delivering effector toxins directly into neighbor.
+                                    # Base damage scales with T6SS activity expression and physical area. see DOCUMENTATION.md §4.12 (Competition, Bacteriocins, and T6SS).
                                     immunity_defense = min(T6SS_MAX_IMMUNITY_DEFENSE, (other.species.immunity_factor * other.size) / (b.size + T6SS_IMMUNITY_SIZE_EPSILON_UM))
                                     actual_dmg = b_size_sq_dmg * (1.0 - immunity_defense)
-                                    # M4: dormant persisters tolerate contact-dependent toxin delivery (Lewis 2010).
+                                    # M4: dormant persisters tolerate contact-dependent toxin delivery (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
                                     if other.is_persister:
                                         actual_dmg *= PERSISTER_RESISTANCE_FACTOR
                                     other.food_level -= actual_dmg
@@ -1128,8 +1132,9 @@ class Simulation:
         """Draw a substrate class for one nutrient drop from the active diet profile.
 
         The diet profile (malnutrition / standard / mdcf) defines the categorical probability of
-        each substrate class, reproducing distinct experimental feeding arms (Gehrig et al. 2019).
+        each substrate class, reproducing distinct experimental feeding arms.
         Inverse-CDF sampling over the profile's ratios; unknown profiles fall back to generic calorie.
+        see DOCUMENTATION.md §4.19 (Diet-Driven Substrate Metabolism).
         """
         ratios = DIET_PROFILES.get(self.diet_profile, DIET_PROFILES[DEFAULT_DIET_PROFILE])
         r = random.random()
@@ -1255,10 +1260,10 @@ class Simulation:
                 n_kill = min(excess, len(all_bacteria))
                 # Spatial competition: the well-mixed lumen imposes stronger resource competition
                 # than the stabilized mucus refuge, so luminal cells are preferentially lost under
-                # carrying-capacity pressure. Weighted sampling without replacement (Efraimidis &
-                # Spirakis 2006): key = U^(1/w); the n_kill largest keys are removed, so lumen cells
-                # (up-weighted by LUMEN_COMPETITION_CULL_WEIGHT) are more likely to be culled. With
-                # equal weights this reduces exactly to uniform random sampling.
+                # carrying-capacity pressure. Weighted sampling without replacement: key = U^(1/w);
+                # the n_kill largest keys are removed, so lumen cells (up-weighted by
+                # LUMEN_COMPETITION_CULL_WEIGHT) are more likely to be culled. With equal weights this
+                # reduces exactly to uniform random sampling. see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer).
                 cx0, cy0 = self.petri_center
                 inv_r = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
                 keyed = []
@@ -1347,7 +1352,7 @@ class Simulation:
             
             if sp.o2_sens > 0:
                 # Aerobic Respiration: C6H12O6 + 6 O2 -> 6 CO2 + 6 H2O
-                # Reference: Stoichiometry mapping cell metabolism to gas usage exactly. 
+                # Stoichiometry mapping cell metabolism to gas usage exactly; see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
                 # 1 mole Glucose (180.16 g) consumes 6 moles O2 (192.0 g) and produces 6 moles CO2 (264.0 g).
                 o2_consumed_pg = total_glucose_pg * (O2_SIX_MOLES_MASS_G / GLUCOSE_MOLAR_MASS_G) * sp.o2_sens
                 co2_produced_pg = total_glucose_pg * (CO2_SIX_MOLES_MASS_G / GLUCOSE_MOLAR_MASS_G) * sp.o2_sens
@@ -1360,7 +1365,7 @@ class Simulation:
                 
             elif sp.o2_sens < 0:
                 # Anaerobic Fermentation (Lactic Acid Fermentation): C6H12O6 -> 2 Lactic Acid
-                # Reference: Stoichiometry mapping homolactic fermentation for anaerobic life.
+                # Stoichiometry mapping homolactic fermentation for anaerobic life; see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
                 # 1 mole Glucose (180.16 g) produces 2 moles Lactic Acid (180.16 g, conservation of mass).
                 lactic_acid_pg = total_glucose_pg * abs(sp.o2_sens)
                 
@@ -1369,7 +1374,7 @@ class Simulation:
                 co2_production_fraction += co2_produced_pg / ENV_100_CO2_PG
                 
                 # Lactic acid strongly drops pH due to highly acidic dissociation equilibrium (pKa 3.86).
-                # Reference: Henderson-Hasselbalch representation inside small buffered environments.
+                # Henderson-Hasselbalch representation inside small buffered environments; see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
                 acid_production += (lactic_acid_pg / ENV_100_O2_PG) * LACTIC_ACID_PH_EFFECT
 
             # M2 acetate oxidation gas coupling: C2H4O2 + 2 O2 -> 2 CO2 + 2 H2O.
@@ -1388,15 +1393,15 @@ class Simulation:
         self.env['co2'] += co2_production_fraction
         self.env['ph'] -= acid_production
 
-        # Atmospheric gas dissolution and physiological pH buffering mechanics
-        # Reference: Fick's first law of diffusion (J = -D * dC/dx). Concentration gradient drives gas toward atmospheric equilibrium.
-        # Assuming a shallow 1 mL volume open to sea-level atmospheric pressure, equilibrium typically reaches ~30% per second.
+        # Atmospheric gas dissolution and physiological pH buffering mechanics.
+        # Fick's first law of diffusion (J = -D * dC/dx): concentration gradient drives gas toward atmospheric equilibrium.
+        # Assuming a shallow 1 mL volume open to sea-level atmospheric pressure, equilibrium typically reaches ~30% per second. see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
         diffusion_rate = GAS_DIFFUSION_RATE_SEC * dt
         self.env['o2'] += (ATMOSPHERIC_O2_FRACTION - self.env['o2']) * diffusion_rate
         self.env['co2'] += (ATMOSPHERIC_CO2_FRACTION - self.env['co2']) * diffusion_rate
         
-        # Buffer system (e.g. bicarbonate buffer system naturally driving pH towards neutral 7 in open systems)
-        # Reference: Henderson-Hasselbalch equation and Le Chatelier's equilibrium principle in aqueous environments.
+        # Buffer system (e.g. bicarbonate buffer system naturally driving pH towards neutral 7 in open systems).
+        # Henderson-Hasselbalch equation and Le Chatelier's equilibrium principle in aqueous environments. see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
         buffer_rate = BUFFER_RESTORATION_RATE_SEC * dt
         self.env['ph'] += (NEUTRAL_PH - self.env['ph']) * buffer_rate
 

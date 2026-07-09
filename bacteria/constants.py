@@ -69,7 +69,7 @@ LIFESPAN_VARIANCE_STD = 0.2
 SENESCENCE_BASE_LIFESPAN_SEC = 180.0
 # Gompertz alpha sets mortality doubling near 17 seconds before individual lifespan scaling.
 GOMPERTZ_MORTALITY_ALPHA = 0.04
-# Stouthamer-style biomass synthesis cost in glucose-equivalent pg per 1 um^3 child volume.
+# ATP/biomass synthesis cost in glucose-equivalent pg per 1 um^3 child volume; see DOCUMENTATION.md §4.7 (Reproduction).
 FISSION_COST_PG_PER_UM3 = 40.0
 
 # Softened receptor field avoids singular food signals at zero distance while preserving nearby gradients.
@@ -111,9 +111,8 @@ DEFAULT_SUBSTRATE_ID = SUBSTRATE_GENERIC_CALORIE
 
 # Metabolic energy yield per pg ingested, expressed as a fraction of pure glucose (1.0).
 # Simple sugars are fully oxidised (1.0); complex glycans lose energy to incomplete fermentation
-# and host-indigestible residue (~0.7, Flint et al. 2012, "Microbial degradation of complex
-# carbohydrates in the gut"); MDCF prebiotics are targeted, efficiently fermentable substrates
-# (~0.85, Gehrig et al. 2019 Science, MDCF effects on the malnourished gut microbiota).
+# and host-indigestible residue (~0.7); MDCF prebiotics are targeted, efficiently fermentable
+# substrates (~0.85). see DOCUMENTATION.md §4.19 (Diet-Driven Substrate Metabolism).
 SUBSTRATE_ENERGY_YIELD = {
     SUBSTRATE_GENERIC_CALORIE: 1.0,
     SUBSTRATE_COMPLEX_GLYCAN: 0.7,
@@ -136,8 +135,8 @@ DEFAULT_AFF_MDCF = 0.0
 # class. These ratios encode the three experimental feeding arms. Malnutrition-like diets are
 # low-diversity and calorie-dominated; standard supplementary food adds fibre; the MDCF arm is
 # enriched for the targeted prebiotic. Fractions per profile sum to 1.0. Values are calibration
-# estimates informed by the MDCF trial design (Gehrig et al. 2019; Raman et al. 2019 Science) and
-# are flagged for refinement against empirical dietary-intake data.
+# estimates informed by the MDCF trial design and are flagged for refinement against empirical
+# dietary-intake data. see DOCUMENTATION.md §4.19 (Diet-Driven Substrate Metabolism).
 DIET_PROFILES = {
     'malnutrition': {SUBSTRATE_GENERIC_CALORIE: 0.85, SUBSTRATE_COMPLEX_GLYCAN: 0.10, SUBSTRATE_MDCF_PREBIOTIC: 0.05},
     'standard':     {SUBSTRATE_GENERIC_CALORIE: 0.60, SUBSTRATE_COMPLEX_GLYCAN: 0.30, SUBSTRATE_MDCF_PREBIOTIC: 0.10},
@@ -149,12 +148,12 @@ DEFAULT_DIET_PROFILE = 'standard'
 # The petri dish is geometrically partitioned into a central, well-mixed LUMEN and a thin outer
 # MUCUS annulus. A point is in the mucus layer when its radial position (as a fraction of the dish
 # radius) is at or beyond this threshold; the inner 75% is lumen, the outer 25% is mucus. This
-# mirrors the radial organisation of the intestinal cross-section (Donaldson et al. 2016,
-# Nat. Rev. Microbiol., "Gut biogeography of the bacterial microbiota").
+# mirrors the radial organisation of the intestinal cross-section (concentric lumen/mucus zones).
+# see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer)
 MUCUS_LAYER_RADIUS_FRACTION = 0.75
 # Mucus-associated cells adhere to the glycoprotein matrix and move much more slowly than free
-# luminal swimmers, creating an anchoring refuge. Motility is reduced to 30% in the mucus layer
-# (Lee et al. 2018, Cell Host & Microbe, mucosa-associated colonisation).
+# luminal swimmers, creating an anchoring refuge. Motility is reduced to 30% in the mucus layer.
+# see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer)
 MUCUS_MOTILITY_FACTOR = 0.3
 # Nutrient washout (peristaltic / luminal-flow clearance) of free food mass, per real second.
 # The lumen is rapidly flushed; the mucus layer is a stabilized reservoir with near-zero
@@ -224,8 +223,7 @@ AEROBE_O2_SATURATION_LEVEL = 0.10
 ANAEROBE_O2_TOXICITY_THRESHOLD = 0.02
 
 # --- Temperature kinetics: Ratkowsky square-root model ---
-# Reference: Ratkowsky, Lowry, McMeekin, Stokes & Chandler (1983), "Model for bacterial
-# culture growth rate throughout the entire biokinetic temperature range", J. Bacteriol.
+# see DOCUMENTATION.md §4.14 (Temperature Kinetics)
 # Full (four-parameter) form: sqrt(mu) = b*(T - T_min)*(1 - exp(c*(T - T_max))).
 #   mu       = specific growth rate (here used as a dimensionless rate multiplier after normalization)
 #   T_min    = theoretical minimum temperature below which no growth occurs
@@ -234,7 +232,7 @@ ANAEROBE_O2_TOXICITY_THRESHOLD = 0.02
 #   c        = Arrhenius-like steepness of high-temperature thermal inactivation
 # Because the simulation uses the curve NORMALIZED to each species' own optimum, b cancels
 # out of the multiplier; it is retained for documentation and possible absolute-rate use.
-# Default b/c approximate mesophilic (E. coli-like) growth kinetics from the 1983 dataset.
+# Default b/c approximate mesophilic (E. coli-like) growth kinetics.
 RATKOWSKY_B_SQRT_PER_C = 0.0410      # sqrt(rate) slope per degC; mesophile literature ~0.035-0.041
 RATKOWSKY_C_PER_C = 0.161            # high-temperature inactivation steepness per degC (E. coli-like)
 # Default cardinal temperatures: E. coli grows ~4-49 degC; defaults bracket a mesophile range.
@@ -248,12 +246,11 @@ ENV_TEMPERATURE_MAX_C = 60.0
 # One-time per-species sample count used to locate the Ratkowsky growth optimum for normalization.
 RATKOWSKY_NORMALIZATION_SAMPLES = 200
 
-# --- Lag phase: Baranyi & Roberts (1994) dynamic physiological-state model ---
+# --- Lag phase: Baranyi dynamic physiological-state model ---
 # A freshly inoculated cell carries an internal "work to be done" before it can divide, captured by a
 # dimensionless physiological state q. The adjustment function alpha(q) = q / (1 + q) multiplies the
 # growth rate: alpha ~ 0 during lag (q small), rising to 1 once the cell has adapted (q large).
-# Reference: Baranyi & Roberts (1994), "A dynamic approach to predicting bacterial growth in food",
-# Int. J. Food Microbiol. 23:277-294.
+# see DOCUMENTATION.md §4.16 (Lag Phase)
 DEFAULT_BARANYI_Q0 = 0.05  # initial physiological state of fresh inoculum; h0 = ln(1 + 1/q0) ~ 3.04 (moderate lag)
 # q grows as dq/dt = mu_max * q (here mu_max is the species' temperature-scaled specific growth rate).
 # Cap q to keep alpha numerically at ~1 without risking float overflow on long runs; adaptation is
@@ -267,11 +264,9 @@ BARANYI_Q0_MAX = 1.0e3   # ceiling: high q0 means effectively no lag (alpha star
 # halts division, minimizes maintenance metabolism, and resists antimicrobials and senescence. The
 # switch is reversible: persisters resuscitate when nutrients return. Switching is governed by two
 # fullness thresholds (a starvation trigger S1 and a recovery trigger S2) and per-second rates.
-# References: Balaban, Merrin, Chait, Kowalik & Leibler (2004), "Bacterial Persistence as a
-# Phenotypic Switch", Science 305:1622-1625; Lewis (2010), "Persister Cells", Annu. Rev. Microbiol.
-# 64:357-372. Rates are sim-accelerated (the simulation runs in real seconds, not hours) so that the
+# Rates are sim-accelerated (the simulation runs in real seconds, not hours) so that the
 # bet-hedging dynamics are observable within a session while preserving the relative ordering of the
-# spontaneous, stress-induced, and resuscitation pathways.
+# spontaneous, stress-induced, and resuscitation pathways. see DOCUMENTATION.md §4.17 (Phenotypic Switching)
 DEFAULT_PERSISTER_SWITCH = 0.0       # per-species switching propensity in [0,1]; 0 disables persistence (pre-M4 behaviour)
 DEFAULT_PERSISTER_ENTER_THRESH = 0.15  # S1: internal fullness below which starvation-induced switching engages
 DEFAULT_PERSISTER_EXIT_THRESH = 0.50   # S2: internal fullness above which persisters resuscitate to proliferative
@@ -279,7 +274,7 @@ PERSISTER_SPONTANEOUS_SWITCH_RATE_PER_SEC = 0.002  # baseline stochastic normal-
 PERSISTER_STRESS_SWITCH_RATE_PER_SEC = 0.2         # starvation-induced normal->persister rate (stringent/SOS response)
 PERSISTER_WAKE_RATE_PER_SEC = 0.2                  # nutrient-triggered persister->normal resuscitation rate
 PERSISTER_SPONTANEOUS_WAKE_RATE_PER_SEC = 0.005    # baseline stochastic persister->normal reversion rate
-PERSISTER_METABOLIC_FACTOR = 0.1     # dormant maintenance burn as a fraction of basal metabolism (Lewis 2010: dormant, not dead)
+PERSISTER_METABOLIC_FACTOR = 0.1     # dormant maintenance burn as a fraction of basal metabolism (dormant, not dead)
 PERSISTER_RESISTANCE_FACTOR = 0.1    # incoming bacteriocin/T6SS/senescence hazard scaled to 10% (~10x tolerance)
 PERSISTER_THRESHOLD_MIN_GAP = 0.05   # minimum S2 - S1 separation so enter/exit bands cannot overlap and chatter
 PERSISTER_RING_COLOR = (40, 40, 50)  # dark desaturated outline marking dormant persister cells in the renderer
@@ -288,14 +283,11 @@ PERSISTER_RING_COLOR = (40, 40, 50)  # dark desaturated outline marking dormant 
 # Free virions are tracked as a diffusible ECM field. Susceptible cells adsorb phage by mass action,
 # enter a latent (eclipse) period, then lyse, releasing a burst of progeny virions. A heritable
 # resistant subpopulation (arising by rare mutation or by horizontal transfer) survives the crash and
-# rebounds, producing the classic predator-prey / SIR boom-bust dynamics. References: Ellis & Delbruck
-# (1939), "The Growth of Bacteriophage", J. Gen. Physiol. 22:365-384 (one-step growth: latent period
-# and burst size); Levin, Stewart & Chao (1977), "Resource-Limited Growth, Competition, and Predation:
-# A Model and Experimental Studies with Bacteria and Bacteriophage", Am. Nat. 111:3-24 (mass-action
-# adsorption and predator-prey coupling); Ochman, Lawrence & Groisman (2000), "Lateral gene transfer
-# and the nature of bacterial innovation", Nature 405:299-304 (HGT). Plasmid/resistance carriage cost:
-# San Millan & MacLean (2017), "Fitness Costs of Plasmids", Microbiol. Spectr. 5(5). Rates are
-# sim-accelerated (real seconds, not the ~20-40 min latent periods of nature) for observable dynamics.
+# rebounds, producing the classic predator-prey / SIR boom-bust dynamics. The model couples one-step
+# growth (latent period + burst size), mass-action adsorption / predator-prey coupling, horizontal
+# gene transfer, and a plasmid/resistance carriage cost. Rates are sim-accelerated (real seconds, not
+# the ~20-40 min latent periods of nature) for observable dynamics.
+# see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer)
 ECM_PHAGE_DIFFUSION_UM2_S = 500.0      # virion diffusion coefficient; lower than small solutes (larger particles)
 ECM_PHAGE_DECAY_S = 0.02               # virion inactivation (loss of infectivity) rate per second
 PHAGE_ECM_UNITS_PER_VIRION = 1.0       # ECM grid units per virion; kept O(1) so a single adsorption is meaningful
@@ -366,14 +358,15 @@ ECM_MIN_CONCENTRATION = 1.0e-3
 # 20 um ECM cells keep explicit diffusion stable at interactive tick rates while preserving local gradients.
 ECM_CELL_SIZE_UM = 20
 
-# --- Cross-feeding metabolite: acetate overflow (Wolfe 2005, "The Acetate Switch", MMBR 69:12-50) ---
+# --- Cross-feeding metabolite: acetate overflow (the "acetate switch") ---
+# see DOCUMENTATION.md §4.15 (Metabolic Cross-Feeding)
 # During fast aerobic growth on glucose, E. coli excretes overflow acetate; other taxa oxidize it as a
 # secondary carbon source. We model acetate as a third diffusible ECM layer linking producers to consumers.
 ACETATE_MOLAR_MASS_G = 60.05  # acetic acid / acetate, g/mol (CH3COOH)
 # Overflow upper bound: 1 glucose can be split into 2 acetate by mass (glucose -> 2 acetate, ignoring CO2 loss).
 ACETATE_PER_GLUCOSE_MAX_MASS_RATIO = (2.0 * ACETATE_MOLAR_MASS_G) / GLUCOSE_MOLAR_MASS_G  # ~0.6667 g acetate / g glucose
 # ATP yields set the relative energy value of acetate vs glucose so cross-feeders gain less per pg.
-GLUCOSE_AEROBIC_ATP_PER_MOL = 32.0  # ~30-32 ATP/glucose, full aerobic oxidation (Rich 2003, Biochem Soc Trans 31:1095)
+GLUCOSE_AEROBIC_ATP_PER_MOL = 32.0  # ~30-32 ATP/glucose, full aerobic oxidation; see DOCUMENTATION.md §4.15 (Metabolic Cross-Feeding)
 ACETATE_AEROBIC_ATP_PER_MOL = 10.0  # ~10 ATP/acetate via acetyl-CoA -> TCA + ETC
 # Energy per unit mass relative to glucose: (ATP/g acetate) / (ATP/g glucose).
 ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV = (
@@ -384,7 +377,7 @@ ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV = (
 O2_PER_ACETATE_MASS_RATIO = 64.0 / ACETATE_MOLAR_MASS_G   # 2 mol O2 (64.0 g) per mol acetate
 CO2_PER_ACETATE_MASS_RATIO = 88.02 / ACETATE_MOLAR_MASS_G  # 2 mol CO2 (88.02 g) per mol acetate
 # Acetate is a small ion that diffuses quickly in water and washes out slowly by dilution.
-ECM_ACETATE_DIFFUSION_UM2_S = 1000.0  # ~1.09e3 um^2/s aqueous acetate self-diffusion (Vitagliano & Lyons 1956)
+ECM_ACETATE_DIFFUSION_UM2_S = 1000.0  # ~1.09e3 um^2/s aqueous acetate self-diffusion; see DOCUMENTATION.md §4.15 (Metabolic Cross-Feeding)
 ECM_ACETATE_DECAY_S = 0.001  # slow abiotic dilution/washout half-life
 # Picogram acetate is tiny; scale into ECM grid units so it survives the ECM_MIN_CONCENTRATION prune floor.
 # The same factor is inverted on uptake so secreted/consumed mass is conserved.

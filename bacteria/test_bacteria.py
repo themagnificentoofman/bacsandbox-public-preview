@@ -116,7 +116,7 @@ class TestBacteriumMath(unittest.TestCase):
         b_large = Bacterium(sp_base, 0, 0, size=2.0)
         # Volumetric scaling: 10 * (2^3) = 80
         self.assertAlmostEqual(b_large.food_capacity, 80.0)
-        # Kleiber's Law: 0.1 * (2^2.25)
+        # Allometric metabolic scaling: 0.1 * (2^2.25)
         self.assertAlmostEqual(b_large.metabolic_rate, 0.1 * (2 ** 2.25))
         # Surface area: 1.0 * (2^2) = 4.0
         self.assertAlmostEqual(b_large.consumption_speed, 4.0)
@@ -380,7 +380,7 @@ class TestBacteriumMath(unittest.TestCase):
 
 
 class TestTemperatureKinetics(unittest.TestCase):
-    """Deterministic bounds tests for the Ratkowsky (1983) square-root temperature model."""
+    """Deterministic bounds tests for the Ratkowsky square-root temperature model; see DOCUMENTATION.md §4.14 (Temperature Kinetics)."""
 
     def _species(self, temp_min=4.0, temp_max=47.0):
         return BacteriaSpecies('Temp', 0, 0.0, 0.0, 0.0, 1.0, DEFAULT_BACTERIA_SPEED_UM_S,
@@ -540,7 +540,7 @@ class TestCrossFeeding(unittest.TestCase):
 
 
 class TestLagPhase(unittest.TestCase):
-    """Deterministic tests for the M3 Baranyi & Roberts (1994) physiological-state lag model."""
+    """Deterministic tests for the M3 Baranyi physiological-state lag model; see DOCUMENTATION.md §4.16 (Lag Phase)."""
 
     def _species(self, name, base_rep=0.5, baranyi_q0=DEFAULT_BARANYI_Q0,
                  food_capacity=1000.0, metabolic_rate=0.0):
@@ -639,7 +639,7 @@ class TestLagPhase(unittest.TestCase):
 
 
 class TestPersisterSwitching(unittest.TestCase):
-    """Deterministic tests for the M4 persister phenotypic-switch model (Balaban et al. 2004)."""
+    """Deterministic tests for the M4 persister phenotypic-switch model; see DOCUMENTATION.md §4.17 (Phenotypic Switching)."""
 
     def _species(self, name, persister_switch=1.0, base_rep=0.0, metabolic_rate=0.0,
                  enter=DEFAULT_PERSISTER_ENTER_THRESH, exit_=DEFAULT_PERSISTER_EXIT_THRESH,
@@ -700,7 +700,7 @@ class TestPersisterSwitching(unittest.TestCase):
 
     def test_persister_resists_bacteriocin_dose(self):
         # The same environmental bacteriocin dose damages a dormant cell PERSISTER_RESISTANCE_FACTOR
-        # as much as a proliferative one (Balaban et al. 2004; Lewis 2010).
+        # as much as a proliferative one; see DOCUMENTATION.md §4.17 (Phenotypic Switching).
         sp = self._species('Resist', persister_switch=0.0)
         active = Bacterium(sp, 0.0, 0.0, size=1.0, initial_food=900.0)
         dormant = Bacterium(sp, 100.0, 100.0, size=1.0, initial_food=900.0)
