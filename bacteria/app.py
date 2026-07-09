@@ -61,7 +61,7 @@ class App:
         # Add new fields to species table
         self.descriptions.update({
             'food_capacity': 'Base nutrient capacity (pg glucose-equivalent, scales w/ μm³)',
-            'metabolic_rate': 'Basal nutrient use (pg/s, scales w/ Kleiber)',
+            'metabolic_rate': 'Basal nutrient use (pg/s, allometric scaling)',
             'consumption_speed': 'Max nutrient uptake (pg/s, scales w/ μm²)',
             'greediness': '0.0-1.0 response to stronger nutrient gradients',
             't6ss_activity': 'Contact toxin delivery activity (0-1)',
