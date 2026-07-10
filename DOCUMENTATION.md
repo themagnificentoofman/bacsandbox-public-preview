@@ -117,7 +117,7 @@ $$
 BacSandbox uses an E. coli-inspired run-and-tumble model<sup>[3](#ref-3)</sup>. Runs are sampled around 1 second and clamped to biological bounds:
 
 $$
-t_{\text{run}} \sim \operatorname{clamp}(\mathcal{N}(1.0, 0.2^2), 0.25, 3.0)
+t_{\text{run}} \sim \mathrm{clamp}(\mathcal{N}(1.0, 0.2^2), 0.25, 3.0)
 $$
 
 Tumbles last about 0.1 seconds:
@@ -135,7 +135,7 @@ $$
 During a run, heading gently rotates toward the local gradient while movement remains forward-only:
 
 $$
-\Delta \theta_{\text{run}} = \operatorname{clamp}(\theta_G - \theta, -\omega g_{\text{eff}} \Delta t, \omega g_{\text{eff}} \Delta t)
+\Delta \theta_{\text{run}} = \mathrm{clamp}(\theta_G - \theta, -\omega g_{\text{eff}} \Delta t, \omega g_{\text{eff}} \Delta t)
 $$
 
 During a tumble, the cell performs one event-scale reorientation rather than a tiny frame-scaled wobble. The unbiased magnitude is centered near the classic observed E. coli reorientation angle of 68 degrees<sup>[3](#ref-3)</sup>:
@@ -224,7 +224,7 @@ $$
 Decay is applied as:
 
 $$
-m = \operatorname{clamp}(1 - \lambda\Delta t, 0, 1)
+m = \mathrm{clamp}(1 - \lambda\Delta t, 0, 1)
 $$
 
 The finite-difference update is:
@@ -597,7 +597,7 @@ took up on the previous tick, $U_{\text{glc}}$ (pg), into excreted acetate, boun
 stoichiometric ceiling of one glucose splitting into two acetate molecules by mass:
 
 $$
-A_{\text{sec}} = \min\negthinspace\Bigl(\thinspace s \thinspace U_{\text{glc}} \thinspace Y_{a/g},\thickspace F \thinspace\Bigr) \qquad
+A_{\text{sec}} = \min\negthinspace\Bigl(\thinspace s \thinspace U_{\text{glc}} \thinspace Y_{a/g}, F \thinspace\Bigr) \qquad
 Y_{a/g} = \frac{2\thinspace M_{\text{ace}}}{M_{\text{glc}}} = \frac{2 \times 60.05}{180.16} \approx 0.667
 $$
 
@@ -611,12 +611,12 @@ room. Because acetate oxidation is aerobic and enzyme-driven, uptake is gated by
 Ratkowsky temperature factor $f_T$ (Section 4.14) and a dissolved-oxygen gate:
 
 $$
-g_{\mathrm{O_2}} = \min\negthinspace\left(1,\thickspace \frac{[\mathrm{O}_2]}{[\mathrm{O}_2]_{\text{sat}}}\right) \qquad
+g_{\mathrm{O_2}} = \min\negthinspace\left(1, \frac{[\mathrm{O}_2]}{[\mathrm{O}_2]_{\text{sat}}}\right) \qquad
 B = c_{\text{eat}} \thinspace u \thinspace \Delta t \thinspace f_T \thinspace g_{\mathrm{O_2}}
 $$
 
 $$
-A_{\text{con}} = \max\negthinspace\Bigl(0,\thickspace \min\bigl(A_{\text{avail}},\thickspace B,\thickspace R \bigr)\Bigr) \qquad
+A_{\text{con}} = \max\negthinspace\Bigl(0, \min\bigl(A_{\text{avail}}, B, R \bigr)\Bigr) \qquad
 R = \frac{F_{\max} - F}{Y_E}
 $$
 
@@ -861,7 +861,7 @@ budget $U_{\max} = v_c \thinspace \Delta t \thinspace \phi_T$ (mass, pg), where 
 $\phi_T$ the temperature factor. For each reachable patch of class $s$, the ingested **mass** is
 
 $$
-\Delta m = \min\negthinspace\big(R \thinspace a_s,\thickspace R,\thickspace m_{\text{node}},\thickspace h_s\big) \qquad R = U_{\max} - \textstyle\sum \Delta m_{\text{prior}}
+\Delta m = \min\negthinspace\big(R \thinspace a_s, R, m_{\text{node}}, h_s\big) \qquad R = U_{\max} - \textstyle\sum \Delta m_{\text{prior}}
 $$
 
 with $R$ the remaining budget and $h_s$ the storage headroom expressed back in substrate mass.
@@ -938,7 +938,7 @@ drops are deposited in full.
 **4. Competition bias.** Under hard carrying-capacity pressure the well-mixed lumen imposes
 stronger resource competition than the stabilised mucus refuge, so luminal cells are preferentially
 lost. Culling uses weighted sampling without replacement<sup>[7](#ref-7)</sup>: each
-candidate cell draws a key $U^{1/w}$ with $U \sim \operatorname{Uniform}(0,1)$ and zone weight $w = 1$
+candidate cell draws a key $U^{1/w}$ with $U \sim \mathrm{Uniform}(0,1)$ and zone weight $w = 1$
 (mucus) or $w =$ `LUMEN_COMPETITION_CULL_WEIGHT` $(= 3.0)$ (lumen); the cells with the largest keys
 are removed. With equal weights this reduces exactly to uniform random culling, preserving legacy
 behaviour, while the up-weighted lumen is thinned first.
@@ -1057,7 +1057,7 @@ constrained to lie within the dish, $\sqrt{(x-c_x)^2+(y-c_y)^2}\le R$.
 $[r_{\min}, r_{\max}]$, the radius uses
 
 $$
-r = \sqrt{U\thinspace(r_{\max}^2 - r_{\min}^2) + r_{\min}^2} \qquad U \sim \operatorname{Uniform}(0,1)
+r = \sqrt{U\thinspace(r_{\max}^2 - r_{\min}^2) + r_{\min}^2} \qquad U \sim \mathrm{Uniform}(0,1)
 $$
 
 so density is constant per unit **area** rather than per unit radius (a naive $r = U\thinspace R$ draw would
@@ -1088,7 +1088,7 @@ so a gut-realistic inoculum is biased inward. Each founder is placed in the inne
 - **`mixed`**: all species share one set of founder nuclei, co-locating colonies to maximise early
   contact-dependent interactions (T6SS, bacteriocins, HGT, cross-feeding).
 - **`segregated`**: species $i$ of $n$ is confined to the angular sector
-  $[\thinspace 2\pi i/n,\thickspace 2\pi (i{+}1)/n\thinspace)$, separating founder origins to study invasion / range-expansion
+  $[\thinspace 2\pi i/n, 2\pi (i{+}1)/n\thinspace)$, separating founder origins to study invasion / range-expansion
   dynamics.
 
 **Reproducibility.** All draws come from the shared RNG stream, which is seeded before placement
