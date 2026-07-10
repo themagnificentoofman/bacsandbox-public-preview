@@ -53,13 +53,11 @@ The current UI displays this as `100 px = ...` next to the minimap.
 ### 4.1 Nutrient Storage And Cell Size
 
 Nutrient capacity scales with structural volume, not temporary fullness<sup>[33](#ref-33)</sup>:
-Nutrient capacity scales with structural volume, not temporary fullness<sup>[33](#ref-33)</sup>:
 
 $$
 C_{\text{food}} = k_{\text{cap}} \cdot s_{\text{base}}^3
 $$
 
-The rendered cell radius uses fullness only as a small starvation cue<sup>[33](#ref-33)</sup>:
 The rendered cell radius uses fullness only as a small starvation cue<sup>[33](#ref-33)</sup>:
 
 $$
@@ -71,13 +69,11 @@ This avoids the unrealistic behavior where eating more food directly increases t
 ### 4.2 Metabolism And Uptake
 
 Basal metabolism follows an allometric Kleiber-style relationship<sup>[17](#ref-17)</sup>. Because cell mass scales with volume, a mass exponent of 3/4 becomes a size exponent of 2.25:
-Basal metabolism follows an allometric Kleiber-style relationship<sup>[17](#ref-17)</sup>. Because cell mass scales with volume, a mass exponent of 3/4 becomes a size exponent of 2.25:
 
 $$
 B = \beta \cdot s_{\text{base}}^{2.25}
 $$
 
-Nutrient uptake is surface-area limited<sup>[33](#ref-33)</sup>:
 Nutrient uptake is surface-area limited<sup>[33](#ref-33)</sup>:
 
 $$
@@ -95,7 +91,6 @@ where `A(t)` is the senescence maintenance factor.
 ### 4.3 Food Sensing And Chemotaxis
 
 Bacteria do not teleport or directly seek a target. They sense local nutrient fields and bias their swimming direction and run duration. Each food node contributes a softened Euclidean concentration proxy<sup>[32](#ref-32)</sup>:
-Bacteria do not teleport or directly seek a target. They sense local nutrient fields and bias their swimming direction and run duration. Each food node contributes a softened Euclidean concentration proxy<sup>[32](#ref-32)</sup>:
 
 $$
 C_i = \frac{A_i}{\pi(d_i^2 + a^2)}
@@ -103,7 +98,6 @@ $$
 
 where $A_i$ is node amount, $d_i$ is Euclidean distance, and $a = 5.0\,\mu\text{m}$ prevents a zero-distance singularity.
 
-Chemoreceptor response is log-compressed to approximate saturation<sup>[15](#ref-15)</sup>:
 Chemoreceptor response is log-compressed to approximate saturation<sup>[15](#ref-15)</sup>:
 
 $$
@@ -113,7 +107,6 @@ $$
 where $C_{\text{ref}} = 10^{-3}\,\text{pg}/\mu\text{m}^2$ and $g_{\text{eff}}$ increases as the bacterium becomes hungry.
 
 The local gradient direction is a weighted sum of node direction vectors<sup>[32](#ref-32)</sup>:
-The local gradient direction is a weighted sum of node direction vectors<sup>[32](#ref-32)</sup>:
 
 $$
 \vec{G} = \sum_i S_i \frac{\vec{x}_i - \vec{x}_{\text{cell}}}{\lVert \vec{x}_i - \vec{x}_{\text{cell}} \rVert}
@@ -121,7 +114,6 @@ $$
 
 ### 4.4 Run-And-Tumble Motion
 
-BacSandbox uses an E. coli-inspired run-and-tumble model<sup>[3](#ref-3)</sup>. Runs are sampled around 1 second and clamped to biological bounds:
 BacSandbox uses an E. coli-inspired run-and-tumble model<sup>[3](#ref-3)</sup>. Runs are sampled around 1 second and clamped to biological bounds:
 
 $$
@@ -147,7 +139,6 @@ $$
 $$
 
 During a tumble, the cell performs one event-scale reorientation rather than a tiny frame-scaled wobble. The unbiased magnitude is centered near the classic observed E. coli reorientation angle of 68 degrees<sup>[3](#ref-3)</sup>:
-During a tumble, the cell performs one event-scale reorientation rather than a tiny frame-scaled wobble. The unbiased magnitude is centered near the classic observed E. coli reorientation angle of 68 degrees<sup>[3](#ref-3)</sup>:
 
 $$
 |\Delta \theta_{\text{tumble}}| \sim \mathcal{N}(1.19, 0.45^2)\,\text{rad}
@@ -157,7 +148,6 @@ Translation during tumbles is multiplied by 0.05, representing motor activity be
 
 ### 4.5 Rotational Diffusion
 
-Brownian rotational noise follows the low-Reynolds scaling for small particles in fluid<sup>[4](#ref-4)</sup>:
 Brownian rotational noise follows the low-Reynolds scaling for small particles in fluid<sup>[4](#ref-4)</sup>:
 
 $$
@@ -177,7 +167,6 @@ This keeps Brownian heading noise tied to elapsed seconds instead of tick count.
 ### 4.6 Boundary Reflection
 
 The petri dish is circular. If a bacterium reaches the dish boundary, it is moved slightly inside the rim and its velocity heading reflects off the outward normal only when it was moving outward<sup>[38](#ref-38)</sup>:
-The petri dish is circular. If a bacterium reaches the dish boundary, it is moved slightly inside the rim and its velocity heading reflects off the outward normal only when it was moving outward<sup>[38](#ref-38)</sup>:
 
 $$
 \vec{v}' = \vec{v} - 2(\vec{v} \cdot \hat{n})\hat{n}
@@ -192,13 +181,11 @@ $$
 ### 4.7 Reproduction
 
 Population-level reproduction probability follows Verhulst logistic pressure through carrying capacity<sup>[29](#ref-29)</sup>:
-Population-level reproduction probability follows Verhulst logistic pressure through carrying capacity<sup>[29](#ref-29)</sup>:
 
 $$
 \frac{dN}{dt} = rN\left(1 - \frac{N}{K}\right)
 $$
 
-At the individual level, binary fission requires stored nutrient above the reproduction threshold and a synthesis cost inspired by Stouthamer-style ATP/biomass costs<sup>[28](#ref-28)</sup>:
 At the individual level, binary fission requires stored nutrient above the reproduction threshold and a synthesis cost inspired by Stouthamer-style ATP/biomass costs<sup>[28](#ref-28)</sup>:
 
 $$
@@ -212,7 +199,6 @@ The implementation exposes this conversion as `FISSION_COST_PG_PER_UM3 = 40.0` s
 ### 4.8 Death, Predation, And Necromass Recycling
 
 Dead bacteria do not become pure glucose. Death releases a lossy glucose-equivalent nutrient value from cytosolic leakage plus labile dry necromass<sup>[34](#ref-34)</sup>:
-Dead bacteria do not become pure glucose. Death releases a lossy glucose-equivalent nutrient value from cytosolic leakage plus labile dry necromass<sup>[34](#ref-34)</sup>:
 
 $$
 F_{\text{recovered}} = \max(0, F_{\text{stored}}) f_{\text{cytosol}} + V_{\text{cell}} m_{\text{wet}} f_{\text{dry}} f_{\text{labile}}
@@ -221,7 +207,7 @@ $$
 The implemented constants are:
 
 $$
-f_{\text{cytosol}} = 0.75, \quad m_{\text{wet}} = 1.0\,\text{pg}/\mu\text{m}^3, \quad f_{\text{dry}} = 0.30, \quad f_{\text{labile}} = 0.35
+f_{\text{cytosol}} = 0.75 \quad m_{\text{wet}} = 1.0\,\text{pg}/\mu\text{m}^3 \quad f_{\text{dry}} = 0.30 \quad f_{\text{labile}} = 0.35
 $$
 
 Most structural biomass is therefore unavailable, refractory, respired, or lost to the environment. Predation uses the same digestible nutrient logic instead of consuming a fixed fraction of the prey's storage capacity.
@@ -230,10 +216,9 @@ Most structural biomass is therefore unavailable, refractory, respired, or lost 
 
 The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil with a stability clamp:
 The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil<sup>[9](#ref-9)</sup> with a stability clamp<sup>[5](#ref-5)</sup>:
-The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil<sup>[9](#ref-9)</sup> with a stability clamp<sup>[5](#ref-5)</sup>:
 
 $$
-\alpha = \min\left(\alpha_{\max}, \frac{D\Delta t}{\Delta x^2}\right), \quad \alpha_{\max}=0.24
+\alpha = \min\left(\alpha_{\max}, \frac{D\Delta t}{\Delta x^2}\right) \quad \alpha_{\max}=0.24
 $$
 
 Decay is applied as:
@@ -263,13 +248,11 @@ $$
 where $G_{\Delta t}$ is consumed glucose-equivalent nutrient, $F_i$ is the cell's available stored nutrient before metabolism, $B_i$ is its size-scaled basal metabolism, and $A_i$ is the age maintenance factor.
 
 For aerobic species with positive oxygen sensitivity $s_{O_2}$, respiration follows<sup>[31](#ref-31)</sup>:
-For aerobic species with positive oxygen sensitivity $s_{O_2}$, respiration follows<sup>[31](#ref-31)</sup>:
 
 $$
 \text{C}_6\text{H}_{12}\text{O}_6 + 6\text{O}_2 \rightarrow 6\text{CO}_2 + 6\text{H}_2\text{O}
 $$
 
-The implementation converts glucose-equivalent pg into dissolved gas fractions with molar mass ratios and model capacities<sup>[37](#ref-37)</sup>:
 The implementation converts glucose-equivalent pg into dissolved gas fractions with molar mass ratios and model capacities<sup>[37](#ref-37)</sup>:
 
 $$
@@ -287,7 +270,6 @@ $$
 $$
 
 For anaerobic species with negative oxygen sensitivity, the simulator uses a simplified lactic-acid pathway plus trace heterolactic carbon dioxide<sup>[31](#ref-31)</sup>:
-For anaerobic species with negative oxygen sensitivity, the simulator uses a simplified lactic-acid pathway plus trace heterolactic carbon dioxide<sup>[31](#ref-31)</sup>:
 
 $$
 \Delta CO_{2,\text{anaerobic}} = \frac{0.1G_{\Delta t}|s_{O_2}|}{1.5\times10^9}
@@ -297,7 +279,6 @@ $$
 \Delta \text{acid}_{\text{lactic}} = \frac{2.5G_{\Delta t}|s_{O_2}|}{4.0\times10^7}
 $$
 
-The update sequence is: subtract oxygen use, add carbon dioxide production, subtract acid from pH, equilibrate gases toward an open dish<sup>[9](#ref-9)</sup>, then buffer pH toward neutral<sup>[14](#ref-14)</sup>. Gas and buffer restoration are<sup>[37](#ref-37)</sup>:
 The update sequence is: subtract oxygen use, add carbon dioxide production, subtract acid from pH, equilibrate gases toward an open dish<sup>[9](#ref-9)</sup>, then buffer pH toward neutral<sup>[14](#ref-14)</sup>. Gas and buffer restoration are<sup>[37](#ref-37)</sup>:
 
 $$
@@ -315,13 +296,11 @@ $$
 ### 4.11 Senescence
 
 Maintenance cost rises with age<sup>[36](#ref-36)</sup>:
-Maintenance cost rises with age<sup>[36](#ref-36)</sup>:
 
 $$
 A(t) = 1 + \frac{t}{180 \cdot L}
 $$
 
-Intrinsic death risk follows a Gompertz-style exponential penalty<sup>[12](#ref-12), [13](#ref-13)</sup>:
 Intrinsic death risk follows a Gompertz-style exponential penalty<sup>[12](#ref-12), [13](#ref-13)</sup>:
 
 $$
@@ -330,7 +309,6 @@ $$
 
 ### 4.12 Competition, Bacteriocins, And T6SS
 
-Diffusible bacteriocin production consumes stored nutrient and emits antimicrobial material into the ECM<sup>[35](#ref-35)</sup>:
 Diffusible bacteriocin production consumes stored nutrient and emits antimicrobial material into the ECM<sup>[35](#ref-35)</sup>:
 
 $$
@@ -347,7 +325,6 @@ $$
 D_{\text{bac}} = C_{\text{local}} k_{\text{damage}} (1 - \min(0.99, 1.5I))\Delta t
 $$
 
-Type VI secretion system contact damage scales with attacker surface area<sup>[35](#ref-35)</sup>:
 Type VI secretion system contact damage scales with attacker surface area<sup>[35](#ref-35)</sup>:
 
 $$
@@ -394,7 +371,6 @@ Numerical tolerances:
 * `CHEMOTAXIS_GRADIENT_EPSILON = 1.0e-3`
 * `MIN_LIFESPAN_VARIANCE_DENOMINATOR = 1.0e-3`
 
-Movement, rendering, and senescence<sup>[12](#ref-12)</sup>:
 Movement, rendering, and senescence<sup>[12](#ref-12)</sup>:
 
 * `BACTERIA_RUN_MEAN_SEC = 1.0`
@@ -500,7 +476,6 @@ Initial inoculum spawning (Section 4.23):
 * `INITIAL_SPECIES_ARRANGEMENT = 'independent'` — `'independent'` | `'mixed'` | `'segregated'`
 
 Temperature kinetics (Ratkowsky model)<sup>[23](#ref-23)</sup>:
-Temperature kinetics (Ratkowsky model)<sup>[23](#ref-23)</sup>:
 
 * `RATKOWSKY_B_SQRT_PER_C = 0.0410`
 * `RATKOWSKY_C_PER_C = 0.161`
@@ -511,7 +486,6 @@ Temperature kinetics (Ratkowsky model)<sup>[23](#ref-23)</sup>:
 * `ENV_TEMPERATURE_MAX_C = 60.0`
 * `RATKOWSKY_NORMALIZATION_SAMPLES = 200`
 
-Cross-feeding (acetate overflow, see Section 4.15)<sup>[30](#ref-30)</sup>:
 Cross-feeding (acetate overflow, see Section 4.15)<sup>[30](#ref-30)</sup>:
 
 * `ACETATE_MOLAR_MASS_G = 60.05`
@@ -528,14 +502,12 @@ Cross-feeding (acetate overflow, see Section 4.15)<sup>[30](#ref-30)</sup>:
 * `DEFAULT_ACETATE_UPTAKE = 0.0`
 
 Lag phase (Baranyi & Roberts dynamic state, see Section 4.16)<sup>[2](#ref-2)</sup>:
-Lag phase (Baranyi & Roberts dynamic state, see Section 4.16)<sup>[2](#ref-2)</sup>:
 
 * `DEFAULT_BARANYI_Q0 = 0.05` (fresh-inoculum physiological state; $h_0 = \ln(1 + 1/q_0) \approx 3.04$)
 * `BARANYI_Q_STATE_MAX` $= 1.0 \times 10^{6}$ (numerical cap where $\alpha > 0.999999$)
 * `BARANYI_Q0_MIN` $= 1.0 \times 10^{-4}$ (floor; guarantees a finite lag)
 * `BARANYI_Q0_MAX` $= 1.0 \times 10^{3}$ (ceiling; effectively disables the lag)
 
-Phenotypic switching (persister bet-hedging, see Section 4.17)<sup>[1](#ref-1), [20](#ref-20)</sup>:
 Phenotypic switching (persister bet-hedging, see Section 4.17)<sup>[1](#ref-1), [20](#ref-20)</sup>:
 
 * `DEFAULT_PERSISTER_SWITCH = 0.0` (per-species switching propensity in $[0,1]$; $0$ disables persistence)
@@ -551,7 +523,6 @@ Phenotypic switching (persister bet-hedging, see Section 4.17)<sup>[1](#ref-1), 
 
 These rates are sim-accelerated (the simulation runs in real seconds, not hours) so the bet-hedging dynamics are observable within a session while preserving the relative ordering of the spontaneous, stress-induced, and resuscitation pathways.
 
-Phage predation and horizontal gene transfer (see Section 4.18)<sup>[8](#ref-8), [19](#ref-19), [22](#ref-22), [26](#ref-26)</sup>:
 Phage predation and horizontal gene transfer (see Section 4.18)<sup>[8](#ref-8), [19](#ref-19), [22](#ref-22), [26](#ref-26)</sup>:
 
 * `ECM_PHAGE_DIFFUSION_UM2_S = 500.0` (free-virion diffusion coefficient in the ECM phage layer)
@@ -576,7 +547,6 @@ These rates are likewise sim-accelerated: natural latent periods span tens of mi
 Temperature is the single most influential environmental driver in predictive microbiology.
 BacSandbox scales growth, metabolism, nutrient uptake, and motility by a temperature multiplier
 derived from the four-parameter Ratkowsky square-root model<sup>[23](#ref-23)</sup>, which is biologically validated across the entire biokinetic temperature range:
-derived from the four-parameter Ratkowsky square-root model<sup>[23](#ref-23)</sup>, which is biologically validated across the entire biokinetic temperature range:
 
 $$
 \sqrt{\mu(T)} = b\,(T - T_{min})\,\bigl(1 - e^{\,c\,(T - T_{max})}\bigr)
@@ -592,7 +562,7 @@ $[0, 1]$ by normalizing against each species' own optimum $\sqrt{\mu_{\text{peak
 construction by uniform sampling across $[T_{min}, T_{max}]$:
 
 $$
-f_{T}(T) = \left( \frac{\sqrt{\mu(T)}}{\sqrt{\mu_{\text{peak}}}} \right)^{2}, \qquad f_{T} \in [0, 1]
+f_{T}(T) = \left( \frac{\sqrt{\mu(T)}}{\sqrt{\mu_{\text{peak}}}} \right)^{2} \qquad f_{T} \in [0, 1]
 $$
 
 Because the multiplier is normalized to the optimum, the slope parameter $b$ cancels and only the
@@ -617,7 +587,6 @@ niche separation between species.
 Real microbial communities are knit together by *cross-feeding*: the metabolic waste of one
 organism is the food of another. The most studied example in *Escherichia coli* is the **acetate
 switch**<sup>[30](#ref-30)</sup>: during fast aerobic growth on
-switch**<sup>[30](#ref-30)</sup>: during fast aerobic growth on
 glucose the cell's central metabolism outpaces its respiratory capacity and excretes *overflow*
 acetate; when glucose runs low (or in neighbouring taxa) that acetate is re-imported and oxidized
 as a secondary carbon source. BacSandbox models acetate as a third diffusible ECM layer (alongside
@@ -628,7 +597,7 @@ took up on the previous tick, $U_{\text{glc}}$ (pg), into excreted acetate, boun
 stoichiometric ceiling of one glucose splitting into two acetate molecules by mass:
 
 $$
-A_{\text{sec}} = \min\!\Bigl(\, s \, U_{\text{glc}} \, Y_{a/g},\; F \,\Bigr), \qquad
+A_{\text{sec}} = \min\!\Bigl(\, s \, U_{\text{glc}} \, Y_{a/g},\; F \,\Bigr) \qquad
 Y_{a/g} = \frac{2\,M_{\text{ace}}}{M_{\text{glc}}} = \frac{2 \times 60.05}{180.16} \approx 0.667
 $$
 
@@ -642,12 +611,12 @@ room. Because acetate oxidation is aerobic and enzyme-driven, uptake is gated by
 Ratkowsky temperature factor $f_T$ (Section 4.14) and a dissolved-oxygen gate:
 
 $$
-g_{O_2} = \min\!\left(1,\; \frac{[\mathrm{O_2}]}{[\mathrm{O_2}]_{\text{sat}}}\right), \qquad
+g_{O_2} = \min\!\left(1,\; \frac{[\mathrm{O_2}]}{[\mathrm{O_2}]_{\text{sat}}}\right) \qquad
 B = c_{\text{eat}} \, u \, \Delta t \, f_T \, g_{O_2}
 $$
 
 $$
-A_{\text{con}} = \max\!\Bigl(0,\; \min\bigl(A_{\text{avail}},\; B,\; R \bigr)\Bigr), \qquad
+A_{\text{con}} = \max\!\Bigl(0,\; \min\bigl(A_{\text{avail}},\; B,\; R \bigr)\Bigr) \qquad
 R = \frac{F_{\max} - F}{Y_E}
 $$
 
@@ -662,18 +631,16 @@ Y_E = \frac{\text{ATP}_{\text{ace}} / M_{\text{ace}}}{\text{ATP}_{\text{glc}} / 
 $$
 
 so $\Delta F = A_{\text{con}} \, Y_E$. The ATP yields ($\sim 32$ ATP/glucose<sup>[25](#ref-25)</sup>; $\sim 10$
-so $\Delta F = A_{\text{con}} \, Y_E$. The ATP yields ($\sim 32$ ATP/glucose<sup>[25](#ref-25)</sup>; $\sim 10$
 ATP/acetate via acetyl-CoA → TCA cycle + electron transport chain) make acetate a slightly less
 energy-dense carbon source per unit mass, as observed experimentally.
 
-**Gas coupling.** Acetate oxidation follows $\mathrm{C_2H_4O_2 + 2\,O_2 \rightarrow 2\,CO_2 + 2\,H_2O}$<sup>[31](#ref-31)</sup>.
 **Gas coupling.** Acetate oxidation follows $\mathrm{C_2H_4O_2 + 2\,O_2 \rightarrow 2\,CO_2 + 2\,H_2O}$<sup>[31](#ref-31)</sup>.
 Each picogram of acetate consumed therefore draws down dissolved $\mathrm{O_2}$ and releases
 $\mathrm{CO_2}$ (with a corresponding carbonic-acid pH effect) independently of the glucose-driven
 respiration in Section 4.10:
 
 $$
-\Delta[\mathrm{O_2}] = -\,A_{\text{con}}\,\frac{64.0}{M_{\text{ace}}}\Big/ C_{O_2}, \qquad
+\Delta[\mathrm{O_2}] = -\,A_{\text{con}}\,\frac{64.0}{M_{\text{ace}}}\Big/ C_{O_2} \qquad
 \Delta[\mathrm{CO_2}] = +\,A_{\text{con}}\,\frac{88.02}{M_{\text{ace}}}\Big/ C_{CO_2}
 $$
 
@@ -692,7 +659,6 @@ same explicit Fickian stencil as the other ECM layers (Section 4.9). With the de
 Newly inoculated cells do not divide immediately: they must first synthesize the ribosomes, enzymes,
 and membrane components needed for growth. This delay is the **lag phase**. BacSandbox models it with
 the dynamic approach of Baranyi & Roberts<sup>[2](#ref-2)</sup>, which augments each cell with a dimensionless
-the dynamic approach of Baranyi & Roberts<sup>[2](#ref-2)</sup>, which augments each cell with a dimensionless
 *physiological state* variable $q$ that captures the "work still to be done" before division.
 
 The realized growth rate is the maximum (temperature-scaled) rate multiplied by an **adjustment
@@ -704,7 +670,7 @@ When $q$ is small (fresh inoculum) $\alpha \approx 0$ and reproduction is suppre
 adapts $q \to \infty$ and $\alpha \to 1$, restoring the full rate. The physiological state itself
 grows in proportion to the specific growth rate,
 
-$$\frac{dq}{dt} = \mu_{max}\, \phi(T)\, q,$$
+$$\frac{dq}{dt} = \mu_{max}\, \phi(T)\, q$$
 
 where $\mu_{max}$ is the species' base reproduction rate (`rep`) and $\phi(T)$ is the Ratkowsky
 temperature factor (Section 4.14). Because the right-hand side is linear in $q$, the equation is
@@ -718,7 +684,7 @@ cultures at their thermal optimum, since $\phi(T) \to 0$ slows adaptation.
 
 **Lag duration.** Integrating the adjustment function gives the classic Baranyi lag time
 
-$$\lambda = \frac{h_0}{\mu_{max}}, \qquad h_0 = \ln\!\left(1 + \frac{1}{q_0}\right),$$
+$$\lambda = \frac{h_0}{\mu_{max}} \qquad h_0 = \ln\!\left(1 + \frac{1}{q_0}\right)$$
 
 where $q_0$ is the initial physiological state (`baranyi_q0`) and $h_0$ is the dimensionless "work to
 be done". A smaller $q_0$ means a longer lag. The reproduction probability per tick (Section 4.14)
@@ -743,7 +709,6 @@ Even in clonal, genetically identical populations a small fraction of cells stoc
 **persister** state: a dormant, slow-growing, stress-tolerant phenotype that survives antimicrobial
 exposure lethal to actively dividing cells. When conditions improve the persisters resuscitate back
 to the proliferative state. This reversible bistable switch is the canonical explanation for
-antibiotic *tolerance* (as distinct from inherited resistance)<sup>[1](#ref-1), [20](#ref-20)</sup>. BacSandbox models it as a two-state
 antibiotic *tolerance* (as distinct from inherited resistance)<sup>[1](#ref-1), [20](#ref-20)</sup>. BacSandbox models it as a two-state
 Markov process whose transition rates depend on the cell's internal **fullness**
 $f = \min(1, \max(0, \text{food}/\text{capacity}))$, used as a self-consistent proxy for sustained
@@ -796,7 +761,6 @@ control on bacterial populations. BacSandbox models them not as discrete agents 
 **free-virion field** carried in the ECM (`phage` layer), coupled to a per-cell susceptible /
 infected / resistant (SIR) state machine. This reuses the existing reaction–diffusion infrastructure
 and keeps the model lightweight while reproducing the classic predator–prey boom–bust oscillation<sup>[19](#ref-19)</sup>.
-and keeps the model lightweight while reproducing the classic predator–prey boom–bust oscillation<sup>[19](#ref-19)</sup>.
 
 **Adsorption (susceptible $\rightarrow$ infected).** A susceptible (non-resistant, uninfected) cell
 adsorbs phage by mass action against the local free-virion concentration $[P]$ sampled at its
@@ -804,7 +768,7 @@ position. Over the real elapsed time $\Delta t$ the infection probability is the
 complement, so the dynamics are frame-rate independent:
 
 $$
-P_{\text{adsorb}} = 1 - e^{-\,k\,[P]\,\Delta t},
+P_{\text{adsorb}} = 1 - e^{-\,k\,[P]\,\Delta t}
 $$
 
 where $k$ is `DEFAULT_PHAGE_ADSORPTION_RATE`. A successful adsorption removes one virion from the
@@ -817,7 +781,6 @@ reaches zero the host **lyses**: it dies, deposits labile necromass as a food no
 no cytosol recovery since the cytoplasm was hijacked), and releases a burst of $\beta$
 (`DEFAULT_PHAGE_BURST_SIZE`) progeny virions into the local phage field. This one-step growth
 structure (a fixed latent period followed by a discrete burst) follows Ellis & Delbrück<sup>[8](#ref-8)</sup>.
-structure (a fixed latent period followed by a discrete burst) follows Ellis & Delbrück<sup>[8](#ref-8)</sup>.
 
 **Free-virion field.** Released virions diffuse (`ECM_PHAGE_DIFFUSION_UM2_S`) and lose infectivity
 (`ECM_PHAGE_DECAY_S`) via the same Fickian stencil used for the other ECM layers (Section 4.9),
@@ -827,25 +790,22 @@ spreading the epidemic spatially and decaying it where hosts are absent.
 species' `phage_resistance` trait (a heritable, chromosomal fraction). Resistant cells never adsorb
 phage, so they survive the crash. On every division a susceptible lineage can spontaneously mutate to
 resistant with probability `PHAGE_RESISTANCE_MUTATION_RATE` (a Luria–Delbrück-style fluctuation)<sup>[21](#ref-21)</sup>,
-resistant with probability `PHAGE_RESISTANCE_MUTATION_RATE` (a Luria–Delbrück-style fluctuation)<sup>[21](#ref-21)</sup>,
 seeding the post-crash recovery. Daughters inherit the parent's resistance state and carriage cost.
 The net result is the textbook sequence: phage outbreak $\rightarrow$ susceptible population crash
 $\rightarrow$ resistant-only survivors $\rightarrow$ rebound.
 
-**Horizontal gene transfer (HGT).** Resistance also spreads laterally<sup>[22](#ref-22)</sup>. When a resistant donor and a
 **Horizontal gene transfer (HGT).** Resistance also spreads laterally<sup>[22](#ref-22)</sup>. When a resistant donor and a
 susceptible recipient are in physical contact (the same contact test used for sharing/T6SS), and both
 species are HGT-competent (`hgt_competence` $> 0$), the trait transfers by a conjugation-like process
 with probability
 
 $$
-P_{\text{HGT}} = 1 - e^{-\,k_H\, c_{\text{donor}}\, c_{\text{recip}}\,\Delta t},
+P_{\text{HGT}} = 1 - e^{-\,k_H\, c_{\text{donor}}\, c_{\text{recip}}\,\Delta t}
 $$
 
 where $k_H$ is `HGT_TRANSFER_RATE_PER_SEC` and $c$ are the two cells' competences. The recipient
 becomes resistant and inherits a **plasmid carriage cost**: its basal maintenance metabolism is
 multiplied by $1 +$ `HGT_METABOLIC_BURDEN`, modelling the well-documented fitness penalty of
-maintaining a resistance plasmid<sup>[26](#ref-26)</sup>. This cost is inherited by daughters, so
 maintaining a resistance plasmid<sup>[26](#ref-26)</sup>. This cost is inherited by daughters, so
 in the absence of phage pressure the burdened lineage is slightly outcompeted — capturing the
 cost–benefit tension that governs the spread of mobile resistance elements.
@@ -858,7 +818,6 @@ locations), so a user can trigger or halt an epidemic live from the Globals tab.
 
 ### 4.19 Diet-Driven Substrate Metabolism (Phase I Malnutrition Model)
 
-To ground BacSandbox in malnutrition research<sup>[27](#ref-27)</sup>, the single abstract glucose pool is replaced by
 To ground BacSandbox in malnutrition research<sup>[27](#ref-27)</sup>, the single abstract glucose pool is replaced by
 **three discrete dietary substrate classes**, each nutrient patch (`FoodNode`) carrying a
 `substrate_id` $s \in \{0, 1, 2\}$:
@@ -886,7 +845,7 @@ concentration. Substrates with $a_s = 0$ are skipped entirely in both targeting 
 budget $U_{\max} = v_c \, \Delta t \, \phi_T$ (mass, pg), where $v_c$ is `consumption_speed` and
 $\phi_T$ the temperature factor. For each reachable patch of class $s$, the ingested **mass** is
 
-$$\Delta m = \min\!\big(R \, a_s,\; R,\; m_{\text{node}},\; h_s\big), \qquad R = U_{\max} - \textstyle\sum \Delta m_{\text{prior}}$$
+$$\Delta m = \min\!\big(R \, a_s,\; R,\; m_{\text{node}},\; h_s\big) \qquad R = U_{\max} - \textstyle\sum \Delta m_{\text{prior}}$$
 
 with $R$ the remaining budget and $h_s$ the storage headroom expressed back in substrate mass.
 Mass is conserved on the patch ($m_{\text{node}} \leftarrow m_{\text{node}} - \Delta m$), but the
@@ -899,11 +858,9 @@ $Y_1 = 0.7$ (complex glycan, energy lost to incomplete fermentation and indigest
 $Y_2 = 0.85$ (MDCF prebiotic, a targeted, efficiently fermentable substrate). All yields satisfy
 $0 < Y_s \le 1$. This makes fibre and MDCF intrinsically less calorically dense than refined sugar
 while still selectively favouring the taxa equipped to use them<sup>[10](#ref-10)</sup>.
-while still selectively favouring the taxa equipped to use them<sup>[10](#ref-10)</sup>.
 
 **Diet configuration profiles.** The environment's `diet_profile` selects a categorical
 probability distribution over substrate classes for each fresh nutrient drop. Three feeding arms
-mirror the MDCF trial design<sup>[11](#ref-11), [24](#ref-24)</sup>; the per-profile fractions sum to $1$:
 mirror the MDCF trial design<sup>[11](#ref-11), [24](#ref-24)</sup>; the per-profile fractions sum to $1$:
 
 | Profile | calorie $p_0$ | glycan $p_1$ | MDCF $p_2$ |
@@ -923,7 +880,7 @@ estimates flagged for refinement against empirical intake data. The active arm i
 ### 4.20 Spatial Heterogeneity: Lumen vs Mucus Layer (Phase I)
 
 The circular petri dish is geometrically partitioned into two concentric zones that abstract the
-radial organisation of the intestinal cross-section<sup>[6](#ref-6), [18](#ref-18)</sup>: a central, well-mixed
+radial organisation of the intestinal cross-section<sup>[6](#ref-6)</sup>: a central, well-mixed
 **lumen** and a thin outer **mucus** annulus. For a point at world position $(x, y)$, with petri
 centre $(c_x, c_y)$ and radius $R$, the radial fraction is
 
@@ -935,7 +892,6 @@ rules differentiate the niches.
 
 **1. Motility (anchoring refuge).** Mucus-associated cells adhere to the glycoprotein matrix and
 move much more slowly than free luminal swimmers<sup>[18](#ref-18)</sup>. Before the forward translation,
-move much more slowly than free luminal swimmers<sup>[18](#ref-18)</sup>. Before the forward translation,
 a cell whose current position satisfies $\rho \ge$ `MUCUS_LAYER_RADIUS_FRACTION` has its per-step
 speed scaled by the mucus motility factor $m$ (constant `MUCUS_MOTILITY_FACTOR` $= 0.3$), giving
 effective speed $v_{\text{eff}} = v\,m$. This makes the mucus a low-clearance refuge where cells
@@ -945,7 +901,7 @@ persist rather than being swept downstream.
 second at a zone-specific rate, modelling luminal-flow / peristaltic clearance. For a node with
 mass $m_t$ in a zone of washout rate $k$,
 
-$$m_{t+\Delta t} = m_t\,(1 - k\,\Delta t),$$
+$$m_{t+\Delta t} = m_t\,(1 - k\,\Delta t)$$
 
 with $k =$ `LUMEN_FOOD_WASHOUT_RATE_PER_SEC` $(= 0.02)$ in the lumen and $k =$
 `MUCUS_FOOD_WASHOUT_RATE_PER_SEC` $(= 0.002)$ in the mucus. The lumen is flushed an order of
@@ -958,7 +914,6 @@ drops are deposited in full.
 
 **4. Competition bias.** Under hard carrying-capacity pressure the well-mixed lumen imposes
 stronger resource competition than the stabilised mucus refuge, so luminal cells are preferentially
-lost. Culling uses weighted sampling without replacement<sup>[7](#ref-7)</sup>: each
 lost. Culling uses weighted sampling without replacement<sup>[7](#ref-7)</sup>: each
 candidate cell draws a key $U^{1/w}$ with $U \sim \mathrm{Uniform}(0,1)$ and zone weight $w = 1$
 (mucus) or $w =$ `LUMEN_COMPETITION_CULL_WEIGHT` $(= 3.0)$ (lumen); the cells with the largest keys
@@ -992,7 +947,7 @@ Leaving the seed `null` reproduces the prior nondeterministic behaviour.
 regrow once it reaches zero in this model, the metric is the elapsed simulation time at the first
 zero crossing. Let $N_s(t)$ be the count of species $s$ at elapsed time $t$; then
 
-$$T_s^{\text{ext}} = \min\{\, t : N_s(t) = 0 \,\},$$
+$$T_s^{\text{ext}} = \min\{\, t : N_s(t) = 0 \,\}$$
 
 recorded once and never overwritten. Survivors retain $T_s^{\text{ext}} = \varnothing$ (blank in
 the export). Elapsed time is the real-time accumulator $t_{\text{elapsed},n} = \sum_{i=0}^{n}\Delta t_i$,
@@ -1005,9 +960,8 @@ from its archived CSV.
 
 **Survival curve.** From the per-species extinction times we build a discrete Kaplan-Meier-style
 survival function<sup>[16](#ref-16)</sup> $S(t)$ — the fraction of the $M$ tracked species still extant at time $t$:
-survival function<sup>[16](#ref-16)</sup> $S(t)$ — the fraction of the $M$ tracked species still extant at time $t$:
 
-$$S(t) = \frac{1}{M}\,\bigl|\{\, s : T_s^{\text{ext}} > t \ \text{or}\ T_s^{\text{ext}} = \varnothing \,\}\bigr|,$$
+$$S(t) = \frac{1}{M}\,\bigl|\{\, s : T_s^{\text{ext}} > t \ \text{or}\ T_s^{\text{ext}} = \varnothing \,\}\bigr|$$
 
 a right-continuous step function that drops by $1/M$ at each extinction event.
 
@@ -1037,7 +991,7 @@ on the current tick, indexed by substrate id $s \in \{0, 1, 2\}$.
 total $\Delta M_s$ and carries forward the previous cumulative value, so the recorded series is the
 total mass ever ingested per class:
 
-$$M_s(t_n) = M_s(t_{n-1}) + \Delta M_s(t_n), \qquad M_s(t_0) = \Delta M_s(t_0).$$
+$$M_s(t_n) = M_s(t_{n-1}) + \Delta M_s(t_n) \qquad M_s(t_0) = \Delta M_s(t_0).$$
 
 Because ingested mass is never returned, each $M_s$ is monotonic non-decreasing. These cumulative
 totals are surfaced live in the **Stats** tab (Calorie / Glycan / MDCF Consumed, in pg) and exported
@@ -1060,7 +1014,6 @@ population grows. The legacy initialiser instead scattered every cell uniformly 
 $800 \times 600$ rectangle anchored at the top-left corner, which neither matched the circular
 petri-dish geometry (Section 4.20) nor the lumen where fresh substrate is delivered. The spawning
 model replaces that rectangle with a configurable, dish-aware, seed-reproducible founder placement<sup>[38](#ref-38)</sup>.
-model replaces that rectangle with a configurable, dish-aware, seed-reproducible founder placement<sup>[38](#ref-38)</sup>.
 
 **Deferred, geometry-aware placement.** The petri dish centre $(c_x, c_y)$ and radius $R$ are only
 known once the window size is available, so founder placement is deferred to the first simulation
@@ -1074,7 +1027,7 @@ constrained to lie within the dish, $\sqrt{(x-c_x)^2+(y-c_y)^2}\le R$.
 **Area-uniform disc sampling.** Where a founder is drawn uniformly over an annular band
 $[r_{\min}, r_{\max}]$, the radius uses
 
-$$r = \sqrt{U\,(r_{\max}^2 - r_{\min}^2) + r_{\min}^2}, \qquad U \sim \mathrm{Uniform}(0,1),$$
+$$r = \sqrt{U\,(r_{\max}^2 - r_{\min}^2) + r_{\min}^2} \qquad U \sim \mathrm{Uniform}(0,1)$$
 
 so density is constant per unit **area** rather than per unit radius (a naive $r = U\,R$ draw would
 pile founders near the centre). The angle is uniform over the species' allowed sector.
@@ -1150,19 +1103,13 @@ Species are configured in `species_data.csv` and can also be edited in the Speci
 * `base_size`: Structural cell size in micrometers. It controls capacity, metabolism, uptake, movement speed, turning, and necromass.
 * `sensor_radius`: Food sensing radius in micrometers. Food outside this range does not contribute to chemotaxis or local feeding checks.
 * `temp_min`: Ratkowsky minimum cardinal temperature $T_{min}$ in degrees Celsius. No growth occurs at or below it (see Section 4.14)<sup>[23](#ref-23)</sup>.
-* `temp_min`: Ratkowsky minimum cardinal temperature $T_{min}$ in degrees Celsius. No growth occurs at or below it (see Section 4.14)<sup>[23](#ref-23)</sup>.
 * `temp_max`: Ratkowsky maximum cardinal temperature $T_{max}$ in degrees Celsius. No growth occurs at or above it. It is clamped to be strictly above `temp_min`.
-* `acetate_secretion`: Overflow acetate excreted per unit of fresh glucose uptake, from 0 to 1. Producers emit acetate into the ECM (see Section 4.15). Default 0 (no overflow)<sup>[30](#ref-30)</sup>.
 * `acetate_secretion`: Overflow acetate excreted per unit of fresh glucose uptake, from 0 to 1. Producers emit acetate into the ECM (see Section 4.15). Default 0 (no overflow)<sup>[30](#ref-30)</sup>.
 * `acetate_uptake`: Acetate cross-feeding uptake activity from 0 to 1. Consumers oxidize local acetate as a secondary aerobic carbon source (see Section 4.15). Default 0 (no cross-feeding).
 * `baranyi_q0`: Initial Baranyi physiological state $q_0$ of the fresh inoculum (dimensionless, $> 0$). A smaller value lengthens the lag phase via $h_0 = \ln(1 + 1/q_0)$ (see Section 4.16); it is clamped to $[10^{-4}, 10^3]$. Default 0.05 (moderate lag)<sup>[2](#ref-2)</sup>.
 * `persister_switch`: Persister switching propensity from 0 to 1 (see Section 4.17). It scales the entry rate into the dormant persister state; 0 fully disables persistence (pre-M4 behaviour). Default 0<sup>[1](#ref-1), [20](#ref-20)</sup>.
-* `baranyi_q0`: Initial Baranyi physiological state $q_0$ of the fresh inoculum (dimensionless, $> 0$). A smaller value lengthens the lag phase via $h_0 = \ln(1 + 1/q_0)$ (see Section 4.16); it is clamped to $[10^{-4}, 10^3]$. Default 0.05 (moderate lag)<sup>[2](#ref-2)</sup>.
-* `persister_switch`: Persister switching propensity from 0 to 1 (see Section 4.17). It scales the entry rate into the dormant persister state; 0 fully disables persistence (pre-M4 behaviour). Default 0<sup>[1](#ref-1), [20](#ref-20)</sup>.
 * `persister_enter_thresh`: Starvation fullness threshold $S_1$ from 0 to 1. Below it, starvation-induced switching into persistence engages. Default 0.15.
 * `persister_exit_thresh`: Recovery fullness threshold $S_2$ from 0 to 1. Above it, persisters resuscitate to the proliferative state. It is clamped to stay at least `PERSISTER_THRESHOLD_MIN_GAP` above $S_1$. Default 0.5.
-* `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible)<sup>[21](#ref-21)</sup>.
-* `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0<sup>[22](#ref-22), [26](#ref-26)</sup>.
 * `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible)<sup>[21](#ref-21)</sup>.
 * `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0<sup>[22](#ref-22), [26](#ref-26)</sup>.
 * `temp_min`: Ratkowsky minimum cardinal temperature $T_{min}$ in degrees Celsius. No growth occurs at or below it (see Section 4.14).
@@ -1176,7 +1123,6 @@ Species are configured in `species_data.csv` and can also be edited in the Speci
 * `phage_resistance`: Initial fraction of cells born resistant to bacteriophage adsorption, from 0 to 1 (see Section 4.18). Resistance is heritable; resistant cells survive an epidemic and drive the rebound. Default 0 (fully susceptible).
 * `hgt_competence`: Horizontal gene transfer competence from 0 to 1 (see Section 4.18). Gates both donating and receiving phage resistance on cell contact; the recipient inherits a metabolic carriage cost. 0 disables HGT (pre-M5 behaviour). Default 0.
 * `aff_calorie`: Generic-calorie substrate uptake affinity ($\ge 0$, see Section 4.19). Multiplies transporter throughput for simple sugars; energy yield is $1.0$. Default 1.0 (full legacy uptake)<sup>[10](#ref-10), [11](#ref-11), [24](#ref-24)</sup>.
-* `aff_calorie`: Generic-calorie substrate uptake affinity ($\ge 0$, see Section 4.19). Multiplies transporter throughput for simple sugars; energy yield is $1.0$. Default 1.0 (full legacy uptake)<sup>[10](#ref-10), [11](#ref-11), [24](#ref-24)</sup>.
 * `aff_glycan`: Complex-glycan (dietary fibre) uptake affinity ($\ge 0$, see Section 4.19). 0 means the species cannot metabolise fibre; ingested mass yields $0.7$ of glucose energy. Default 0.
 * `aff_mdcf`: MDCF prebiotic uptake affinity ($\ge 0$, see Section 4.19). 0 means the species cannot use the targeted prebiotic; ingested mass yields $0.85$ of glucose energy. High values are selectively rewarded under the `mdcf` diet. Default 0.
 
@@ -1188,16 +1134,12 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 * `co2`: Dissolved carbon dioxide fraction from 0 to 1. Respiration increases it and buffering/pH logic responds to it.
 * `ph`: Current environmental pH from 0 to 14.
 * `temperature`: Environment temperature in degrees Celsius (slider range 0 to 60). It drives the Ratkowsky growth multiplier $f_{T}$ applied per species (see Section 4.14)<sup>[23](#ref-23)</sup>.
-* `temperature`: Environment temperature in degrees Celsius (slider range 0 to 60). It drives the Ratkowsky growth multiplier $f_{T}$ applied per species (see Section 4.14)<sup>[23](#ref-23)</sup>.
 * `temperature`: Environment temperature in degrees Celsius (slider range 0 to 60). It drives the Ratkowsky growth multiplier $f_{T}$ applied per species (see Section 4.14).
 * `capacity`: Hard carrying capacity across all species. Excess population is culled if total cells exceed this value.
 * `drop_frequency`: Expected food clusters per real second. The implementation uses an expected-rate spawning approximation $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$.
 * `drop_range_min` and `drop_range_max`: Uniform random range for the amount in each new food cluster.
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak)<sup>[8](#ref-8), [19](#ref-19)</sup>.
-* `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak)<sup>[8](#ref-8), [19](#ref-19)</sup>.
 * `phage_inflow`: Expected free-phage seed packets introduced per real second (see Section 4.18). Each packet deposits `PHAGE_SEED_PACKET_VIRIONS` virions at a random petri location via the same Poisson rate $\mathbb{E}[N_{\Delta t}] = \lambda \Delta t$. Set above 0 to trigger an epidemic and back to 0 to halt seeding. Default 0 (no outbreak).
-* `diet_profile`: Active dietary feeding arm (see Section 4.19), one of `malnutrition`, `standard`, or `mdcf`. It sets the categorical probability mix of substrate classes (generic calorie / complex glycan / MDCF prebiotic) assigned to each new food drop<sup>[10](#ref-10), [11](#ref-11), [24](#ref-24)</sup>. It is editable directly in the **Globals** tab — clicking its cell (or pressing Enter on the row) cycles to the next arm. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload. Default `standard`.
-* `seed`: Optional integer RNG seed for reproducible extinction/abundance baselines (see Section 4.21)<sup>[16](#ref-16)</sup>. It is editable directly in the **Globals** tab — enter a non-negative integer to fix the run, or leave the field blank (shown as `(random)`) for a fresh nondeterministic run. When set, the random stream is seeded before species construction so the entire run — initial layout and every stochastic draw — is deterministic. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload.
 * `diet_profile`: Active dietary feeding arm (see Section 4.19), one of `malnutrition`, `standard`, or `mdcf`. It sets the categorical probability mix of substrate classes (generic calorie / complex glycan / MDCF prebiotic) assigned to each new food drop<sup>[10](#ref-10), [11](#ref-11), [24](#ref-24)</sup>. It is editable directly in the **Globals** tab — clicking its cell (or pressing Enter on the row) cycles to the next arm. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload. Default `standard`.
 * `seed`: Optional integer RNG seed for reproducible extinction/abundance baselines (see Section 4.21)<sup>[16](#ref-16)</sup>. It is editable directly in the **Globals** tab — enter a non-negative integer to fix the run, or leave the field blank (shown as `(random)`) for a fresh nondeterministic run. When set, the random stream is seeded before species construction so the entire run — initial layout and every stochastic draw — is deterministic. Like all Globals-tab values it defines starting conditions, so a change takes effect on the next simulation reset/reload.
 * `spawn_mode`: Initial inoculum geometry (see Section 4.23), one of `clustered`, `uniform_disc`, or `central`. Categorical — clicking its cell (or pressing Enter on the row) cycles to the next mode. Default `clustered`.
@@ -1262,7 +1204,7 @@ $$
 Import remains backward-compatible with older four-column global stats files. If a legacy row only has `time,total,births,deaths`, the importer treats `time` as a completed update index and infers:
 
 $$
-\Delta t = \frac{1}{\text{FPS}}, \quad t_{\text{elapsed}} = \frac{\text{time}+1}{\text{FPS}}, \quad f_{\text{tick}}=\text{FPS}
+\Delta t = \frac{1}{\text{FPS}} \quad t_{\text{elapsed}} = \frac{\text{time}+1}{\text{FPS}} \quad f_{\text{tick}}=\text{FPS}
 $$
 
 and reconstructs cumulative global births and deaths by running sum.
@@ -1342,7 +1284,7 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-17"></a>**[17]** Kleiber (1932). *Body size and metabolism*. Hilgardia, 6(11):315–353. [https://doi.org/10.3733/hilg.v06n11p315](https://doi.org/10.3733/hilg.v06n11p315)
 
-<a id="ref-18"></a>**[18]** Earle, Billings, Sigal, Lichtman, Hansson, Elias, Amieva, Huang & Sonnenburg (2015). *Quantitative Imaging of Gut Microbiota Spatial Organization*. Cell Host & Microbe, 18(4):478–488. [https://doi.org/10.1016/j.chom.2015.09.002](https://doi.org/10.1016/j.chom.2015.09.002) — quantitatively maps the spatial distribution of the gut microbiota relative to the host mucus and epithelium, providing the empirical basis for the §4.20 dual-compartment radial (lumen vs mucus) model and its mucus-associated anchoring refuge.
+<a id="ref-18"></a>**[18]** Earle, Billings, Sigal, Lichtman, Hansson, Elias, Amieva, Huang & Sonnenburg (2015). Quantitative Imaging of Gut Microbiota Spatial Organization. Cell Host & Microbe, 18(4):478–488. [https://doi.org/10.1016/j.chom.2015.09.002](https://doi.org/10.1016/j.chom.2015.09.002)
 
 <a id="ref-19"></a>**[19]** Levin, Stewart & Chao (1977). *Resource-Limited Growth, Competition, and Predation: A Model and Experimental Studies with Bacteria and Bacteriophage*. The American Naturalist, 111(977):3–24. [https://doi.org/10.1086/283134](https://doi.org/10.1086/283134)
 
