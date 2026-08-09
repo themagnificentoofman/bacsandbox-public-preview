@@ -32,7 +32,7 @@ int main() {
 '''
 
 
-class ECMBuildExt(build_ext):
+class KernelBuildExt(build_ext):
     def build_extensions(self):
         policy = os.environ.get(OPENMP_ENVIRONMENT_VARIABLE, 'auto').strip().lower()
         if policy not in OPENMP_POLICIES:
@@ -166,12 +166,18 @@ setup(
     ext_modules=[
         Extension(
             'bacteria_c_kernel',
-            sources=['bacteria/src/ecm_kernel.cpp'],
+            sources=[
+                'bacteria/src/ecm_kernel.cpp',
+                'bacteria/src/physics_kernel.cpp',
+            ],
             include_dirs=[pybind11.get_include(), numpy.get_include()],
-            depends=['bacteria/src/ecm_kernel.h'],
+            depends=[
+                'bacteria/src/ecm_kernel.h',
+                'bacteria/src/physics_kernel.h',
+            ],
             language='c++',
         ),
     ],
-    cmdclass={'build_ext': ECMBuildExt},
+    cmdclass={'build_ext': KernelBuildExt},
     zip_safe=False,
 )

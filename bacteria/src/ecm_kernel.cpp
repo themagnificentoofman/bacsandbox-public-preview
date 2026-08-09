@@ -1,4 +1,5 @@
 #include "ecm_kernel.h"
+#include "physics_kernel.h"
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -253,6 +255,40 @@ void require_finite_nonnegative(double value, const char* name) {
     }
 }
 
+void require_finite(double value, const char* name) {
+    if (!is_finite_float64(value)) {
+        throw py::value_error(std::string(name) + " must be finite");
+    }
+}
+
+void require_unit_interval(double value, const char* name) {
+    if (!is_finite_float64(value) || value < 0.0 || value > 1.0) {
+        throw py::value_error(std::string(name) + " must be finite and in [0, 1]");
+    }
+}
+
+template <typename Element>
+std::size_t require_vector(const py::array& array, const char* name) {
+    require_c_array<Element>(array, name);
+    if (array.ndim() != 1) {
+        throw py::value_error(std::string(name) + " must have shape (N,)");
+    }
+    return static_cast<std::size_t>(array.shape(0));
+}
+
+void require_length(std::size_t actual, std::size_t expected, const char* name, const char* extent) {
+    if (actual != expected) {
+        throw py::value_error(
+            std::string(name) + " must have shape (" + extent + ",)");
+    }
+}
+
+void require_writable(const py::array& array, const char* name) {
+    if (!array.writeable()) {
+        throw py::value_error(std::string(name) + " must be writable");
+    }
+}
+
 bacsandbox::ecm::LayerBatch read_layers(
     const py::array& coordinates,
     const py::array& values,
@@ -389,10 +425,286 @@ py::tuple process_layers_binding(
     return make_python_result(std::move(result));
 }
 
+py::tuple process_interactions_binding(
+    const py::array& x,
+    const py::array& y,
+    const py::array& interaction_radius,
+    const py::array& base_radius,
+    py::array& food_level,
+    const py::array& food_capacity,
+    py::array& metabolic_burden_factor,
+    const py::array& species_id,
+    const py::array& is_persister,
+    py::array& phage_resistant,
+    py::array& event_flags,
+    const py::array& t6ss_activity,
+    const py::array& immunity_factor,
+    const py::array& hgt_competence,
+    const py::array& share_threshold,
+    const py::array& predation_threshold,
+    double dt,
+    double hash_cell_size,
+    double axis_cutoff,
+    double contact_margin,
+    double hgt_transfer_rate,
+    double hgt_metabolic_burden,
+    double t6ss_damage_scaling,
+    double t6ss_max_immunity_defense,
+    double t6ss_immunity_size_epsilon,
+    double persister_resistance_factor,
+    double phagocytosis_size_ratio,
+    double cell_wet_mass,
+    double cell_dry_mass_fraction,
+    double labile_necromass_fraction,
+    double cytosol_recovery_fraction,
+    double consumed_prey_sentinel,
+    const py::function& random_draw) {
+    const std::size_t agent_count = require_vector<double>(x, "x");
+    require_length(require_vector<double>(y, "y"), agent_count, "y", "N");
+    require_length(
+        require_vector<double>(interaction_radius, "interaction_radius"),
+        agent_count,
+        "interaction_radius",
+        "N");
+    require_length(
+        require_vector<double>(base_radius, "base_radius"),
+        agent_count,
+        "base_radius",
+        "N");
+    require_length(
+        require_vector<double>(food_level, "food_level"),
+        agent_count,
+        "food_level",
+        "N");
+    require_length(
+        require_vector<double>(food_capacity, "food_capacity"),
+        agent_count,
+        "food_capacity",
+        "N");
+    require_length(
+        require_vector<double>(metabolic_burden_factor, "metabolic_burden_factor"),
+        agent_count,
+        "metabolic_burden_factor",
+        "N");
+    require_length(
+        require_vector<std::int32_t>(species_id, "species_id"),
+        agent_count,
+        "species_id",
+        "N");
+    require_length(
+        require_vector<std::uint8_t>(is_persister, "is_persister"),
+        agent_count,
+        "is_persister",
+        "N");
+    require_length(
+        require_vector<std::uint8_t>(phage_resistant, "phage_resistant"),
+        agent_count,
+        "phage_resistant",
+        "N");
+    require_length(
+        require_vector<std::uint8_t>(event_flags, "event_flags"),
+        agent_count,
+        "event_flags",
+        "N");
+
+    const std::size_t species_count = require_vector<double>(t6ss_activity, "t6ss_activity");
+    require_length(
+        require_vector<double>(immunity_factor, "immunity_factor"),
+        species_count,
+        "immunity_factor",
+        "S");
+    require_length(
+        require_vector<double>(hgt_competence, "hgt_competence"),
+        species_count,
+        "hgt_competence",
+        "S");
+    require_length(
+        require_vector<double>(share_threshold, "share_threshold"),
+        species_count,
+        "share_threshold",
+        "S");
+    require_length(
+        require_vector<double>(predation_threshold, "predation_threshold"),
+        species_count,
+        "predation_threshold",
+        "S");
+
+    require_writable(food_level, "food_level");
+    require_writable(metabolic_burden_factor, "metabolic_burden_factor");
+    require_writable(phage_resistant, "phage_resistant");
+    require_writable(event_flags, "event_flags");
+
+    const auto* x_data = static_cast<const double*>(x.data());
+    const auto* y_data = static_cast<const double*>(y.data());
+    const auto* interaction_radius_data = static_cast<const double*>(interaction_radius.data());
+    const auto* base_radius_data = static_cast<const double*>(base_radius.data());
+    auto* food_level_data = static_cast<double*>(food_level.mutable_data());
+    const auto* food_capacity_data = static_cast<const double*>(food_capacity.data());
+    auto* metabolic_burden_data = static_cast<double*>(metabolic_burden_factor.mutable_data());
+    const auto* species_id_data = static_cast<const std::int32_t*>(species_id.data());
+    const auto* is_persister_data = static_cast<const std::uint8_t*>(is_persister.data());
+    auto* phage_resistant_data = static_cast<std::uint8_t*>(phage_resistant.mutable_data());
+    auto* event_flags_data = static_cast<std::uint8_t*>(event_flags.mutable_data());
+
+    for (std::size_t index = 0; index < agent_count; ++index) {
+        require_finite(x_data[index], "x entries");
+        require_finite(y_data[index], "y entries");
+        require_finite_nonnegative(interaction_radius_data[index], "interaction_radius entries");
+        require_finite_nonnegative(base_radius_data[index], "base_radius entries");
+        require_finite(food_level_data[index], "food_level entries");
+        require_finite_nonnegative(food_capacity_data[index], "food_capacity entries");
+        require_finite_nonnegative(metabolic_burden_data[index], "metabolic_burden_factor entries");
+        if (species_id_data[index] < 0 ||
+            static_cast<std::size_t>(species_id_data[index]) >= species_count) {
+            throw py::value_error("species_id entries must index the species arrays");
+        }
+        if (is_persister_data[index] > 1) {
+            throw py::value_error("is_persister entries must be 0 or 1");
+        }
+        if (phage_resistant_data[index] > 1) {
+            throw py::value_error("phage_resistant entries must be 0 or 1");
+        }
+        if ((event_flags_data[index] & ~bacsandbox::physics::all_event_bits) != 0) {
+            throw py::value_error("event_flags entries contain unknown event bits");
+        }
+    }
+
+    const auto* t6ss_activity_data = static_cast<const double*>(t6ss_activity.data());
+    const auto* immunity_factor_data = static_cast<const double*>(immunity_factor.data());
+    const auto* hgt_competence_data = static_cast<const double*>(hgt_competence.data());
+    const auto* share_threshold_data = static_cast<const double*>(share_threshold.data());
+    const auto* predation_threshold_data = static_cast<const double*>(predation_threshold.data());
+    for (std::size_t index = 0; index < species_count; ++index) {
+        require_unit_interval(t6ss_activity_data[index], "t6ss_activity entries");
+        require_unit_interval(immunity_factor_data[index], "immunity_factor entries");
+        require_unit_interval(hgt_competence_data[index], "hgt_competence entries");
+        require_unit_interval(share_threshold_data[index], "share_threshold entries");
+        require_unit_interval(predation_threshold_data[index], "predation_threshold entries");
+    }
+
+    require_finite_nonnegative(dt, "dt");
+    if (!is_finite_float64(hash_cell_size) || hash_cell_size <= 0.0) {
+        throw py::value_error("hash_cell_size must be finite and positive");
+    }
+    require_finite_nonnegative(axis_cutoff, "axis_cutoff");
+    require_finite_nonnegative(contact_margin, "contact_margin");
+    require_finite_nonnegative(hgt_transfer_rate, "hgt_transfer_rate");
+    require_finite_nonnegative(hgt_metabolic_burden, "hgt_metabolic_burden");
+    require_finite_nonnegative(t6ss_damage_scaling, "t6ss_damage_scaling");
+    require_unit_interval(t6ss_max_immunity_defense, "t6ss_max_immunity_defense");
+    if (!is_finite_float64(t6ss_immunity_size_epsilon) ||
+        t6ss_immunity_size_epsilon <= 0.0) {
+        throw py::value_error("t6ss_immunity_size_epsilon must be finite and positive");
+    }
+    require_unit_interval(persister_resistance_factor, "persister_resistance_factor");
+    require_finite_nonnegative(phagocytosis_size_ratio, "phagocytosis_size_ratio");
+    require_finite_nonnegative(cell_wet_mass, "cell_wet_mass");
+    require_unit_interval(cell_dry_mass_fraction, "cell_dry_mass_fraction");
+    require_unit_interval(labile_necromass_fraction, "labile_necromass_fraction");
+    require_unit_interval(cytosol_recovery_fraction, "cytosol_recovery_fraction");
+    if (!is_finite_float64(consumed_prey_sentinel) || consumed_prey_sentinel >= 0.0) {
+        throw py::value_error("consumed_prey_sentinel must be finite and negative");
+    }
+
+    const bacsandbox::physics::AgentBuffers agents{
+        {x_data, agent_count},
+        {y_data, agent_count},
+        {interaction_radius_data, agent_count},
+        {base_radius_data, agent_count},
+        {food_level_data, agent_count},
+        {food_capacity_data, agent_count},
+        {metabolic_burden_data, agent_count},
+        {species_id_data, agent_count},
+        {is_persister_data, agent_count},
+        {phage_resistant_data, agent_count},
+        {event_flags_data, agent_count},
+    };
+    const bacsandbox::physics::SpeciesBuffers species{
+        {t6ss_activity_data, species_count},
+        {immunity_factor_data, species_count},
+        {hgt_competence_data, species_count},
+        {share_threshold_data, species_count},
+        {predation_threshold_data, species_count},
+    };
+    const bacsandbox::physics::InteractionParameters parameters{
+        dt,
+        hash_cell_size,
+        axis_cutoff,
+        contact_margin,
+        hgt_transfer_rate,
+        hgt_metabolic_burden,
+        t6ss_damage_scaling,
+        t6ss_max_immunity_defense,
+        t6ss_immunity_size_epsilon,
+        persister_resistance_factor,
+        phagocytosis_size_ratio,
+        cell_wet_mass,
+        cell_dry_mass_fraction,
+        labile_necromass_fraction,
+        cytosol_recovery_fraction,
+        consumed_prey_sentinel,
+    };
+
+    bacsandbox::physics::ContactPairs contacts;
+    {
+        py::gil_scoped_release release;
+        contacts = bacsandbox::physics::discover_contact_pairs(agents, parameters);
+    }
+
+    // Resolution remains serial with the GIL held because only eligible HGT contacts invoke Python RNG;
+    // see DOCUMENTATION.md §4.18 and §10.2.
+    const bacsandbox::physics::RandomDraw native_random_draw = [&random_draw]() {
+        return random_draw().cast<double>();
+    };
+    // Caller-owned arrays commit atomically: snapshots are restored only when callback validation
+    // or interaction resolution fails; see DOCUMENTATION.md §4.18 and §10.2.
+    const std::vector<double> original_food_level(
+        food_level_data,
+        food_level_data + agent_count);
+    const std::vector<double> original_metabolic_burden(
+        metabolic_burden_data,
+        metabolic_burden_data + agent_count);
+    const std::vector<std::uint8_t> original_phage_resistant(
+        phage_resistant_data,
+        phage_resistant_data + agent_count);
+    const std::vector<std::uint8_t> original_event_flags(
+        event_flags_data,
+        event_flags_data + agent_count);
+
+    bacsandbox::physics::InteractionSummary summary;
+    try {
+        summary = bacsandbox::physics::resolve_interactions(
+            agents,
+            species,
+            parameters,
+            contacts,
+            native_random_draw);
+    } catch (...) {
+        std::copy(original_food_level.begin(), original_food_level.end(), food_level_data);
+        std::copy(
+            original_metabolic_burden.begin(),
+            original_metabolic_burden.end(),
+            metabolic_burden_data);
+        std::copy(
+            original_phage_resistant.begin(),
+            original_phage_resistant.end(),
+            phage_resistant_data);
+        std::copy(original_event_flags.begin(), original_event_flags.end(), event_flags_data);
+        throw;
+    }
+    return py::make_tuple(
+        summary.contact_pairs,
+        summary.t6ss_hits,
+        summary.t6ss_deaths,
+        summary.hgt_transfers,
+        summary.share_events,
+        summary.predation_events);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(bacteria_c_kernel, module) {
-    module.doc() = "Native BacSandbox ECM kernel boundary";
+    module.doc() = "Native BacSandbox computational kernels";
     module.def(
         "process_layers",
         &process_layers_binding,
@@ -405,5 +717,41 @@ PYBIND11_MODULE(bacteria_c_kernel, module) {
         py::arg("cell_size"),
         py::arg("alpha_max"),
         py::arg("min_concentration"));
+    module.def(
+        "process_interactions",
+        &process_interactions_binding,
+        py::arg("x").noconvert(),
+        py::arg("y").noconvert(),
+        py::arg("interaction_radius").noconvert(),
+        py::arg("base_radius").noconvert(),
+        py::arg("food_level").noconvert(),
+        py::arg("food_capacity").noconvert(),
+        py::arg("metabolic_burden_factor").noconvert(),
+        py::arg("species_id").noconvert(),
+        py::arg("is_persister").noconvert(),
+        py::arg("phage_resistant").noconvert(),
+        py::arg("event_flags").noconvert(),
+        py::arg("t6ss_activity").noconvert(),
+        py::arg("immunity_factor").noconvert(),
+        py::arg("hgt_competence").noconvert(),
+        py::arg("share_threshold").noconvert(),
+        py::arg("predation_threshold").noconvert(),
+        py::arg("dt"),
+        py::arg("hash_cell_size"),
+        py::arg("axis_cutoff"),
+        py::arg("contact_margin"),
+        py::arg("hgt_transfer_rate"),
+        py::arg("hgt_metabolic_burden"),
+        py::arg("t6ss_damage_scaling"),
+        py::arg("t6ss_max_immunity_defense"),
+        py::arg("t6ss_immunity_size_epsilon"),
+        py::arg("persister_resistance_factor"),
+        py::arg("phagocytosis_size_ratio"),
+        py::arg("cell_wet_mass"),
+        py::arg("cell_dry_mass_fraction"),
+        py::arg("labile_necromass_fraction"),
+        py::arg("cytosol_recovery_fraction"),
+        py::arg("consumed_prey_sentinel"),
+        py::arg("random_draw"));
     module.def("openmp_enabled", &bacsandbox::ecm::openmp_enabled);
 }

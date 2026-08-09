@@ -10,6 +10,7 @@ if __package__ is None and not hasattr(sys, 'frozen'):
 
 from .constants import *
 from .ecm import ECM
+from .physics import InteractionSummary, PhysicsOrchestrator
 
 def _spawn_sector(species_index, species_total):
     """Angular wedge [a0, a1) a species may occupy. Under the 'segregated' arrangement each species
@@ -838,7 +839,7 @@ class Simulation:
     """
     Manages multiple species, environment, and global stats.
     """
-    def __init__(self, spp, env, cap, steps=500, seed=None):
+    def __init__(self, spp, env, cap, steps=500, seed=None, physics_backend='auto'):
         # Phase I reproducibility: a non-None seed makes every stochastic draw deterministic so
         # extinction/abundance baselines are repeatable. Seed BEFORE any other RNG use so runs that
         # construct species after this point (programmatic tests) share the same stream.
@@ -854,6 +855,8 @@ class Simulation:
         self.cap = cap           # carrying capacity
         self.steps = steps       # legacy max update count (not used by the real-time loop)
         self.ecm = ECM(cell_size=ECM_CELL_SIZE_UM) # Inject Extracellular Matrix for molecular diffusion
+        self.physics = PhysicsOrchestrator(backend=physics_backend)
+        self._last_interaction_summary = InteractionSummary()
         # stats collected each step
         self.stats = self._empty_stats()
         self.species_step_stats = []  # List of dicts: [{'births': [...], 'deaths': [...]}]
@@ -880,6 +883,10 @@ class Simulation:
             'deaths': [],
             'overall_births': [],
             'overall_deaths': [],
+            't6ss_deaths': [],
+            'hgt_transfers': [],
+            'overall_t6ss_deaths': [],
+            'overall_hgt_transfers': [],
             # Phase I spatial heterogeneity: per-step population split between the central lumen
             # and the outer mucus annulus (membership by radial fraction vs MUCUS_LAYER_RADIUS_FRACTION).
             'lumen': [],
@@ -987,17 +994,29 @@ class Simulation:
             sp.extinction_time = None
         self.stats = self._empty_stats()
         self.species_step_stats = []
+        self._last_interaction_summary = InteractionSummary()
         self.step_idx = 0
         self.running = False
 
-    def _process_interactions(self, spatial_hash, CELL_SIZE, dt):
+    def _process_interactions(self, spatial_hash=None, CELL_SIZE=None, dt=None):
         """
-        Process Inter/Intra species interactions and ECM biochemical exposure.
-        Contact-dependent inhibition (T6SS) and diffusible antimicrobial peptides (bacteriocins).
-        see DOCUMENTATION.md §4.12 (Competition, Bacteriocins, and T6SS).
+        Process ECM biochemistry, then dispatch ordered contact interactions.
+
+        The legacy spatial_hash and CELL_SIZE arguments remain accepted for direct callers, but the
+        authoritative contact pass builds its signed hash from the flattened arrays.
         """
+        if dt is None:
+            raise TypeError('dt is required')
+
+        # This stable biochemical-then-contact sequence is the deterministic two-phase contract;
+        # it intentionally does not promise historical full-tick trajectory parity. See future
+        # DOCUMENTATION.md §10.2.
         for sp in self.species:
+            # Bacteriocin production cost is expression times the per-second nutrient cost and dt;
+            # see DOCUMENTATION.md §4.12.
             bac_prod_rate = (sp.bacteriocin_production * BACTERIOCIN_PRODUCTION_COST_RATE) * dt
+            # Species immunity attenuates local bacteriocin dose up to the documented ceiling;
+            # see DOCUMENTATION.md §4.12.
             immunity_mitigation = min(BACTERIOCIN_MAX_IMMUNITY_MITIGATION, sp.immunity_factor * BACTERIOCIN_IMMUNITY_SCALING)
 
             # M2 cross-feeding gates (computed once per species per tick).
@@ -1012,8 +1031,6 @@ class Simulation:
             for b in sp.members:
                 if b.food_level < 0:
                     continue
-                cx = int(b.x // CELL_SIZE)
-                cy = int(b.y // CELL_SIZE)
 
                 # Reset per-tick acetate consumption before any cross-feeding so the env update only
                 # couples O2/CO2 to acetate actually oxidized this tick.
@@ -1044,8 +1061,6 @@ class Simulation:
                             b.food_level += consumed_pg * ACETATE_ENERGY_YIELD_GLUCOSE_EQUIV
                             b.last_acetate_consumption_pg = consumed_pg
                             self.ecm.add(b.x, b.y, -consumed_pg * ACETATE_ECM_UNITS_PER_PG, layer='acetate')
-
-                b_size_sq_dmg = (sp.t6ss_activity * (b.size ** 2) * T6SS_DAMAGE_SCALING_FACTOR) * dt
                 
                 # Bacteriocin Emission (metabolic cost):
                 # Emission occurs consistently, scaled by bacteriocin_production.
@@ -1063,70 +1078,9 @@ class Simulation:
                     bac_dmg = (local_bac * BACTERIOCIN_DAMAGE_COEFFICIENT) * (1.0 - immunity_mitigation) * persister_resistance * dt
                     b.food_level -= bac_dmg
 
-                # Check 9 surrounding cells for physical contact (T6SS / Predation / Sharing)
-                for nx in (cx - 1, cx, cx + 1):
-                    for ny in (cy - 1, cy, cy + 1):
-                        neighbors = spatial_hash.get((nx, ny), [])
-                        for other in neighbors:
-                            if other is b or other.food_level < 0:
-                                continue
-                                
-                            dx = b.x - other.x
-                            dy = b.y - other.y
-                            if abs(dx) > BACTERIA_INTERACTION_AXIS_CUTOFF_UM or abs(dy) > BACTERIA_INTERACTION_AXIS_CUTOFF_UM:
-                                continue
-                                
-                            dist_sq = dx**2 + dy**2
-                            interact_dist = b.size + other.size + BACTERIA_CONTACT_MARGIN_UM
-                            if dist_sq < interact_dist**2:
-                                # --- M5 Horizontal gene transfer (contact-dependent) ---
-                                # A resistant donor transfers the phage-resistance trait to a susceptible
-                                # neighbor by conjugation-like contact. Both cells must be HGT-competent;
-                                # transfer follows P = 1 - exp(-k * c_donor * c_recip * dt). The recipient
-                                # inherits the plasmid carriage cost. see DOCUMENTATION.md §4.18 (Phage Predation and Horizontal Gene Transfer).
-                                if b.phage_resistant and not other.phage_resistant:
-                                    donor_comp = sp.hgt_competence
-                                    recip_comp = other.species.hgt_competence
-                                    if donor_comp > 0.0 and recip_comp > 0.0:
-                                        hgt_prob = 1.0 - math.exp(-HGT_TRANSFER_RATE_PER_SEC * donor_comp * recip_comp * dt)
-                                        if random.random() < hgt_prob:
-                                            other.phage_resistant = True
-                                            other.metabolic_burden_factor = 1.0 + HGT_METABOLIC_BURDEN
-                                if b.species == other.species:
-                                    # Intraspecies cooperation: share food slowly to help starving kin
-                                    if b.food_level > b.food_capacity * sp.share_thresh:
-                                        diff = b.food_level - other.food_level
-                                        if diff > 0:
-                                            # Mathematical Rationale: Intraspecies sharing ensures that the recipient's food level
-                                            # never exceeds its defined biological food capacity.
-                                            transfer_amount = diff * dt
-                                            max_transfer = other.food_capacity - other.food_level
-                                            actual_transfer = min(transfer_amount, max_transfer)
-                                            if actual_transfer > 0:
-                                                b.food_level -= actual_transfer
-                                                other.food_level += actual_transfer
-                                else:
-                                    # Interspecies competition
-                                    # Type VI Secretion System (T6SS) Contact Dueling:
-                                    # Spring-loaded contact weapon delivering effector toxins directly into neighbor.
-                                    # Base damage scales with T6SS activity expression and physical area. see DOCUMENTATION.md §4.12 (Competition, Bacteriocins, and T6SS).
-                                    immunity_defense = min(T6SS_MAX_IMMUNITY_DEFENSE, (other.species.immunity_factor * other.size) / (b.size + T6SS_IMMUNITY_SIZE_EPSILON_UM))
-                                    actual_dmg = b_size_sq_dmg * (1.0 - immunity_defense)
-                                    # M4: dormant persisters tolerate contact-dependent toxin delivery (see DOCUMENTATION.md §4.17 (Phenotypic Switching)).
-                                    if other.is_persister:
-                                        actual_dmg *= PERSISTER_RESISTANCE_FACTOR
-                                    other.food_level -= actual_dmg
-
-                                    # Phagocytosis (Engulfment): if much larger, instantly consume
-                                    # The named size-ratio threshold gives roughly an eightfold volume advantage.
-                                    if b.food_level < b.food_capacity * sp.predation_thresh:
-                                        if b.size > other.size * PHAGOCYTOSIS_SIZE_RATIO_THRESHOLD:
-                                            # Predation equation: digestible gain = cytosolic nutrient + labile dry necromass.
-                                            prey_volume_um3 = other.base_size ** 3
-                                            prey_necromass_pg = prey_volume_um3 * CELL_WET_MASS_PG_PER_UM3 * CELL_DRY_MASS_FRACTION * LABILE_NECROMASS_FRACTION
-                                            digestible_gain = max(0.0, other.food_level) * CYTOSOL_RECOVERY_FRACTION + prey_necromass_pg
-                                            b.food_level = min(b.food_capacity, b.food_level + digestible_gain)
-                                            other.food_level = CONSUMED_PREY_SENTINEL_FOOD_LEVEL
+        summary = self.physics.process(self.species, dt)
+        self._last_interaction_summary = summary
+        return summary
 
     def _sample_substrate(self):
         """Draw a substrate class for one nutrient drop from the active diet profile.
@@ -1222,19 +1176,8 @@ class Simulation:
         for node in self.food_nodes:
             food_hash.insert(node)
         
-        # --- Spatial Hash for Bacterial Interactions ---
-        CELL_SIZE = BACTERIA_INTERACTION_HASH_CELL_SIZE_UM
-        spatial_hash = {}
-        for sp in self.species:
-            for b in sp.members:
-                cx = int(b.x // CELL_SIZE)
-                cy = int(b.y // CELL_SIZE)
-                if (cx, cy) not in spatial_hash:
-                    spatial_hash[(cx, cy)] = []
-                spatial_hash[(cx, cy)].append(b)
-
         # Process Inter/Intra species interactions
-        self._process_interactions(spatial_hash, CELL_SIZE, dt)
+        interaction_summary = self._process_interactions(dt=dt)
 
         # Tick ECM molecular diffusion mechanics
         self.ecm.tick(dt)
@@ -1291,6 +1234,10 @@ class Simulation:
         step_deaths = dsum + sum_forced
         overall_births = (self.stats['overall_births'][-1] if self.stats['overall_births'] else 0) + step_births
         overall_deaths = (self.stats['overall_deaths'][-1] if self.stats['overall_deaths'] else 0) + step_deaths
+        # Contact-event totals add this ordered pass's transition counts to the previous tick's
+        # cumulative values; see DOCUMENTATION.md §10.2.
+        overall_t6ss_deaths = (self.stats['overall_t6ss_deaths'][-1] if self.stats['overall_t6ss_deaths'] else 0) + interaction_summary.t6ss_deaths
+        overall_hgt_transfers = (self.stats['overall_hgt_transfers'][-1] if self.stats['overall_hgt_transfers'] else 0) + interaction_summary.hgt_transfers
         self.stats['time'].append(self.step_idx)
         self.stats['elapsed_seconds'].append(elapsed_seconds)
         self.stats['dt_seconds'].append(dt)
@@ -1300,6 +1247,10 @@ class Simulation:
         self.stats['deaths'].append(step_deaths)
         self.stats['overall_births'].append(overall_births)
         self.stats['overall_deaths'].append(overall_deaths)
+        self.stats['t6ss_deaths'].append(interaction_summary.t6ss_deaths)
+        self.stats['hgt_transfers'].append(interaction_summary.hgt_transfers)
+        self.stats['overall_t6ss_deaths'].append(overall_t6ss_deaths)
+        self.stats['overall_hgt_transfers'].append(overall_hgt_transfers)
         # Phase I spatial heterogeneity: classify each live cell by radial fraction so the Stats tab
         # and export can report lumen vs mucus occupancy. mucus = outer annulus (frac >= threshold).
         cx_z, cy_z = self.petri_center
@@ -1438,7 +1389,7 @@ class Simulation:
                 writer.writerow([])
             # Write header for global stats
             writer.writerow(['--- Global Stats ---'])
-            writer.writerow(['time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds', 'tickrate_hz', 'overall_births', 'overall_deaths', 'lumen', 'mucus', 'consumed_calorie', 'consumed_glycan', 'consumed_mdcf'])
+            writer.writerow(['time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds', 'tickrate_hz', 'overall_births', 'overall_deaths', 't6ss_deaths', 'hgt_transfers', 'overall_t6ss_deaths', 'overall_hgt_transfers', 'lumen', 'mucus', 'consumed_calorie', 'consumed_glycan', 'consumed_mdcf'])
             # Zone and substrate-consumption columns may be absent on stats built by legacy imports
             # or manual construction; fall back to blank so the row width stays consistent without
             # raising IndexError.
@@ -1447,6 +1398,10 @@ class Simulation:
             cal_series = self.stats.get('consumed_calorie', [])
             gly_series = self.stats.get('consumed_glycan', [])
             mdcf_series = self.stats.get('consumed_mdcf', [])
+            t6ss_deaths_series = self.stats.get('t6ss_deaths', [])
+            hgt_transfers_series = self.stats.get('hgt_transfers', [])
+            overall_t6ss_deaths_series = self.stats.get('overall_t6ss_deaths', [])
+            overall_hgt_transfers_series = self.stats.get('overall_hgt_transfers', [])
             for i in range(len(self.stats['time'])):
                 writer.writerow([
                     self.stats['time'][i],
@@ -1458,6 +1413,10 @@ class Simulation:
                     self.stats['tickrate_hz'][i],
                     self.stats['overall_births'][i],
                     self.stats['overall_deaths'][i],
+                    t6ss_deaths_series[i] if i < len(t6ss_deaths_series) else 0,
+                    hgt_transfers_series[i] if i < len(hgt_transfers_series) else 0,
+                    overall_t6ss_deaths_series[i] if i < len(overall_t6ss_deaths_series) else 0,
+                    overall_hgt_transfers_series[i] if i < len(overall_hgt_transfers_series) else 0,
                     lumen_series[i] if i < len(lumen_series) else '',
                     mucus_series[i] if i < len(mucus_series) else '',
                     cal_series[i] if i < len(cal_series) else '',
@@ -1527,13 +1486,19 @@ class Simulation:
         header_index = {name: idx for idx, name in enumerate(stats_header)}
         cumulative_births = 0
         cumulative_deaths = 0
+        cumulative_t6ss_deaths = 0
+        cumulative_hgt_transfers = 0
         for row in lines[stats_start:stats_end]:
             if len(row) >= 4:
                 step_time = int(row[header_index.get('time', 0)])
                 births = int(row[header_index.get('births', 2)])
                 deaths = int(row[header_index.get('deaths', 3)])
+                t6ss_deaths = int(row[header_index['t6ss_deaths']]) if 't6ss_deaths' in header_index and row[header_index['t6ss_deaths']] else 0
+                hgt_transfers = int(row[header_index['hgt_transfers']]) if 'hgt_transfers' in header_index and row[header_index['hgt_transfers']] else 0
                 cumulative_births += births
                 cumulative_deaths += deaths
+                cumulative_t6ss_deaths += t6ss_deaths
+                cumulative_hgt_transfers += hgt_transfers
                 elapsed = float(row[header_index['elapsed_seconds']]) if 'elapsed_seconds' in header_index and row[header_index['elapsed_seconds']] else (step_time + 1) / FPS
                 dt_value = float(row[header_index['dt_seconds']]) if 'dt_seconds' in header_index and row[header_index['dt_seconds']] else 1.0 / FPS
                 tickrate = float(row[header_index['tickrate_hz']]) if 'tickrate_hz' in header_index and row[header_index['tickrate_hz']] else FPS
@@ -1546,6 +1511,10 @@ class Simulation:
                 self.stats['tickrate_hz'].append(tickrate)
                 self.stats['overall_births'].append(int(row[header_index['overall_births']]) if 'overall_births' in header_index and row[header_index['overall_births']] else cumulative_births)
                 self.stats['overall_deaths'].append(int(row[header_index['overall_deaths']]) if 'overall_deaths' in header_index and row[header_index['overall_deaths']] else cumulative_deaths)
+                self.stats['t6ss_deaths'].append(t6ss_deaths)
+                self.stats['hgt_transfers'].append(hgt_transfers)
+                self.stats['overall_t6ss_deaths'].append(int(row[header_index['overall_t6ss_deaths']]) if 'overall_t6ss_deaths' in header_index and row[header_index['overall_t6ss_deaths']] else cumulative_t6ss_deaths)
+                self.stats['overall_hgt_transfers'].append(int(row[header_index['overall_hgt_transfers']]) if 'overall_hgt_transfers' in header_index and row[header_index['overall_hgt_transfers']] else cumulative_hgt_transfers)
         # Parse per-species stats
         species_start = stats_end + 2
         self.species_step_stats = []

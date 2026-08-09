@@ -1191,7 +1191,7 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 The Global Stats header is:
 
 ```csv
-time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths,lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf
+time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths,t6ss_deaths,hgt_transfers,overall_t6ss_deaths,overall_hgt_transfers,lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf
 ```
 
 Column meanings:
@@ -1205,6 +1205,10 @@ Column meanings:
 * `tickrate_hz`: instantaneous update frequency for this row.
 * `overall_births`: cumulative global births through this row.
 * `overall_deaths`: cumulative global deaths through this row.
+* `t6ss_deaths`: T6SS positive-to-nonpositive food transitions during this update (see Section 4.12).
+* `hgt_transfers`: false-to-true phage-resistance acquisitions through HGT during this update (see Section 4.18).
+* `overall_t6ss_deaths`: cumulative `t6ss_deaths` through this row.
+* `overall_hgt_transfers`: cumulative `hgt_transfers` through this row.
 * `lumen`: live bacteria in the central lumen (radial fraction below the mucus threshold) after that update (see Section 4.20).
 * `mucus`: live bacteria in the outer mucus annulus (radial fraction at or above the mucus threshold) after that update. `lumen` and `mucus` always sum to `total`. These columns are blank for stats produced by legacy imports that predate zone tracking.
 * `consumed_calorie`: cumulative generic-calorie substrate mass (pg) ingested by the whole community through this row (see Section 4.22).
@@ -1237,7 +1241,8 @@ $$
 \Delta t = \frac{1}{\text{FPS}} \quad t_{\text{elapsed}} = \frac{\text{time}+1}{\text{FPS}} \quad f_{\text{tick}}=\text{FPS}
 $$
 
-and reconstructs cumulative global births and deaths by running sum.
+and reconstructs cumulative global births and deaths by running sum. Legacy files that predate all
+four T6SS/HGT event columns import zeros for all four series.
 
 Per-species rows include species index, name, step, population, step births, step deaths, cumulative births, and cumulative deaths.
 
@@ -1258,14 +1263,15 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 * `bacteria/app.py`: Pygame application loop, rendering, tabs, UI state, and high-level simulation orchestration.
 * `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`.
 * `bacteria/ecm.py`: Public sparse-grid ECM API and Python/native backend orchestration for quorum-sensing molecules, bacteriocins, acetate, and phage.
-* `bacteria/src/ecm_kernel.cpp` and `bacteria/src/ecm_kernel.h`: Optional C++17 ECM computation and pybind11 interface.
+* `bacteria/physics.py`: Reusable structure-of-arrays buffers, the reference contact implementation, and Python/native physics backend orchestration.
+* `bacteria/src/ecm_kernel.cpp`, `bacteria/src/ecm_kernel.h`, `bacteria/src/physics_kernel.cpp`, and `bacteria/src/physics_kernel.h`: Optional C++17 ECM and contact-physics implementation compiled into the unified top-level pybind11 module `bacteria_c_kernel`.
 * `bacteria/data.py`: CSV/JSON serialization for `species_data.csv` and `env_config.json`.
 * `bacteria/ui_components.py`: Reusable buttons, sliders, and editable cells.
 * `bacteria/constants.py`: UI constants plus documented biological and numerical model constants.
 * `bacteria/__main__.py`: CLI entry point for `python -m bacteria`.
-* `setup.py` and `pyproject.toml`: Native-extension build configuration and Python package metadata.
-* `bacteria/test_kernel.py`: Native/Python parity, backend, ABI, boundary, allocation, and opt-in performance checks.
-* `.github/workflows/kernel.yml`: Cross-platform OpenMP and serial kernel testing plus Linux Valgrind stress checks.
+* `setup.py` and `pyproject.toml`: Unified ECM/physics native-extension build configuration and Python package metadata.
+* `bacteria/test_kernel.py` and `bacteria/test_physics_kernel.py`: ECM and contact-kernel parity, backend, ABI, boundary, allocation, scale, stress, and opt-in performance checks.
+* `.github/workflows/kernel.yml`: ECM and physics suites on OpenMP Windows/Linux/macOS and serial Linux builds, required physics scale parity, and serial Linux Valgrind stress checks.
 
 ## 10. Performance Notes
 
@@ -1277,7 +1283,7 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 
 ### 10.1 Hybrid C++ Computational Kernel
 
-The ECM can optionally run diffusion and decay through the top-level pybind11 extension `bacteria_c_kernel`, built from `bacteria/src/ecm_kernel.cpp` and `bacteria/src/ecm_kernel.h`. This is an acceleration backend, not a separate model: `ECM(cell_size=..., backend='auto')` retains the original public layer dictionaries and the `add`, `sample`, and `tick` methods. After a native update, each public dictionary is cleared and updated in place so callers that retain a reference continue to observe the same object.
+The ECM can optionally run diffusion and decay through the top-level pybind11 extension `bacteria_c_kernel`. The unified extension is compiled from `bacteria/src/ecm_kernel.cpp` and `bacteria/src/physics_kernel.cpp`; the existing `process_layers` and `openmp_enabled` APIs remain available. This is an acceleration backend, not a separate model: `ECM(cell_size=..., backend='auto')` retains the original public layer dictionaries and the `add`, `sample`, and `tick` methods. After a native update, each public dictionary is cleared and updated in place so callers that retain a reference continue to observe the same object.
 
 Backend selection has three modes:
 
@@ -1316,6 +1322,186 @@ The root `pyproject.toml` and `setup.py` support Python `>=3.9,<3.14`, NumPy/pyb
 Kernel QA in `bacteria/test_kernel.py` uses `unittest`. Its parity fixture runs 100 ticks and, after every tick, compares all four layers by exact key equality and an absolute value tolerance of `1e-5`. Focused tests cover backend behavior, ABI validation, clamping, pruning, coordinate overflow, and allocation behavior. The performance benchmark is opt-in through `BACSANDBOX_RUN_BENCHMARK=1`; it reports medians for a bounded fixture and is not a fixed performance guarantee. The kernel workflow exercises OpenMP builds on Windows, Linux, and macOS, a Linux serial build, and Linux Valgrind stress checks for definite and indirect losses.
 
 In one local Windows environment using Python 3.12, MSVC, and OpenMP, 20 ordinary tests passed. The opt-in bounded-fixture benchmark reported `C++ Speedup Factor: 1.72x (Python median: 0.052420s; C++ median: 0.030449s)`. This is an environment-specific observation, not a promised speedup on other workloads, compilers, or machines.
+
+### 10.2 Vectorized Physics and Spatial Hash Kernel
+
+The unified optional `bacteria_c_kernel` module also exposes the top-level `process_interactions`
+binding for contact physics. The extension continues to expose the Phase A `process_layers` and
+`openmp_enabled` APIs, so a current build accelerates both ECM work (Section 10.1) and contact-pair
+processing without creating a second native module.
+
+**Simulation and backend contract.** `Simulation` accepts the backward-compatible
+`physics_backend='auto'|'python'|'cpp'` setting. `auto` imports lazily and falls back only when the
+module itself is absent or when an installed Phase A-only binary lacks `process_interactions`.
+`python` never imports the native module, while `cpp` requires the Phase B symbol. Other import
+failures and all native runtime or validation errors propagate; they do not silently switch the
+model to Python. The orchestrator reports `backend_used` after successful processing and exposes
+`native_available` as `None` before a native load is attempted, then as the result of that attempt.
+
+`_process_interactions` is a deterministic two-phase contract. First, Python performs acetate
+secretion and uptake (Section 4.15) plus bacteriocin ECM emission and exposure in stable species and
+member order. The selected contact backend then performs HGT (Section 4.18), same-species nutrient
+sharing, T6SS, and phagocytosis (Section 4.12). This staged contract preserves Python/native parity
+for the contact phase, but it intentionally makes no claim of full-tick trajectory identity with
+the historical implementation that interleaved all of these operations.
+
+**Flat buffers and ordering.** Flattening visits `Simulation.species` in list order and then each
+`sp.members` list in order. `species_id` is the zero-based index in the species list. Reusable
+`PhysicsBuffers` storage grows geometrically, and only the active `(N,)` and `(S,)` slices cross the
+binding. Every array is one-dimensional and C-contiguous; no `Bacterium` pointer crosses the
+Python/C++ boundary. The `event_flags` active slice is reset on every flatten so inactive capacity
+tails cannot leak events into a later frame.
+
+Agent buffers:
+
+| Buffer | Dtype | Shape | Source and ownership |
+|---|---|---|---|
+| `x` | `float64` | `(N,)` | `b.x`; read-only during contact processing. |
+| `y` | `float64` | `(N,)` | `b.y`; read-only during contact processing. |
+| `interaction_radius` | `float64` | `(N,)` | `b.size`; read-only effective contact radius. |
+| `base_radius` | `float64` | `(N,)` | `b.base_size`; read-only reference radius. |
+| `food_level` | `float64` | `(N,)` | Mutable in place for sharing, T6SS, and predation. |
+| `food_capacity` | `float64` | `(N,)` | Read-only storage capacity. |
+| `metabolic_burden_factor` | `float64` | `(N,)` | Mutable in place after successful HGT. |
+| `species_id` | `int32` | `(N,)` | Read-only zero-based species-list index. |
+| `is_persister` | `uint8` | `(N,)` | Read-only binary status. |
+| `phage_resistant` | `uint8` | `(N,)` | Mutable binary HGT donor/recipient status. |
+| `event_flags` | `uint8` | `(N,)` | Mutable per-tick event bit mask, reset before dispatch. |
+
+Species buffers:
+
+| Buffer | Dtype | Shape | Ownership |
+|---|---|---|---|
+| `t6ss_activity` | `float64` | `(S,)` | Read-only. |
+| `immunity_factor` | `float64` | `(S,)` | Read-only. |
+| `hgt_competence` | `float64` | `(S,)` | Read-only. |
+| `share_threshold` | `float64` | `(S,)` | Read-only. |
+| `predation_threshold` | `float64` | `(S,)` | Read-only. |
+
+**Binding, validation, and ownership.** The exact binding order is shown below. The arrays are
+followed by Python-supplied elapsed time and every model scalar, and `random_draw` is last:
+
+```text
+process_interactions(
+    x, y, interaction_radius, base_radius, food_level, food_capacity,
+    metabolic_burden_factor, species_id, is_persister, phage_resistant,
+    event_flags,
+    t6ss_activity, immunity_factor, hgt_competence, share_threshold,
+    predation_threshold,
+    dt, hash_cell_size, axis_cutoff, contact_margin,
+    hgt_transfer_rate, hgt_metabolic_burden,
+    t6ss_damage_scaling, t6ss_max_immunity_defense,
+    t6ss_immunity_size_epsilon, persister_resistance_factor,
+    phagocytosis_size_ratio, cell_wet_mass, cell_dry_mass_fraction,
+    labile_necromass_fraction, cytosol_recovery_fraction,
+    consumed_prey_sentinel, random_draw)
+  -> (contact_pairs, t6ss_hits, t6ss_deaths, hgt_transfers,
+      share_events, predation_events)
+```
+
+`dt` is real elapsed time in seconds. All other scalar values originate in
+`bacteria/constants.py` through Python's `ContactParameters`: hash-cell size, axis cutoff and contact
+margin, HGT rate and burden, T6SS scaling/immunity/epsilon/persister factors, phagocytosis ratio,
+wet/dry/labile/cytosol recovery factors, and the consumed-prey sentinel. C++ duplicates none of
+these model constants.
+
+The NumPy array arguments use `noconvert`. With the GIL held, the binding enforces exact dtypes,
+one-dimensional shapes, C contiguity, matching agent count `N` and species count `S`, valid species
+IDs, binary status bytes, defined event bits, finite values and allowed ranges, writable mutable
+arrays, and positive hash-cell size and T6SS size epsilon. Processing then uses zero-copy raw views
+over the NumPy storage. Before serial mutation, the binding snapshots all four mutable arrays:
+`food_level`, `metabolic_burden_factor`, `phage_resistant`, and `event_flags`. If serial resolution
+or the Python RNG callback fails, those snapshots are restored transactionally before the exception
+propagates. Python writes object-backed fields back to the `Bacterium` instances only after native
+processing and six-integer summary validation both succeed.
+
+**Sparse grid and deterministic discovery.** The flat agent/species interface, CSR-like ordering,
+staged OpenMP discovery, and ordered six-counter event contract are original BacSandbox
+implementation designs. Coordinates are assigned to signed cells by mathematical floor, not
+truncation.<sup>[40](#ref-40)</sup>
+
+$$
+c_x = \left\lfloor \frac{x}{h} \right\rfloor
+\qquad
+c_y = \left\lfloor \frac{y}{h} \right\rfloor
+$$
+
+Members are stably sorted by `(cell_x, cell_y, original_index)`. Unique sorted cell keys, offsets,
+and member indices form a CSR-like sparse grid, so no dense world-sized allocation is required.
+Candidate discovery preserves flattened source order, scans neighbor `nx` in the outer loop and
+`ny` in the inner loop, and visits each bucket in original member order.
+
+The existing Section 4.12 contact model first applies inclusive axis gates and then a strict disk
+test; the native path deliberately preserves the Python criterion rather than replacing it with a
+no-margin or inclusive-tangency test.<sup>[35](#ref-35)</sup>
+
+$$
+\lvert \Delta x \rvert \le 15\thinspace\mu\mathrm{m}
+\qquad
+\lvert \Delta y \rvert \le 15\thinspace\mu\mathrm{m}
+$$
+
+$$
+(\Delta x)^2 + (\Delta y)^2
+< \left(r_i + r_j + 2\thinspace\mu\mathrm{m}\right)^2
+$$
+
+**Parallel discovery and serial resolution.** Contact discovery uses two OpenMP
+`schedule(static)` passes over sources. The first writes one count per source; a serial prefix sum
+and pair allocation then assign disjoint output slices; the second fills each source's slice. No
+Python API call or dynamic allocation occurs inside either OpenMP pass, and each worker writes only
+its own count or preallocated slice. The GIL is released for this discovery work.
+
+State modification is intentionally not parallel. With the GIL held, the serial resolver traverses
+the discovered ordered pairs, rechecks mutable liveness, and requests a Python random draw only for
+an HGT-eligible pair. Immediate ordered mutations preserve same-tick HGT donor cascades,
+capacity-bounded sharing, T6SS lethal transitions, and predation consumption ordering.
+
+**Events and serialized statistics.** The six returned non-negative integer counters have these
+meanings:
+
+| Counter | Meaning |
+|---|---|
+| `contact_pairs` | Ordered pairs still live when serial resolution reaches them. |
+| `t6ss_hits` | Strictly positive T6SS doses applied to live targets. |
+| `t6ss_deaths` | T6SS transitions from positive to nonpositive target food. |
+| `hgt_transfers` | False-to-true phage-resistance acquisitions. |
+| `share_events` | Successful capacity-bounded same-species transfers. |
+| `predation_events` | Successful size- and hunger-gated prey consumptions. |
+
+The Global Stats CSV section (Section 7) serializes per-update `t6ss_deaths` and `hgt_transfers`
+plus cumulative `overall_t6ss_deaths` and `overall_hgt_transfers`. Legacy imports that lack these
+fields initialize them to zero.
+
+**QA, scale fixture, and benchmark.** `bacteria/test_physics_kernel.py` covers a medium 50-tick
+per-tick Python/native parity sequence with grow/shrink/regrow transitions; direct malformed-ABI
+calls; signed and overflow cell coordinates; transactional callback failure; buffer-tail and event
+isolation; retained Python allocation; native stress; the required scale fixture; and an opt-in
+benchmark. The kernel workflow runs the physics suite with OpenMP on Windows, Linux, and macOS and
+with a serial extension on Linux. It also runs the 1,000-agent/500-tick scale test and serial Linux
+Valgrind checks that fail on definite or indirect losses. Valgrind was not run in the local Windows
+environment.
+
+The required scale test uses a fixed seed and exactly five labels: *Bacteroides thetaiotaomicron*
+VPI-5482, *Escherichia coli* K-12, *Faecalibacterium prausnitzii* A2-165,
+*Bifidobacterium longum* NCC 2705, and *Akkermansia muciniphila* MucT. Each label has 200 agents,
+for 1,000 agents over 500 contact ticks. The traits are explicitly synthetic test inputs, not
+empirical species-data rows. Movement, metabolism, and environmental stochasticity are disabled,
+and deterministic replacement turnover isolates real contact dispatch.
+
+One fresh local scale run ended with populations `[200, 200, 200, 200, 200]`, births and deaths
+`[50, 50, 50, 50, 50]` per species, 250 T6SS lethal transitions, and 463 HGT transfers. Measured
+contact time was `9.648415s` for Python and `0.908488s` for C++, with `11.689403s` total harness
+time. This is a synthetic test fixture result, not a biological prediction or a full-`Simulation`
+benchmark.
+
+The fresh formal benchmark uses a contact-only 1,000-agent mixed dense/sparse fixture for eight
+ticks, with warmups, parity checks before timing, and three measured repeats. It reported
+`Physics Kernel Speedup Factor: 17.481x (Python median: 0.206799s; C++ median: 0.011830s)` in one
+local environment. This observation is not a performance guarantee and excludes movement,
+metabolism, ECM, and environment work. The final local ordinary combined suite passed in both
+forced-serial and required-OpenMP builds: 147 tests were discovered, 144 passed, and the three
+opt-in cases were skipped.
 
 ## Appendix A: Scientific References
 
@@ -1393,7 +1579,7 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-34"></a>**[34]** **Own (BacSandbox model).** Necromass recovery fractions (cytosol/dry/labile) and predation digestibility, §4.8.
 
-<a id="ref-35"></a>**[35]** **Own (BacSandbox model).** Bacteriocin and T6SS damage/immunity formulations and constants, §4.12.
+<a id="ref-35"></a>**[35]** **Own (BacSandbox model).** Bacteriocin, contact-geometry, nutrient-sharing, T6SS damage/immunity, and phagocytosis formulations and constants, §4.12.
 
 <a id="ref-36"></a>**[36]** **Own (BacSandbox model).** Age-dependent maintenance factor $A(t) = 1 + t/(180 \cdot L)$, §4.11.
 
@@ -1402,3 +1588,5 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-38"></a>**[38]** **Own (BacSandbox model).** Initial-inoculum spawning policy (lumen-bias, clustered microcolonies) and elastic boundary reflection, §4.6/§4.23.
 
 <a id="ref-39"></a>**[39]** **Own (BacSandbox model).** Flat sparse-buffer ABI, lazy backend orchestration, and layer-parallel dispatch, §10.1.
+
+<a id="ref-40"></a>**[40]** **Own (BacSandbox model).** Flat agent/species array interface, CSR ordering, staged OpenMP design, and six-counter event contract, §10.2.

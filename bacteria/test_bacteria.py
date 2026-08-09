@@ -3,7 +3,9 @@ import unittest
 import sys
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import numpy as np
 
 if __package__ is None and not hasattr(sys, 'frozen'):
     path = os.path.realpath(os.path.abspath(__file__))
@@ -55,6 +57,11 @@ from bacteria import (
     SpeciesDataManager,
 )
 from bacteria.constants import (
+    BACTERIA_CONTACT_MARGIN_UM,
+    BACTERIA_INTERACTION_AXIS_CUTOFF_UM,
+    BACTERIA_INTERACTION_HASH_CELL_SIZE_UM,
+    CONSUMED_PREY_SENTINEL_FOOD_LEVEL,
+    CYTOSOL_RECOVERY_FRACTION,
     SUBSTRATE_GENERIC_CALORIE,
     SUBSTRATE_COMPLEX_GLYCAN,
     SUBSTRATE_MDCF_PREBIOTIC,
@@ -79,8 +86,26 @@ from bacteria.core_sim import (
     generate_initial_positions,
     generate_cluster_nuclei,
 )
+from bacteria.physics import (
+    ContactParameters,
+    EVENT_T6SS_HIT,
+    EVENT_T6SS_LETHAL,
+    PhysicsBuffers,
+    PhysicsOrchestrator,
+    _build_spatial_hash,
+)
 import bacteria.core_sim as core_sim
 from bacteria.app import format_world_distance_um
+
+try:
+    import bacteria_c_kernel
+except ImportError:
+    bacteria_c_kernel = None
+
+NATIVE_PHYSICS_AVAILABLE = (
+    bacteria_c_kernel is not None
+    and hasattr(bacteria_c_kernel, 'process_interactions')
+)
 
 TEST_DT_SEC = 1.0 / FPS
 
@@ -335,6 +360,10 @@ class TestBacteriumMath(unittest.TestCase):
         sim.stats['tickrate_hz'].append(2.0)
         sim.stats['overall_births'].append(2)
         sim.stats['overall_deaths'].append(1)
+        sim.stats['t6ss_deaths'].append(1)
+        sim.stats['hgt_transfers'].append(3)
+        sim.stats['overall_t6ss_deaths'].append(1)
+        sim.stats['overall_hgt_transfers'].append(3)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, 'simulation_stats.csv')
@@ -344,12 +373,15 @@ class TestBacteriumMath(unittest.TestCase):
                 exported = f.read()
 
             self.assertIn('time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths', exported)
+            self.assertIn('t6ss_deaths,hgt_transfers,overall_t6ss_deaths,overall_hgt_transfers', exported)
             # Phase I diet analytics: zone and per-substrate consumption columns are part of the schema.
             self.assertIn('lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf', exported)
             imported = Simulation([], {'ph': NEUTRAL_PH, 'o2': ATMOSPHERIC_O2_FRACTION}, 100)
             imported.import_stats(path)
             self.assertEqual(imported.stats['overall_births'], [2])
             self.assertAlmostEqual(imported.stats['tickrate_hz'][0], 2.0)
+            self.assertEqual(imported.stats['t6ss_deaths'], [1])
+            self.assertEqual(imported.stats['overall_hgt_transfers'], [3])
 
     def test_import_legacy_global_stats_infers_timing_fields(self):
         legacy_csv = "\n".join([
@@ -369,6 +401,10 @@ class TestBacteriumMath(unittest.TestCase):
 
         self.assertEqual(sim.stats['overall_births'], [2, 3])
         self.assertEqual(sim.stats['overall_deaths'], [1, 1])
+        self.assertEqual(sim.stats['t6ss_deaths'], [0, 0])
+        self.assertEqual(sim.stats['hgt_transfers'], [0, 0])
+        self.assertEqual(sim.stats['overall_t6ss_deaths'], [0, 0])
+        self.assertEqual(sim.stats['overall_hgt_transfers'], [0, 0])
         self.assertAlmostEqual(sim.stats['elapsed_seconds'][1], 2.0 / FPS)
         self.assertEqual(sim.stats['tickrate_hz'][0], FPS)
 
@@ -1411,6 +1447,689 @@ class TestInitialSpawning(unittest.TestCase):
         self.assertEqual(len(sp.members), 25)
         cx, cy = sim.petri_center
         self.assertTrue(self._inside([(b.x, b.y) for b in sp.members], (cx, cy), sim.petri_radius))
+
+
+class TestPhysicsContactBoundary(unittest.TestCase):
+    def _species(self, name, **kwargs):
+        return BacteriaSpecies(
+            name,
+            0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            NEUTRAL_PH,
+            (100, 150, 200),
+            food_capacity=10.0,
+            metabolic_rate=0.0,
+            consumption_speed=0.0,
+            bacteriocin_production=0.0,
+            t6ss_activity=kwargs.get('t6ss_activity', 0.0),
+            immunity_factor=kwargs.get('immunity_factor', 0.0),
+            share_thresh=kwargs.get('share_thresh', 1.0),
+            predation_thresh=kwargs.get('predation_thresh', 0.0),
+            base_size=kwargs.get('base_size', 1.0),
+            persister_switch=0.0,
+            phage_resistance=0.0,
+            hgt_competence=kwargs.get('hgt_competence', 0.0),
+        )
+
+    @staticmethod
+    def _cell(species, x, y, food, base_radius=1.0, interaction_radius=None):
+        with patch('bacteria.core_sim.random.gauss', return_value=1.0), \
+             patch('bacteria.core_sim.random.random', return_value=0.5):
+            bacterium = Bacterium(
+                species,
+                x,
+                y,
+                size=base_radius,
+                initial_food=food,
+            )
+        bacterium.size = base_radius if interaction_radius is None else interaction_radius
+        return bacterium
+
+    def test_buffers_are_contiguous_typed_reused_and_stably_flattened(self):
+        first_species = self._species('First')
+        second_species = self._species('Second')
+        first = self._cell(first_species, 1.0, 2.0, 5.0)
+        second = self._cell(first_species, 3.0, 4.0, 6.0)
+        third = self._cell(second_species, 5.0, 6.0, 7.0)
+        first_species.members = [first, second]
+        second_species.members = [third]
+        buffers = PhysicsBuffers()
+
+        frame = buffers.flatten([first_species, second_species])
+
+        self.assertEqual(frame.agent_objects, [first, second, third])
+        np.testing.assert_array_equal(
+            frame.agents.species_id,
+            np.asarray([0, 0, 1], dtype=np.int32),
+        )
+        for name in (
+            'x', 'y', 'interaction_radius', 'base_radius', 'food_level',
+            'food_capacity', 'metabolic_burden_factor',
+        ):
+            array = getattr(frame.agents, name)
+            self.assertEqual(array.dtype, np.float64)
+            self.assertTrue(array.flags.c_contiguous)
+        self.assertEqual(frame.agents.species_id.dtype, np.int32)
+        for name in ('is_persister', 'phage_resistant', 'event_flags'):
+            array = getattr(frame.agents, name)
+            self.assertEqual(array.dtype, np.uint8)
+            self.assertTrue(array.flags.c_contiguous)
+        for name in (
+            't6ss_activity', 'immunity_factor', 'hgt_competence',
+            'share_threshold', 'predation_threshold',
+        ):
+            array = getattr(frame.species, name)
+            self.assertEqual(array.dtype, np.float64)
+            self.assertTrue(array.flags.c_contiguous)
+
+        storage = frame.agents.x.base
+        second_frame = buffers.flatten([first_species, second_species])
+        self.assertIs(second_frame.agents.x.base, storage)
+        original_capacity = buffers.agent_capacity
+        first_species.members = [first] * (original_capacity + 1)
+        buffers.flatten([first_species])
+        self.assertGreater(buffers.agent_capacity, original_capacity)
+
+    def test_signed_floor_hash_and_negative_coordinate_contact(self):
+        x = np.asarray((-0.1, -20.0, -20.1, 0.0), dtype=np.float64)
+        y = np.zeros(4, dtype=np.float64)
+        spatial_hash = _build_spatial_hash(
+            x,
+            y,
+            BACTERIA_INTERACTION_HASH_CELL_SIZE_UM,
+        )
+        self.assertEqual(spatial_hash[(-1, 0)], [0, 1])
+        self.assertEqual(spatial_hash[(-2, 0)], [2])
+        self.assertEqual(spatial_hash[(0, 0)], [3])
+
+        attacker_species = self._species('Attacker', t6ss_activity=1.0)
+        target_species = self._species('Target')
+        attacker = self._cell(attacker_species, -20.1, 0.0, 10.0)
+        target = self._cell(target_species, -19.9, 0.0, 10.0)
+        attacker_species.members = [attacker]
+        target_species.members = [target]
+
+        PhysicsOrchestrator(backend='python').process(
+            [attacker_species, target_species],
+            1.0,
+        )
+
+        self.assertLess(target.food_level, 10.0)
+
+    def test_contact_margin_is_strict_at_exact_boundary(self):
+        attacker_species = self._species('Attacker', t6ss_activity=1.0)
+        target_species = self._species('Target')
+        attacker = self._cell(attacker_species, 0.0, 0.0, 10.0)
+        contact_distance = attacker.size + 1.0 + BACTERIA_CONTACT_MARGIN_UM
+
+        tangent_target = self._cell(target_species, contact_distance, 0.0, 10.0)
+        attacker_species.members = [attacker]
+        target_species.members = [tangent_target]
+        tangent_summary = PhysicsOrchestrator(backend='python').process(
+            [attacker_species, target_species],
+            1.0,
+        )
+        self.assertEqual(tangent_target.food_level, 10.0)
+        self.assertEqual(tangent_summary.contact_pairs, 0)
+
+        inside_target = self._cell(
+            target_species,
+            math.nextafter(contact_distance, 0.0),
+            0.0,
+            10.0,
+        )
+        target_species.members = [inside_target]
+        inside_summary = PhysicsOrchestrator(backend='python').process(
+            [attacker_species, target_species],
+            1.0,
+        )
+        self.assertLess(inside_target.food_level, 10.0)
+        self.assertEqual(inside_summary.contact_pairs, 2)
+
+    def test_axis_cutoff_is_inclusive_then_rejects_above_limit(self):
+        def run_at(distance):
+            attacker_species = self._species('Attacker', t6ss_activity=0.01)
+            target_species = self._species('Target')
+            attacker = self._cell(
+                attacker_species,
+                0.0,
+                0.0,
+                10.0,
+                interaction_radius=10.0,
+            )
+            target = self._cell(
+                target_species,
+                distance,
+                0.0,
+                10.0,
+                interaction_radius=10.0,
+            )
+            attacker_species.members = [attacker]
+            target_species.members = [target]
+            summary = PhysicsOrchestrator(backend='python').process(
+                [attacker_species, target_species],
+                1.0,
+            )
+            return target, summary
+
+        boundary_target, boundary_summary = run_at(
+            BACTERIA_INTERACTION_AXIS_CUTOFF_UM
+        )
+        outside_target, outside_summary = run_at(
+            math.nextafter(BACTERIA_INTERACTION_AXIS_CUTOFF_UM, math.inf)
+        )
+
+        self.assertLess(boundary_target.food_level, 10.0)
+        self.assertEqual(boundary_summary.contact_pairs, 2)
+        self.assertEqual(outside_target.food_level, 10.0)
+        self.assertEqual(outside_summary.contact_pairs, 0)
+
+    def test_hgt_draw_order_preserves_immediate_cascade(self):
+        species = self._species('HGT', hgt_competence=1.0)
+        donor = self._cell(species, 0.0, 0.0, 5.0)
+        intermediate = self._cell(species, 3.0, 0.0, 5.0)
+        final_recipient = self._cell(species, 6.0, 0.0, 5.0)
+        donor.phage_resistant = True
+        species.members = [donor, intermediate, final_recipient]
+        orchestrator = PhysicsOrchestrator(backend='python')
+
+        with patch(
+            'bacteria.physics.random.random',
+            side_effect=(0.0, 0.99),
+        ) as random_draw:
+            summary = orchestrator.process([species], 1.0)
+
+        self.assertEqual(random_draw.call_count, 2)
+        self.assertTrue(intermediate.phage_resistant)
+        self.assertFalse(final_recipient.phage_resistant)
+        self.assertEqual(summary.hgt_transfers, 1)
+        self.assertAlmostEqual(
+            intermediate.metabolic_burden_factor,
+            1.0 + HGT_METABOLIC_BURDEN,
+        )
+
+    def test_sharing_conserves_food_and_caps_recipient(self):
+        species = self._species('Kin', share_thresh=0.0)
+        recipient = self._cell(species, 0.0, 0.0, 9.9)
+        donor = self._cell(species, 0.5, 0.0, 10.0)
+        species.members = [recipient, donor]
+        total_before = recipient.food_level + donor.food_level
+
+        summary = PhysicsOrchestrator(backend='python').process([species], 2.0)
+
+        self.assertAlmostEqual(recipient.food_level, recipient.food_capacity)
+        self.assertAlmostEqual(recipient.food_level + donor.food_level, total_before)
+        self.assertEqual(summary.share_events, 1)
+
+    def test_repeated_t6ss_applies_immunity_and_persister_factor_once_per_hit(self):
+        attacker_species = self._species('Attackers', t6ss_activity=1.0)
+        target_species = self._species('Target', immunity_factor=0.5)
+        first_attacker = self._cell(attacker_species, 0.0, 0.0, 10.0)
+        second_attacker = self._cell(attacker_species, 0.5, 0.0, 10.0)
+        target = self._cell(target_species, 1.0, 0.0, 0.4)
+        target.is_persister = True
+        attacker_species.members = [first_attacker, second_attacker]
+        target_species.members = [target]
+        orchestrator = PhysicsOrchestrator(backend='python')
+
+        summary = orchestrator.process([attacker_species, target_species], 1.0)
+
+        # Area-scaled T6SS dose is attenuated by target immunity and persistence; see DOCUMENTATION.md §4.12.
+        immunity = min(
+            T6SS_MAX_IMMUNITY_DEFENSE,
+            (target_species.immunity_factor * target.size)
+            / (first_attacker.size + T6SS_IMMUNITY_SIZE_EPSILON_UM),
+        )
+        damage_per_hit = (
+            attacker_species.t6ss_activity
+            * first_attacker.size ** 2
+            * T6SS_DAMAGE_SCALING_FACTOR
+            * (1.0 - immunity)
+            * PERSISTER_RESISTANCE_FACTOR
+        )
+        self.assertAlmostEqual(target.food_level, 0.4 - 2.0 * damage_per_hit)
+        self.assertEqual(summary.t6ss_hits, 2)
+        self.assertEqual(summary.t6ss_deaths, 1)
+        target_flags = orchestrator.buffers._agent_arrays['event_flags'][2]
+        self.assertTrue(target_flags & EVENT_T6SS_HIT)
+        self.assertTrue(target_flags & EVENT_T6SS_LETHAL)
+
+    def test_predation_uses_post_t6ss_food_and_consumed_sentinel(self):
+        predator_species = self._species(
+            'Predator',
+            predation_thresh=1.0,
+            base_size=3.0,
+        )
+        prey_species = self._species('Prey')
+        predator = self._cell(
+            predator_species,
+            0.0,
+            0.0,
+            0.0,
+            base_radius=3.0,
+            interaction_radius=3.0,
+        )
+        prey = self._cell(prey_species, 1.0, 0.0, 10.0)
+        predator_species.members = [predator]
+        prey_species.members = [prey]
+
+        summary = PhysicsOrchestrator(backend='python').process(
+            [predator_species, prey_species],
+            1.0,
+        )
+
+        # Predation recovers cytosol plus labile dry biomass; see DOCUMENTATION.md §4.12.
+        expected_gain = (
+            10.0 * CYTOSOL_RECOVERY_FRACTION
+            + prey.base_size ** 3
+            * CELL_WET_MASS_PG_PER_UM3
+            * CELL_DRY_MASS_FRACTION
+            * LABILE_NECROMASS_FRACTION
+        )
+        self.assertAlmostEqual(predator.food_level, expected_gain)
+        self.assertEqual(prey.food_level, CONSUMED_PREY_SENTINEL_FOOD_LEVEL)
+        self.assertEqual(summary.predation_events, 1)
+
+    @unittest.skipUnless(NATIVE_PHYSICS_AVAILABLE, 'native physics kernel is not built')
+    def test_native_matches_python_hgt_cascade_and_rng_draw_count(self):
+        def run(backend):
+            species = self._species('HGT', hgt_competence=1.0)
+            donor = self._cell(species, 0.0, 0.0, 5.0)
+            intermediate = self._cell(species, 3.0, 0.0, 5.0)
+            final_recipient = self._cell(species, 6.0, 0.0, 5.0)
+            donor.phage_resistant = True
+            species.members = [donor, intermediate, final_recipient]
+            orchestrator = PhysicsOrchestrator(backend=backend)
+
+            with patch(
+                'bacteria.physics.random.random',
+                side_effect=(0.0, 0.99),
+            ) as random_draw:
+                summary = orchestrator.process([species], 1.0)
+
+            state = tuple(
+                (
+                    cell.food_level,
+                    cell.phage_resistant,
+                    cell.metabolic_burden_factor,
+                )
+                for cell in species.members
+            )
+            flags = orchestrator.buffers._agent_arrays['event_flags'][:3].copy()
+            return summary, state, flags, random_draw.call_count
+
+        expected = run('python')
+        actual = run('cpp')
+
+        self.assertEqual(actual[0], expected[0])
+        self.assertEqual(actual[1], expected[1])
+        np.testing.assert_array_equal(actual[2], expected[2])
+        self.assertEqual(expected[3], 2)
+        self.assertEqual(actual[3], 2)
+
+    @unittest.skipUnless(NATIVE_PHYSICS_AVAILABLE, 'native physics kernel is not built')
+    def test_native_matches_python_sharing_t6ss_and_predation_state(self):
+        def run(backend):
+            kin_species = self._species('Kin', share_thresh=0.0)
+            kin_species.members = [
+                self._cell(kin_species, -100.0, 0.0, 9.9),
+                self._cell(kin_species, -99.5, 0.0, 10.0),
+            ]
+
+            attacker_species = self._species('Attackers', t6ss_activity=1.0)
+            target_species = self._species('Target', immunity_factor=0.5)
+            attacker_species.members = [
+                self._cell(attacker_species, 0.0, 0.0, 10.0),
+                self._cell(attacker_species, 0.5, 0.0, 10.0),
+            ]
+            target = self._cell(target_species, 1.0, 0.0, 0.4)
+            target.is_persister = True
+            target_species.members = [target]
+
+            predator_species = self._species(
+                'Predator',
+                predation_thresh=1.0,
+                base_size=3.0,
+            )
+            prey_species = self._species('Prey')
+            predator_species.members = [
+                self._cell(
+                    predator_species,
+                    100.0,
+                    0.0,
+                    0.0,
+                    base_radius=3.0,
+                    interaction_radius=3.0,
+                ),
+            ]
+            prey_species.members = [
+                self._cell(prey_species, 101.0, 0.0, 10.0),
+            ]
+            species = [
+                kin_species,
+                attacker_species,
+                target_species,
+                predator_species,
+                prey_species,
+            ]
+            orchestrator = PhysicsOrchestrator(backend=backend)
+            summary = orchestrator.process(species, 1.0)
+            cells = [cell for current_species in species for cell in current_species.members]
+            food = np.asarray([cell.food_level for cell in cells], dtype=np.float64)
+            flags = orchestrator.buffers._agent_arrays['event_flags'][:len(cells)].copy()
+            return summary, food, flags
+
+        expected_summary, expected_food, expected_flags = run('python')
+        actual_summary, actual_food, actual_flags = run('cpp')
+
+        self.assertEqual(actual_summary, expected_summary)
+        np.testing.assert_allclose(actual_food, expected_food, rtol=0.0, atol=1.0e-12)
+        np.testing.assert_array_equal(actual_flags, expected_flags)
+
+    @staticmethod
+    def _valid_native_interaction_arguments():
+        parameters = ContactParameters()
+        return {
+            'x': np.asarray((0.0, 1.0), dtype=np.float64),
+            'y': np.asarray((0.0, 0.0), dtype=np.float64),
+            'interaction_radius': np.asarray((1.0, 1.0), dtype=np.float64),
+            'base_radius': np.asarray((1.0, 1.0), dtype=np.float64),
+            'food_level': np.asarray((5.0, 5.0), dtype=np.float64),
+            'food_capacity': np.asarray((10.0, 10.0), dtype=np.float64),
+            'metabolic_burden_factor': np.asarray((1.0, 1.0), dtype=np.float64),
+            'species_id': np.asarray((0, 0), dtype=np.int32),
+            'is_persister': np.asarray((0, 0), dtype=np.uint8),
+            'phage_resistant': np.asarray((1, 0), dtype=np.uint8),
+            'event_flags': np.asarray((0, 0), dtype=np.uint8),
+            't6ss_activity': np.asarray((0.0,), dtype=np.float64),
+            'immunity_factor': np.asarray((0.0,), dtype=np.float64),
+            'hgt_competence': np.asarray((1.0,), dtype=np.float64),
+            'share_threshold': np.asarray((1.0,), dtype=np.float64),
+            'predation_threshold': np.asarray((0.0,), dtype=np.float64),
+            'dt': 1.0,
+            'hash_cell_size': parameters.hash_cell_size,
+            'axis_cutoff': parameters.axis_cutoff,
+            'contact_margin': parameters.contact_margin,
+            'hgt_transfer_rate': parameters.hgt_transfer_rate,
+            'hgt_metabolic_burden': parameters.hgt_metabolic_burden,
+            't6ss_damage_scaling': parameters.t6ss_damage_scaling,
+            't6ss_max_immunity_defense': parameters.t6ss_max_immunity_defense,
+            't6ss_immunity_size_epsilon': parameters.t6ss_immunity_size_epsilon,
+            'persister_resistance_factor': parameters.persister_resistance_factor,
+            'phagocytosis_size_ratio': parameters.phagocytosis_size_ratio,
+            'cell_wet_mass': parameters.cell_wet_mass,
+            'cell_dry_mass_fraction': parameters.cell_dry_mass_fraction,
+            'labile_necromass_fraction': parameters.labile_necromass_fraction,
+            'cytosol_recovery_fraction': parameters.cytosol_recovery_fraction,
+            'consumed_prey_sentinel': parameters.consumed_prey_sentinel,
+            'random_draw': lambda: 0.5,
+        }
+
+    @unittest.skipUnless(NATIVE_PHYSICS_AVAILABLE, 'native physics kernel is not built')
+    def test_native_rejects_malformed_interaction_buffers(self):
+        invalid_cases = []
+
+        wrong_dtype = self._valid_native_interaction_arguments()
+        wrong_dtype['x'] = wrong_dtype['x'].astype(np.float32)
+        invalid_cases.append(('wrong dtype', wrong_dtype, TypeError, 'x.*invalid dtype'))
+
+        noncontiguous = self._valid_native_interaction_arguments()
+        noncontiguous['x'] = np.arange(4, dtype=np.float64)[::2]
+        invalid_cases.append(('noncontiguous', noncontiguous, ValueError, 'x.*C-contiguous'))
+
+        readonly = self._valid_native_interaction_arguments()
+        readonly['food_level'].setflags(write=False)
+        invalid_cases.append(('readonly', readonly, ValueError, 'food_level.*writable'))
+
+        wrong_length = self._valid_native_interaction_arguments()
+        wrong_length['y'] = wrong_length['y'][:1]
+        invalid_cases.append(('wrong length', wrong_length, ValueError, r'y.*\(N,\)'))
+
+        invalid_species = self._valid_native_interaction_arguments()
+        invalid_species['species_id'][1] = 1
+        invalid_cases.append(('species range', invalid_species, ValueError, 'species_id.*species arrays'))
+
+        invalid_status = self._valid_native_interaction_arguments()
+        invalid_status['is_persister'][0] = 2
+        invalid_cases.append(('status byte', invalid_status, ValueError, 'is_persister.*0 or 1'))
+
+        nonfinite = self._valid_native_interaction_arguments()
+        nonfinite['x'][0] = float('nan')
+        invalid_cases.append(('nonfinite', nonfinite, ValueError, 'x entries.*finite'))
+
+        invalid_scalar = self._valid_native_interaction_arguments()
+        invalid_scalar['hash_cell_size'] = 0.0
+        invalid_cases.append(('cell size', invalid_scalar, ValueError, 'hash_cell_size.*positive'))
+
+        for case_name, arguments, exception_type, message_pattern in invalid_cases:
+            with self.subTest(case=case_name):
+                with self.assertRaisesRegex(exception_type, message_pattern):
+                    bacteria_c_kernel.process_interactions(**arguments)
+
+    @unittest.skipUnless(NATIVE_PHYSICS_AVAILABLE, 'native physics kernel is not built')
+    def test_native_rejects_invalid_hgt_random_draw(self):
+        arguments = self._valid_native_interaction_arguments()
+        arguments['random_draw'] = lambda: float('nan')
+
+        with self.assertRaisesRegex(ValueError, r'random_draw.*\[0, 1\)'):
+            bacteria_c_kernel.process_interactions(**arguments)
+
+
+class TestPhysicsBackendDispatch(unittest.TestCase):
+    @staticmethod
+    def _fixture():
+        species = BacteriaSpecies(
+            'Backend', 0, 0.0, 0.0, 1.0, 1.0, 0.0, NEUTRAL_PH,
+            (100, 100, 100), metabolic_rate=0.0,
+            bacteriocin_production=0.0, hgt_competence=0.0,
+        )
+        bacterium = Bacterium(
+            species,
+            0.0,
+            0.0,
+            size=1.0,
+            initial_food=5.0,
+        )
+        bacterium.phage_resistant = False
+        bacterium.metabolic_burden_factor = 1.0
+        species.members = [bacterium]
+        return species, bacterium
+
+    def test_invalid_backend_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'auto.*python.*cpp'):
+            PhysicsOrchestrator(backend='invalid')
+
+    def test_auto_falls_back_for_absent_module_and_phase_a_symbol_only(self):
+        missing_module = ModuleNotFoundError(
+            "No module named 'bacteria_c_kernel'",
+            name='bacteria_c_kernel',
+        )
+        species, _ = self._fixture()
+        absent = PhysicsOrchestrator(backend='auto')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            side_effect=missing_module,
+        ):
+            absent.process([species], 1.0)
+        self.assertEqual(absent.backend_used, 'python')
+        self.assertFalse(absent.native_available)
+
+        phase_a_module = Mock(spec=['process_layers'])
+        phase_a_only = PhysicsOrchestrator(backend='auto')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            return_value=phase_a_module,
+        ):
+            phase_a_only.process([species], 1.0)
+        self.assertEqual(phase_a_only.backend_used, 'python')
+        self.assertFalse(phase_a_only.native_available)
+
+        strict = PhysicsOrchestrator(backend='cpp')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            return_value=phase_a_module,
+        ):
+            with self.assertRaisesRegex(ImportError, "no 'process_interactions' symbol"):
+                strict.process([species], 1.0)
+
+    def test_native_runtime_failure_propagates_without_write_back(self):
+        species, bacterium = self._fixture()
+        original_food = bacterium.food_level
+        native_module = Mock()
+
+        def fail_after_mutation(*args):
+            args[4][0] = -123.0
+            args[9][0] = 1
+            raise RuntimeError('native processing failed')
+
+        native_module.process_interactions.side_effect = fail_after_mutation
+        orchestrator = PhysicsOrchestrator(backend='auto')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            return_value=native_module,
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'native processing failed'):
+                orchestrator.process([species], 1.0)
+
+        self.assertEqual(bacterium.food_level, original_food)
+        self.assertFalse(bacterium.phage_resistant)
+        self.assertIsNone(orchestrator.backend_used)
+        self.assertTrue(orchestrator.native_available)
+
+    def test_auto_propagates_broken_native_dependency_import(self):
+        species, _ = self._fixture()
+        broken_import = ModuleNotFoundError(
+            "No module named 'native_dependency'",
+            name='native_dependency',
+        )
+        orchestrator = PhysicsOrchestrator(backend='auto')
+
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            side_effect=broken_import,
+        ):
+            with self.assertRaisesRegex(ModuleNotFoundError, 'native_dependency'):
+                orchestrator.process([species], 1.0)
+
+        self.assertFalse(orchestrator.native_available)
+        self.assertIsNone(orchestrator.backend_used)
+
+    def test_native_validation_failure_propagates_without_write_back(self):
+        species, bacterium = self._fixture()
+        native_module = Mock()
+
+        def return_invalid_summary(*args):
+            args[4][0] = -456.0
+            return (1,)
+
+        native_module.process_interactions.side_effect = return_invalid_summary
+        orchestrator = PhysicsOrchestrator(backend='auto')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            return_value=native_module,
+        ):
+            with self.assertRaisesRegex(TypeError, 'six-integer tuple'):
+                orchestrator.process([species], 1.0)
+
+        self.assertEqual(bacterium.food_level, 5.0)
+
+    def test_successful_native_dispatch_writes_back_only_owned_fields(self):
+        species, bacterium = self._fixture()
+        original_x = bacterium.x
+        native_module = Mock()
+
+        def mutate_owned_arrays(*args):
+            args[0][0] = 999.0
+            args[4][0] = 4.0
+            args[6][0] = 1.0 + HGT_METABOLIC_BURDEN
+            args[9][0] = 1
+            return (0, 0, 0, 1, 0, 0)
+
+        native_module.process_interactions.side_effect = mutate_owned_arrays
+        orchestrator = PhysicsOrchestrator(backend='cpp')
+        with patch(
+            'bacteria.physics.importlib.import_module',
+            return_value=native_module,
+        ):
+            summary = orchestrator.process([species], 1.0)
+
+        self.assertEqual(bacterium.x, original_x)
+        self.assertEqual(bacterium.food_level, 4.0)
+        self.assertTrue(bacterium.phage_resistant)
+        self.assertAlmostEqual(
+            bacterium.metabolic_burden_factor,
+            1.0 + HGT_METABOLIC_BURDEN,
+        )
+        self.assertEqual(summary.hgt_transfers, 1)
+        self.assertEqual(orchestrator.backend_used, 'cpp')
+
+
+class TestPhysicsInteractionStats(unittest.TestCase):
+    def test_update_accumulates_and_reset_clears_t6ss_and_hgt_stats(self):
+        attacker_species = BacteriaSpecies(
+            'Attacker', 0, 0.0, 0.0, 1.0, 1.0, 0.0, NEUTRAL_PH,
+            (200, 0, 0), metabolic_rate=0.0, bacteriocin_production=0.0,
+            t6ss_activity=1.0, immunity_factor=0.0, predation_thresh=0.0,
+            hgt_competence=1.0,
+        )
+        target_species = BacteriaSpecies(
+            'Target', 0, 0.0, 0.0, 1.0, 1.0, 0.0, NEUTRAL_PH,
+            (0, 0, 200), metabolic_rate=0.0, bacteriocin_production=0.0,
+            t6ss_activity=0.0, immunity_factor=0.0, predation_thresh=0.0,
+            hgt_competence=1.0,
+        )
+        attacker = Bacterium(
+            attacker_species,
+            0.0,
+            0.0,
+            size=1.0,
+            initial_food=10.0,
+        )
+        target = Bacterium(
+            target_species,
+            0.5,
+            0.0,
+            size=1.0,
+            initial_food=0.1,
+        )
+        attacker.phage_resistant = True
+        target.phage_resistant = False
+        attacker_species.members = [attacker]
+        target_species.members = [target]
+        env = {
+            'ph': NEUTRAL_PH,
+            'o2': ATMOSPHERIC_O2_FRACTION,
+            'co2': 0.0,
+            'drop_frequency': 0,
+            'drop_range': (1, 1),
+            'phage_inflow': 0,
+        }
+        sim = Simulation(
+            [attacker_species, target_species],
+            env,
+            100,
+            physics_backend='python',
+        )
+        sim._populated = True
+        sim.running = True
+
+        with patch('bacteria.physics.random.random', return_value=0.0):
+            sim.update(800, 600, 1.0)
+            sim.update(800, 600, 1.0)
+
+        self.assertEqual(sim.stats['t6ss_deaths'], [1, 0])
+        self.assertEqual(sim.stats['hgt_transfers'], [1, 0])
+        self.assertEqual(sim.stats['overall_t6ss_deaths'], [1, 1])
+        self.assertEqual(sim.stats['overall_hgt_transfers'], [1, 1])
+
+        sim.reset()
+        self.assertEqual(sim.stats['t6ss_deaths'], [])
+        self.assertEqual(sim.stats['hgt_transfers'], [])
+        self.assertEqual(sim._last_interaction_summary.t6ss_deaths, 0)
 
 
 if __name__ == '__main__':
