@@ -1,0 +1,30 @@
+{
+  "output": {
+    "filePath": "bacsandbox-packed.txt",
+    "style": "xml"
+  },
+  "include": [
+    "bacteria/**/*.py",
+    "bacteria/src/**/*.cpp",
+    "bacteria/src/**/*.h",
+    "setup.py",
+    "pyproject.toml",
+    "DOCUMENTATION.md",
+    "env_config.json",
+    "species_data.csv"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "customPatterns": [
+      "**/__pycache__/**",
+      "build/**",
+      "dist/**",
+      "**/*.egg-info/**",
+      "**/*.so",
+      "**/*.pyd",
+      "**/*.png",
+      "**/simulation_stats.csv",
+      "**/test_results/**"
+    ]
+  }
+}
