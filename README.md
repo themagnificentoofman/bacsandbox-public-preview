@@ -19,6 +19,25 @@ For the full technical model, equations, constants, CSV schemas, and implementat
    python -m bacteria
    ```
 
+### Optional Compiled Kernel
+
+The normal requirements-only setup above needs no compiler and runs through the Python fallback when the optional extension is not installed. To build the extension in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
+
+PowerShell:
+
+```powershell
+$env:BACSANDBOX_OPENMP = "auto"
+python -m pip install -e .
+```
+
+POSIX shells:
+
+```bash
+BACSANDBOX_OPENMP=auto python -m pip install -e .
+```
+
+Use `BACSANDBOX_OPENMP=on` to require OpenMP or `BACSANDBOX_OPENMP=off` to build deliberately without it. OpenMP builds on macOS require `libomp`. Backend and build details are documented in [DOCUMENTATION.md §10.1](DOCUMENTATION.md#101-hybrid-c-computational-kernel).
+
 ## Using The App
 
 The Pygame interface includes:

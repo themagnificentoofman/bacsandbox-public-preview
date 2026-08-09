@@ -1,0 +1,115 @@
+name: Kernel QA
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BACSANDBOX_RUN_BENCHMARK: '0'
+  PYGAME_HIDE_SUPPORT_PROMPT: '1'
+
+jobs:
+  openmp:
+    name: OpenMP (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+    env:
+      BACSANDBOX_OPENMP: 'on'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install macOS OpenMP runtime
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install libomp
+          echo "CPPFLAGS=-I$(brew --prefix libomp)/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$(brew --prefix libomp)/lib" >> "$GITHUB_ENV"
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable .
+      - name: Verify OpenMP extension
+        run: python -c "import bacteria_c_kernel as kernel; assert kernel.openmp_enabled(), 'OpenMP build was requested but is disabled'"
+      - name: Run kernel suite
+        run: python -m unittest bacteria.test_kernel
+      - name: Run existing full suite
+        run: python -m unittest bacteria.test_bacteria
+
+  serial:
+    name: Serial (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      BACSANDBOX_OPENMP: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable .
+      - name: Verify serial extension
+        run: python -c "import bacteria_c_kernel as kernel; assert not kernel.openmp_enabled(), 'Serial build unexpectedly enabled OpenMP'"
+      - name: Run kernel suite
+        run: python -m unittest bacteria.test_kernel
+      - name: Run existing full suite
+        run: python -m unittest bacteria.test_bacteria
+
+  native-leaks:
+    name: Native leaks (Valgrind, serial)
+    runs-on: ubuntu-latest
+    env:
+      BACSANDBOX_OPENMP: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes valgrind
+      - name: Build serial extension
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable .
+          python -c "import bacteria_c_kernel as kernel; assert not kernel.openmp_enabled(), 'Leak job must exercise the serial kernel'"
+      - name: Run focused native allocation stress
+        shell: bash
+        env:
+          BACSANDBOX_NATIVE_STRESS_ITERATIONS: '2000'
+          PYTHONMALLOC: malloc
+        run: |
+          suppression_args=()
+          for candidate in /usr/lib/valgrind/python3.supp /usr/share/doc/python3.12/valgrind-python.supp; do
+            if [[ -f "$candidate" ]]; then
+              suppression_args+=("--suppressions=$candidate")
+              break
+            fi
+          done
+          valgrind \
+            --tool=memcheck \
+            --leak-check=full \
+            --show-leak-kinds=definite,indirect \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=99 \
+            "${suppression_args[@]}" \
+            python -m unittest \
+              bacteria.test_kernel.TestNativeAllocationStress.test_repeated_results_are_collectible

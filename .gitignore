@@ -316,6 +316,14 @@ paket-files/
 __pycache__/
 *.pyc
 
+# Python environments, packaging outputs, and native extensions
+.venv/
+build/
+dist/
+*.egg-info/
+*.pyd
+*.so
+
 # Cake - Uncomment if you are using it
 # tools/**
 # !tools/packages.config

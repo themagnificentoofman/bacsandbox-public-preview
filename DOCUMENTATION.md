@@ -214,8 +214,7 @@ Most structural biomass is therefore unavailable, refractory, respired, or lost 
 
 ### 4.9 ECM Diffusion Grid
 
-The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil with a stability clamp:
-The extracellular matrix tracks quorum-sensing molecules, bacteriocins, and cross-feeding acetate (Section 4.15) on a spatial hash grid. ECM diffusion now processes every active grid cell each simulation tick. It uses an explicit Fickian 2D stencil<sup>[9](#ref-9)</sup> with a stability clamp<sup>[5](#ref-5)</sup>:
+The extracellular matrix tracks quorum-sensing molecules, bacteriocins, cross-feeding acetate (Section 4.15), and phage on a spatial hash grid; every simulation tick applies an explicit Fickian 2D stencil<sup>[9](#ref-9)</sup> with a stability clamp<sup>[5](#ref-5)</sup> to every active grid cell:
 
 $$
 \alpha = \min\left(\alpha_{\max}, \frac{D\Delta t}{\Delta x^2}\right) \quad \alpha_{\max}=0.24
@@ -1258,12 +1257,15 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 
 * `bacteria/app.py`: Pygame application loop, rendering, tabs, UI state, and high-level simulation orchestration.
 * `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`.
-* `bacteria/ecm.py`: Extracellular matrix diffusion and decay for quorum-sensing molecules, bacteriocins, and cross-feeding acetate.
-* `bacteria/ecm.py`: Extracellular matrix diffusion and decay for quorum-sensing molecules, bacteriocins, and cross-feeding acetate.
+* `bacteria/ecm.py`: Public sparse-grid ECM API and Python/native backend orchestration for quorum-sensing molecules, bacteriocins, acetate, and phage.
+* `bacteria/src/ecm_kernel.cpp` and `bacteria/src/ecm_kernel.h`: Optional C++17 ECM computation and pybind11 interface.
 * `bacteria/data.py`: CSV/JSON serialization for `species_data.csv` and `env_config.json`.
 * `bacteria/ui_components.py`: Reusable buttons, sliders, and editable cells.
 * `bacteria/constants.py`: UI constants plus documented biological and numerical model constants.
 * `bacteria/__main__.py`: CLI entry point for `python -m bacteria`.
+* `setup.py` and `pyproject.toml`: Native-extension build configuration and Python package metadata.
+* `bacteria/test_kernel.py`: Native/Python parity, backend, ABI, boundary, allocation, and opt-in performance checks.
+* `.github/workflows/kernel.yml`: Cross-platform OpenMP and serial kernel testing plus Linux Valgrind stress checks.
 
 ## 10. Performance Notes
 
@@ -1272,6 +1274,48 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 * Bacterial physical interactions use a spatial hash over neighboring cells.
 * ECM diffusion updates every active cell each tick, but only stores non-negligible concentrations.
 * Viewport culling suppresses expensive local chemotaxis for off-viewport bacteria while retaining simple movement.
+
+### 10.1 Hybrid C++ Computational Kernel
+
+The ECM can optionally run diffusion and decay through the top-level pybind11 extension `bacteria_c_kernel`, built from `bacteria/src/ecm_kernel.cpp` and `bacteria/src/ecm_kernel.h`. This is an acceleration backend, not a separate model: `ECM(cell_size=..., backend='auto')` retains the original public layer dictionaries and the `add`, `sample`, and `tick` methods. After a native update, each public dictionary is cleared and updated in place so callers that retain a reference continue to observe the same object.
+
+Backend selection has three modes:
+
+* `auto` performs no native import during construction or empty ticks. On the first nonempty tick it lazily imports the extension, falling back to Python only when the module is absent; native computation errors propagate instead of silently changing backends.
+* `python` always uses the reference implementation and never imports the extension.
+* `cpp` requires the extension and reports its absence rather than falling back.
+
+The pybind11 binding exposes this fixed interface:
+
+```text
+process_layers(coordinates, values, offsets, diffusion, decay, dt,
+         cell_size, alpha_max, min_concentration)
+  -> (coordinates, values, offsets)
+```
+
+All array buffers use C-contiguous storage:
+
+| Buffer | Dtype | Shape | Contract |
+|---|---|---|---|
+| `coordinates` | signed `int64` | `(N, 2)` | Open-grid integer coordinate pairs. |
+| `values` | `float64` | `(N,)` | Concentrations corresponding one-to-one with the coordinate rows. |
+| `offsets` | `int64` | `(5,)` | Monotonic boundaries from `0` through `N` for the four layers. |
+| `diffusion` | `float64` | `(4,)` | One diffusion coefficient per layer. |
+| `decay` | `float64` | `(4,)` | One decay coefficient per layer. |
+
+The fixed layer order is `qs`, `bac`, `acetate`, then `phage`. The return tuple uses the same coordinate/value/offset layout, with `N` denoting the returned entry count. Python flattens only active dictionary entries into these buffers and reconstructs only retained entries, avoiding dense bounding boxes on the unbounded grid. The flat sparse-buffer ABI, lazy backend orchestration, and four-layer parallel dispatch are original BacSandbox interface designs.<sup>[39](#ref-39)</sup>
+
+While holding the GIL, the binding validates buffer layouts, shapes, offsets, and scalar parameters, then copies inputs into RAII-owned native vectors. It releases the GIL around native dispatch and reacquires it before constructing the NumPy outputs. The native and OpenMP regions make no Python/C API calls. RAII provides explicit ownership discipline; CI separately checks native definite and indirect memory losses rather than treating ownership style alone as proof of leak freedom.
+
+The native path preserves the §4.9 Fickian stencil<sup>[9](#ref-9)</sup> and stability clamp<sup>[5](#ref-5)</sup> exactly. Python supplies every model constant, so the C++ source duplicates none. For each layer, native code applies the alpha clamp and linear decay clamp; visits center, left, right, down, and up contributions in that order; applies the per-contribution floor; aggregates equal coordinates; and performs final concentration pruning. It preserves open signed coordinates and deterministic first-insertion output order, and guards neighbor calculations against signed `int64` overflow.
+
+When OpenMP is compiled in, a guarded `parallel for` with `schedule(static)` distributes the four independent layer updates. Each worker owns its vectors and hash table, captures failures in an `exception_ptr`, and rethrows after the parallel region. A serial build executes the identical dispatch path without the pragma.
+
+The root `pyproject.toml` and `setup.py` support Python `>=3.9,<3.14`, NumPy/pybind11, C++17, and portable compiler optimization flags without CPU-specific options. `BACSANDBOX_OPENMP=auto` probes OpenMP and builds serially when it is unavailable; `on` requires OpenMP and fails clearly if probing fails; `off` deliberately builds the serial path. Windows uses MSVC, Linux supports GCC or Clang, and macOS uses Apple Clang with `libomp` probing.
+
+Kernel QA in `bacteria/test_kernel.py` uses `unittest`. Its parity fixture runs 100 ticks and, after every tick, compares all four layers by exact key equality and an absolute value tolerance of `1e-5`. Focused tests cover backend behavior, ABI validation, clamping, pruning, coordinate overflow, and allocation behavior. The performance benchmark is opt-in through `BACSANDBOX_RUN_BENCHMARK=1`; it reports medians for a bounded fixture and is not a fixed performance guarantee. The kernel workflow exercises OpenMP builds on Windows, Linux, and macOS, a Linux serial build, and Linux Valgrind stress checks for definite and indirect losses.
+
+In one local Windows environment using Python 3.12, MSVC, and OpenMP, 20 ordinary tests passed. The opt-in bounded-fixture benchmark reported `C++ Speedup Factor: 1.72x (Python median: 0.052420s; C++ median: 0.030449s)`. This is an environment-specific observation, not a promised speedup on other workloads, compilers, or machines.
 
 ## Appendix A: Scientific References
 
@@ -1356,3 +1400,5 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-37"></a>**[37]** **Own (BacSandbox model).** Modeled dissolved-gas saturation capacities and exponential gas/pH relaxation rates, §4.10.
 
 <a id="ref-38"></a>**[38]** **Own (BacSandbox model).** Initial-inoculum spawning policy (lumen-bias, clustered microcolonies) and elastic boundary reflection, §4.6/§4.23.
+
+<a id="ref-39"></a>**[39]** **Own (BacSandbox model).** Flat sparse-buffer ABI, lazy backend orchestration, and layer-parallel dispatch, §10.1.
