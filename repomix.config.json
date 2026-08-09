@@ -1,0 +1,70 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+
+  "output": {
+    "filePath": "bacsandbox-packed.txt",
+    "style": "xml",
+    "includeFullDirectoryStructure": true,
+    "showLineNumbers": true,
+    "removeComments": false,
+    "removeEmptyLines": false
+  },
+
+  "include": [
+    "bacteria/**/*.py",
+    "bacteria/src/**/*.cpp",
+    "bacteria/src/**/*.h",
+    "bacteria/src/**/*.hpp",
+
+    "tests/**/*.py",
+
+    "setup.py",
+    "pyproject.toml",
+
+    "README.md",
+    "DOCUMENTATION.md",
+
+    "env_config.json",
+    "species_data.csv"
+  ],
+
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+
+    "customPatterns": [
+      "**/__pycache__/**",
+      "**/*.pyc",
+      "**/*.pyo",
+
+      "build/**",
+      "dist/**",
+      "**/*.egg-info/**",
+
+      "**/*.so",
+      "**/*.pyd",
+      "**/*.dll",
+      "**/*.o",
+
+      "**/*.png",
+      "**/*.jpg",
+      "**/*.jpeg",
+      "**/*.gif",
+
+      "**/simulation_stats.csv",
+      "**/test_results/**",
+
+      ".venv/**",
+      "venv/**",
+
+      "**/*.log",
+
+      "bacsandbox-packed.txt"
+    ]
+  },
+
+  "security": {
+    "enableSecurityCheck": true
+  }
+}
