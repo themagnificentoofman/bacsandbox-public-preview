@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "model_id": "reduced_metabolism_v1",
+  "model_revision": 1,
+  "provenance": "Own (BacSandbox model)",
+  "scope": {
+    "kind": "reduced_three_substrate",
+    "genome_scale_model": false,
+    "statement": "Reduced bookkeeping network only; this is not a genome-scale model (GEM) and is not an empirical reconstruction. Substrates are glucose-equivalent monomer concentrations, never literal polymer molarity."
+  },
+  "design_rationale": {
+    "routing": "Each substrate route converts 1.0 glucose-equivalent input into 1.0 biomass-precursor unit for transparent mass-balance inspection.",
+    "acetate_coupling": "Each route also creates 0.25 acetate-bookkeeping units as an Own model choice that makes the analytical byproduct output explicit; it is not empirical.",
+    "finite_bounds": "The 1.0 uptake and route maxima are finite safety ceilings, while the 3.0 sink maxima equal the sum of three route ceilings; none is empirically calibrated.",
+    "objective": "The biomass coefficient 1.0 selects the only optimization objective without assigning empirical weight.",
+    "cache_tolerance": "The 1e-5 M tolerance is the approved deterministic cache-bin width for this architecture, not a biological threshold."
+  },
+  "units": {
+    "substrate_concentration": "M glucose-equivalent monomer",
+    "environment_volume": "L",
+    "reaction_flux": "Exchange and route fluxes are mol glucose-equivalent monomer / gDW / s; biomass pseudo-flux is a specific growth rate in 1/s; acetate export is mol glucose-equivalent / gDW / s. These are reduced bookkeeping units, not a claim of dimensional GEM rigor.",
+    "stoichiometric_coefficient": "dimensionless glucose-equivalent bookkeeping coefficient"
+  },
+  "substrate_order": [
+    "generic_calorie",
+    "complex_glycan",
+    "mdcf_prebiotic"
+  ],
+  "metabolite_order": [
+    "generic_calorie_internal",
+    "complex_glycan_internal",
+    "mdcf_prebiotic_internal",
+    "biomass_precursor",
+    "acetate_internal"
+  ],
+  "reaction_order": [
+    "uptake_generic_calorie",
+    "uptake_complex_glycan",
+    "uptake_mdcf_prebiotic",
+    "route_generic_calorie",
+    "route_complex_glycan",
+    "route_mdcf_prebiotic",
+    "biomass",
+    "acetate_export"
+  ],
+  "stoichiometry": [
+    {"metabolite_index": 0, "reaction_index": 0, "value": 1.0},
+    {"metabolite_index": 0, "reaction_index": 3, "value": -1.0},
+    {"metabolite_index": 1, "reaction_index": 1, "value": 1.0},
+    {"metabolite_index": 1, "reaction_index": 4, "value": -1.0},
+    {"metabolite_index": 2, "reaction_index": 2, "value": 1.0},
+    {"metabolite_index": 2, "reaction_index": 5, "value": -1.0},
+    {"metabolite_index": 3, "reaction_index": 3, "value": 1.0},
+    {"metabolite_index": 3, "reaction_index": 4, "value": 1.0},
+    {"metabolite_index": 3, "reaction_index": 5, "value": 1.0},
+    {"metabolite_index": 3, "reaction_index": 6, "value": -1.0},
+    {"metabolite_index": 4, "reaction_index": 3, "value": 0.25},
+    {"metabolite_index": 4, "reaction_index": 4, "value": 0.25},
+    {"metabolite_index": 4, "reaction_index": 5, "value": 0.25},
+    {"metabolite_index": 4, "reaction_index": 7, "value": -1.0}
+  ],
+  "lower_bounds": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+  "upper_bounds": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 3.0],
+  "objective_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+  "exchange_reaction_indices": [0, 1, 2],
+  "biomass_reaction_index": 6,
+  "acetate_reaction_index": 7,
+  "cache_tolerance_molar": 0.00001,
+  "requires_explicit_environment_volume_liters": true,
+  "finite_bound_semantics": "All bounds are finite model safety maxima; no value represents mathematical infinity or an empirical rate limit.",
+  "analytical_reference": {
+    "condition": "Each uptake reaction fixed at its finite model maximum of 1.0.",
+    "biomass_flux": 3.0,
+    "acetate_flux": 0.75,
+    "statement": "Deterministic bookkeeping consequence of this reduced topology; not an empirical prediction."
+  }
+}

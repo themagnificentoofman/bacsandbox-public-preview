@@ -1,4 +1,5 @@
 #include "ecm_kernel.h"
+#include "metabolic_kernel.h"
 #include "physics_kernel.h"
 
 #include <pybind11/numpy.h>
@@ -11,6 +12,7 @@
 #include <exception>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -231,7 +233,7 @@ bool openmp_enabled() noexcept {
 namespace {
 
 bool is_finite_float64(double value) noexcept {
-    static_assert(sizeof(double) == sizeof(std::uint64_t), "ECM buffers require IEEE-754 float64");
+    static_assert(sizeof(double) == sizeof(std::uint64_t), "native buffers require IEEE-754 float64");
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     // IEEE-754 reserves an all-ones exponent for infinity/NaN, so this check remains valid under fast-math; see DOCUMENTATION.md §4.9.
@@ -241,7 +243,10 @@ bool is_finite_float64(double value) noexcept {
 
 template <typename Element>
 void require_c_array(const py::array& array, const char* name) {
-    if (!array.dtype().is(py::dtype::of<Element>())) {
+    const py::dtype expected = py::dtype::of<Element>();
+    if (array.dtype().kind() != expected.kind() ||
+        array.dtype().itemsize() != expected.itemsize() ||
+        !py::cast<bool>(array.dtype().attr("isnative"))) {
         throw py::type_error(std::string(name) + " has an invalid dtype");
     }
     if ((array.flags() & py::array::c_style) == 0) {
@@ -276,6 +281,45 @@ std::size_t require_vector(const py::array& array, const char* name) {
     return static_cast<std::size_t>(array.shape(0));
 }
 
+template <typename Element>
+std::vector<Element> copy_vector(const py::array& array, const char* name) {
+    const std::size_t size = require_vector<Element>(array, name);
+    std::vector<Element> result(size);
+    if (size != 0) {
+        const auto* data = static_cast<const Element*>(array.data());
+        std::copy_n(data, size, result.begin());
+    }
+    return result;
+}
+
+template <typename Element>
+std::vector<Element> copy_matrix(
+    const py::array& array,
+    const char* name,
+    std::size_t row_count,
+    std::size_t column_count,
+    const char* row_extent,
+    const char* column_extent) {
+    require_c_array<Element>(array, name);
+    if (array.ndim() != 2 ||
+        array.shape(0) != static_cast<py::ssize_t>(row_count) ||
+        array.shape(1) != static_cast<py::ssize_t>(column_count)) {
+        throw py::value_error(
+            std::string(name) + " must have shape (" + row_extent + ", " +
+            column_extent + ")");
+    }
+    if (row_count != 0 && column_count > std::numeric_limits<std::size_t>::max() / row_count) {
+        throw std::overflow_error(std::string(name) + " shape exceeds the native size range");
+    }
+    const std::size_t size = row_count * column_count;
+    std::vector<Element> result(size);
+    if (size != 0) {
+        const auto* data = static_cast<const Element*>(array.data());
+        std::copy_n(data, size, result.begin());
+    }
+    return result;
+}
+
 void require_length(std::size_t actual, std::size_t expected, const char* name, const char* extent) {
     if (actual != expected) {
         throw py::value_error(
@@ -286,6 +330,43 @@ void require_length(std::size_t actual, std::size_t expected, const char* name, 
 void require_writable(const py::array& array, const char* name) {
     if (!array.writeable()) {
         throw py::value_error(std::string(name) + " must be writable");
+    }
+}
+
+struct ArrayRegion {
+    const char* name;
+    std::uintptr_t begin;
+    std::uintptr_t end;
+    bool mutable_buffer;
+};
+
+ArrayRegion array_region(
+    const py::array& array,
+    const char* name,
+    bool mutable_buffer) {
+    const std::uintptr_t begin = reinterpret_cast<std::uintptr_t>(array.data());
+    const std::size_t size = static_cast<std::size_t>(array.nbytes());
+    if (size > std::numeric_limits<std::uintptr_t>::max() - begin) {
+        throw std::overflow_error(std::string(name) + " memory range overflows uintptr_t");
+    }
+    return {name, begin, begin + size, mutable_buffer};
+}
+
+void reject_unsafe_overlaps(const std::vector<ArrayRegion>& regions) {
+    for (std::size_t left = 0; left < regions.size(); ++left) {
+        for (std::size_t right = left + 1; right < regions.size(); ++right) {
+            if (!(regions[left].mutable_buffer || regions[right].mutable_buffer) ||
+                regions[left].begin == regions[left].end ||
+                regions[right].begin == regions[right].end) {
+                continue;
+            }
+            if (regions[left].begin < regions[right].end &&
+                regions[right].begin < regions[left].end) {
+                throw py::value_error(
+                    std::string(regions[left].name) + " and " + regions[right].name +
+                    " must not overlap");
+            }
+        }
     }
 }
 
@@ -701,10 +782,344 @@ py::tuple process_interactions_binding(
         summary.predation_events);
 }
 
+std::unique_ptr<bacsandbox::metabolism::MetabolicKernel> make_metabolic_kernel(
+    const py::array& model_reaction_offsets,
+    const py::array& model_metabolite_offsets,
+    const py::array& stoich_row_offsets,
+    const py::array& stoich_column_indices,
+    const py::array& stoich_values,
+    const py::array& lower_bounds,
+    const py::array& upper_bounds,
+    const py::array& objective_coefficients,
+    const py::array& exchange_reaction_indices,
+    const py::array& biomass_reaction_indices,
+    const py::array& acetate_reaction_indices,
+    double cache_tolerance_molar,
+    const py::object& cache_capacity) {
+    if (py::isinstance<py::bool_>(cache_capacity) ||
+        !py::isinstance<py::int_>(cache_capacity)) {
+        throw py::type_error("cache_capacity must be an integer");
+    }
+    const std::size_t copied_cache_capacity = cache_capacity.cast<std::size_t>();
+    std::vector<std::int64_t> reaction_offsets =
+        copy_vector<std::int64_t>(model_reaction_offsets, "model_reaction_offsets");
+    if (reaction_offsets.size() < 2) {
+        throw py::value_error("model_reaction_offsets must have shape (M+1,) with M >= 1");
+    }
+    const std::size_t model_count = reaction_offsets.size() - 1;
+
+    std::vector<std::int64_t> metabolite_offsets =
+        copy_vector<std::int64_t>(model_metabolite_offsets, "model_metabolite_offsets");
+    require_length(
+        metabolite_offsets.size(),
+        model_count + 1,
+        "model_metabolite_offsets",
+        "M+1");
+    std::vector<std::int64_t> row_offsets =
+        copy_vector<std::int64_t>(stoich_row_offsets, "stoich_row_offsets");
+    std::vector<std::int32_t> column_indices =
+        copy_vector<std::int32_t>(stoich_column_indices, "stoich_column_indices");
+    std::vector<double> values = copy_vector<double>(stoich_values, "stoich_values");
+    std::vector<double> lower = copy_vector<double>(lower_bounds, "lower_bounds");
+    std::vector<double> upper = copy_vector<double>(upper_bounds, "upper_bounds");
+    std::vector<double> objective =
+        copy_vector<double>(objective_coefficients, "objective_coefficients");
+    std::vector<std::int32_t> exchange_indices = copy_matrix<std::int32_t>(
+        exchange_reaction_indices,
+        "exchange_reaction_indices",
+        model_count,
+        bacsandbox::metabolism::substrate_count,
+        "M",
+        "3");
+    std::vector<std::int32_t> biomass_indices =
+        copy_vector<std::int32_t>(biomass_reaction_indices, "biomass_reaction_indices");
+    require_length(
+        biomass_indices.size(),
+        model_count,
+        "biomass_reaction_indices",
+        "M");
+    std::vector<std::int32_t> acetate_indices =
+        copy_vector<std::int32_t>(acetate_reaction_indices, "acetate_reaction_indices");
+    require_length(
+        acetate_indices.size(),
+        model_count,
+        "acetate_reaction_indices",
+        "M");
+
+    return std::make_unique<bacsandbox::metabolism::MetabolicKernel>(
+        std::move(reaction_offsets),
+        std::move(metabolite_offsets),
+        std::move(row_offsets),
+        std::move(column_indices),
+        std::move(values),
+        std::move(lower),
+        std::move(upper),
+        std::move(objective),
+        std::move(exchange_indices),
+        std::move(biomass_indices),
+        std::move(acetate_indices),
+        cache_tolerance_molar,
+        copied_cache_capacity);
+}
+
+void configure_metabolic_phenotypes_binding(
+    bacsandbox::metabolism::MetabolicKernel& kernel,
+    const py::array& model_indices,
+    const py::array& uptake_vmax,
+    const py::array& uptake_km,
+    const py::array& inhibition_alpha,
+    const py::array& inhibition_beta,
+    const py::array& max_inhibition,
+    std::uint64_t model_revision,
+    std::uint64_t prior_revision) {
+    std::vector<std::int32_t> copied_model_indices =
+        copy_vector<std::int32_t>(model_indices, "model_indices");
+    const std::size_t phenotype_count = copied_model_indices.size();
+    kernel.configure_phenotypes(
+        std::move(copied_model_indices),
+        copy_matrix<double>(
+            uptake_vmax,
+            "uptake_vmax",
+            phenotype_count,
+            bacsandbox::metabolism::substrate_count,
+            "P",
+            "3"),
+        copy_matrix<double>(
+            uptake_km,
+            "uptake_km",
+            phenotype_count,
+            bacsandbox::metabolism::substrate_count,
+            "P",
+            "3"),
+        copy_matrix<double>(
+            inhibition_alpha,
+            "inhibition_alpha",
+            phenotype_count,
+            bacsandbox::metabolism::substrate_count,
+            "P",
+            "3"),
+        copy_matrix<double>(
+            inhibition_beta,
+            "inhibition_beta",
+            phenotype_count,
+            bacsandbox::metabolism::substrate_count,
+            "P",
+            "3"),
+        copy_matrix<double>(
+            max_inhibition,
+            "max_inhibition",
+            phenotype_count,
+            bacsandbox::metabolism::substrate_count,
+            "P",
+            "3"),
+        model_revision,
+        prior_revision);
+}
+
+py::tuple metabolic_cache_stats_binding(
+    const bacsandbox::metabolism::MetabolicKernel& kernel) {
+    const bacsandbox::metabolism::CacheStats stats = kernel.cache_stats();
+    return py::make_tuple(
+        stats.entries,
+        stats.hits,
+        stats.misses,
+        stats.evictions,
+        stats.lp_solves);
+}
+
+py::tuple metabolic_solve_flux_binding(
+    bacsandbox::metabolism::MetabolicKernel& kernel,
+    std::int32_t phenotype_index,
+    const py::array& concentrations,
+    bool cache_enabled) {
+    std::vector<double> copied_concentrations =
+        copy_vector<double>(concentrations, "concentrations");
+    require_length(
+        copied_concentrations.size(),
+        bacsandbox::metabolism::substrate_count,
+        "concentrations",
+        "3");
+    const std::array<double, bacsandbox::metabolism::substrate_count> concentration_values{
+        copied_concentrations[0],
+        copied_concentrations[1],
+        copied_concentrations[2],
+    };
+    bacsandbox::metabolism::FluxResult result;
+    {
+        py::gil_scoped_release release;
+        result = kernel.solve_flux(phenotype_index, concentration_values, cache_enabled);
+    }
+    py::array_t<double> flux_values(static_cast<py::ssize_t>(result.flux_values.size()));
+    std::copy(result.flux_values.begin(), result.flux_values.end(), flux_values.mutable_data());
+    return py::make_tuple(std::move(flux_values), result.cache_hit);
+}
+
+py::tuple metabolic_advance_batch_binding(
+    bacsandbox::metabolism::MetabolicKernel& kernel,
+    const py::array& phenotype_id,
+    const py::array& environment_id,
+    py::array& concentrations_m,
+    const py::array& environment_volume_l,
+    py::array& biomass_gdw,
+    py::array& growth_rate_s,
+    py::array& biomass_delta_gdw,
+    py::array& substrate_consumed_mol,
+    py::array& acetate_secreted_mol,
+    double dt_seconds,
+    double low_substrate_threshold_m,
+    double depletion_safety,
+    std::size_t max_substeps,
+    bool cache_enabled) {
+    const std::size_t agent_count = require_vector<std::int32_t>(phenotype_id, "phenotype_id");
+    require_length(
+        require_vector<std::int32_t>(environment_id, "environment_id"),
+        agent_count,
+        "environment_id",
+        "N");
+    require_c_array<double>(concentrations_m, "concentrations_m");
+    if (concentrations_m.ndim() != 2 || concentrations_m.shape(1) != 3) {
+        throw py::value_error("concentrations_m must have shape (E, 3)");
+    }
+    const std::size_t environment_count = static_cast<std::size_t>(concentrations_m.shape(0));
+    require_length(
+        require_vector<double>(environment_volume_l, "environment_volume_l"),
+        environment_count,
+        "environment_volume_l",
+        "E");
+    require_length(
+        require_vector<double>(biomass_gdw, "biomass_gdw"),
+        agent_count,
+        "biomass_gdw",
+        "N");
+    require_length(
+        require_vector<double>(growth_rate_s, "growth_rate_s"),
+        agent_count,
+        "growth_rate_s",
+        "N");
+    require_length(
+        require_vector<double>(biomass_delta_gdw, "biomass_delta_gdw"),
+        agent_count,
+        "biomass_delta_gdw",
+        "N");
+    require_c_array<double>(substrate_consumed_mol, "substrate_consumed_mol");
+    if (substrate_consumed_mol.ndim() != 2 ||
+        substrate_consumed_mol.shape(0) != static_cast<py::ssize_t>(agent_count) ||
+        substrate_consumed_mol.shape(1) != 3) {
+        throw py::value_error("substrate_consumed_mol must have shape (N, 3)");
+    }
+    require_length(
+        require_vector<double>(acetate_secreted_mol, "acetate_secreted_mol"),
+        agent_count,
+        "acetate_secreted_mol",
+        "N");
+    require_writable(concentrations_m, "concentrations_m");
+    require_writable(biomass_gdw, "biomass_gdw");
+    require_writable(growth_rate_s, "growth_rate_s");
+    require_writable(biomass_delta_gdw, "biomass_delta_gdw");
+    require_writable(substrate_consumed_mol, "substrate_consumed_mol");
+    require_writable(acetate_secreted_mol, "acetate_secreted_mol");
+    reject_unsafe_overlaps({
+        array_region(phenotype_id, "phenotype_id", false),
+        array_region(environment_id, "environment_id", false),
+        array_region(concentrations_m, "concentrations_m", true),
+        array_region(environment_volume_l, "environment_volume_l", false),
+        array_region(biomass_gdw, "biomass_gdw", true),
+        array_region(growth_rate_s, "growth_rate_s", true),
+        array_region(biomass_delta_gdw, "biomass_delta_gdw", true),
+        array_region(substrate_consumed_mol, "substrate_consumed_mol", true),
+        array_region(acetate_secreted_mol, "acetate_secreted_mol", true),
+    });
+
+    const bacsandbox::metabolism::BatchBuffers buffers{
+        static_cast<const std::int32_t*>(phenotype_id.data()),
+        static_cast<const std::int32_t*>(environment_id.data()),
+        agent_count,
+        static_cast<double*>(concentrations_m.mutable_data()),
+        static_cast<const double*>(environment_volume_l.data()),
+        environment_count,
+        static_cast<double*>(biomass_gdw.mutable_data()),
+        static_cast<double*>(growth_rate_s.mutable_data()),
+        static_cast<double*>(biomass_delta_gdw.mutable_data()),
+        static_cast<double*>(substrate_consumed_mol.mutable_data()),
+        static_cast<double*>(acetate_secreted_mol.mutable_data()),
+    };
+    bacsandbox::metabolism::BatchSummary summary;
+    {
+        py::gil_scoped_release release;
+        summary = kernel.advance_batch(
+            buffers,
+            dt_seconds,
+            low_substrate_threshold_m,
+            depletion_safety,
+            max_substeps,
+            cache_enabled);
+    }
+    return py::make_tuple(
+        summary.substeps,
+        summary.lp_solves,
+        summary.cache_hits,
+        summary.cache_misses,
+        summary.cache_evictions,
+        summary.minimum_substep_seconds);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(bacteria_c_kernel, module) {
     module.doc() = "Native BacSandbox computational kernels";
+    py::class_<bacsandbox::metabolism::MetabolicKernel>(module, "MetabolicKernel")
+        .def(
+            py::init(&make_metabolic_kernel),
+            py::arg("model_reaction_offsets").noconvert(),
+            py::arg("model_metabolite_offsets").noconvert(),
+            py::arg("stoich_row_offsets").noconvert(),
+            py::arg("stoich_column_indices").noconvert(),
+            py::arg("stoich_values").noconvert(),
+            py::arg("lower_bounds").noconvert(),
+            py::arg("upper_bounds").noconvert(),
+            py::arg("objective_coefficients").noconvert(),
+            py::arg("exchange_reaction_indices").noconvert(),
+            py::arg("biomass_reaction_indices").noconvert(),
+            py::arg("acetate_reaction_indices").noconvert(),
+            py::arg("cache_tolerance_molar").noconvert(),
+            py::arg("cache_capacity").noconvert())
+        .def(
+            "configure_phenotypes",
+            &configure_metabolic_phenotypes_binding,
+            py::arg("model_indices").noconvert(),
+            py::arg("uptake_vmax").noconvert(),
+            py::arg("uptake_km").noconvert(),
+            py::arg("inhibition_alpha").noconvert(),
+            py::arg("inhibition_beta").noconvert(),
+            py::arg("max_inhibition").noconvert(),
+            py::arg("model_revision").noconvert(),
+            py::arg("prior_revision").noconvert())
+        .def("clear_cache", &bacsandbox::metabolism::MetabolicKernel::clear_cache)
+        .def("cache_stats", &metabolic_cache_stats_binding)
+        .def(
+            "solve_flux",
+            &metabolic_solve_flux_binding,
+            py::arg("phenotype_index").noconvert(),
+            py::arg("concentrations_m").noconvert(),
+            py::arg("cache_enabled").noconvert() = true)
+        .def(
+            "advance_batch",
+            &metabolic_advance_batch_binding,
+            py::arg("phenotype_id").noconvert(),
+            py::arg("environment_id").noconvert(),
+            py::arg("concentrations_m").noconvert(),
+            py::arg("environment_volume_l").noconvert(),
+            py::arg("biomass_gdw").noconvert(),
+            py::arg("growth_rate_s").noconvert(),
+            py::arg("biomass_delta_gdw").noconvert(),
+            py::arg("substrate_consumed_mol").noconvert(),
+            py::arg("acetate_secreted_mol").noconvert(),
+            py::arg("dt_seconds").noconvert(),
+            py::kw_only(),
+            py::arg("low_substrate_threshold_m").noconvert() = 1.0e-4,
+            py::arg("depletion_safety").noconvert(),
+            py::arg("max_substeps").noconvert(),
+            py::arg("cache_enabled").noconvert());
     module.def(
         "process_layers",
         &process_layers_binding,

@@ -1,3 +1,4 @@
 include README.md
 include DOCUMENTATION.md
+recursive-include bacteria/models *.json
 recursive-include bacteria/src *.cpp *.h

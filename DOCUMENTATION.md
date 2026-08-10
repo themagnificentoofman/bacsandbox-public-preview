@@ -1264,14 +1264,16 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 * `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`.
 * `bacteria/ecm.py`: Public sparse-grid ECM API and Python/native backend orchestration for quorum-sensing molecules, bacteriocins, acetate, and phage.
 * `bacteria/physics.py`: Reusable structure-of-arrays buffers, the reference contact implementation, and Python/native physics backend orchestration.
-* `bacteria/src/ecm_kernel.cpp`, `bacteria/src/ecm_kernel.h`, `bacteria/src/physics_kernel.cpp`, and `bacteria/src/physics_kernel.h`: Optional C++17 ECM and contact-physics implementation compiled into the unified top-level pybind11 module `bacteria_c_kernel`.
+* `bacteria/metabolism.py`: Versioned reduced-model and prior loading, exact immutable NumPy model buffers, the Python reference solver/cache/adaptive batch implementation, and lazy `MetabolicOrchestrator` modes and backends.
+* `bacteria/models/reduced_metabolism_v1.json` and `bacteria/models/metabolic_priors_v1.json`: Revision-1 reduced metabolic bookkeeping model and neutral, nonempirical prior rows.
+* `bacteria/src/ecm_kernel.cpp`, `bacteria/src/ecm_kernel.h`, `bacteria/src/physics_kernel.cpp`, `bacteria/src/physics_kernel.h`, `bacteria/src/metabolic_kernel.cpp`, and `bacteria/src/metabolic_kernel.h`: Optional C++17 ECM, contact-physics, and reduced-metabolism implementations compiled into the unified top-level pybind11 module `bacteria_c_kernel`; the sole `PYBIND11_MODULE` definition remains in `ecm_kernel.cpp`.
 * `bacteria/data.py`: CSV/JSON serialization for `species_data.csv` and `env_config.json`.
 * `bacteria/ui_components.py`: Reusable buttons, sliders, and editable cells.
 * `bacteria/constants.py`: UI constants plus documented biological and numerical model constants.
 * `bacteria/__main__.py`: CLI entry point for `python -m bacteria`.
-* `setup.py` and `pyproject.toml`: Unified ECM/physics native-extension build configuration and Python package metadata.
-* `bacteria/test_kernel.py` and `bacteria/test_physics_kernel.py`: ECM and contact-kernel parity, backend, ABI, boundary, allocation, scale, stress, and opt-in performance checks.
-* `.github/workflows/kernel.yml`: ECM and physics suites on OpenMP Windows/Linux/macOS and serial Linux builds, required physics scale parity, and serial Linux Valgrind stress checks.
+* `setup.py` and `pyproject.toml`: Unified ECM/physics/metabolism native-extension build configuration, all three C++ source files, model-asset packaging, and Python package metadata.
+* `bacteria/test_kernel.py`, `bacteria/test_physics_kernel.py`, `bacteria/test_metabolic_architecture.py`, and `bacteria/test_metabolic_kernel.py`: ECM, contact, and reduced-metabolism architecture, parity, solver, backend, ABI, boundary, transaction, cache, scale, stress, and opt-in performance checks.
+* `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` run ECM, physics, and metabolism suites on OpenMP Windows/Linux/macOS and serial Linux builds, required metabolic and physics scale parity, and serial Linux Valgrind stress checks.
 
 ## 10. Performance Notes
 
@@ -1280,10 +1282,11 @@ Environment sliders in the Grid, Graph, and Stats views allow live adjustments t
 * Bacterial physical interactions use a spatial hash over neighboring cells.
 * ECM diffusion updates every active cell each tick, but only stores non-negligible concentrations.
 * Viewport culling suppresses expensive local chemotaxis for off-viewport bacteria while retaining simple movement.
+* The optional reduced metabolic API batches solver work, deduplicates identical misses, and uses a bounded per-kernel cache without changing the app's default metabolism.
 
 ### 10.1 Hybrid C++ Computational Kernel
 
-The ECM can optionally run diffusion and decay through the top-level pybind11 extension `bacteria_c_kernel`. The unified extension is compiled from `bacteria/src/ecm_kernel.cpp` and `bacteria/src/physics_kernel.cpp`; the existing `process_layers` and `openmp_enabled` APIs remain available. This is an acceleration backend, not a separate model: `ECM(cell_size=..., backend='auto')` retains the original public layer dictionaries and the `add`, `sample`, and `tick` methods. After a native update, each public dictionary is cleared and updated in place so callers that retain a reference continue to observe the same object.
+The ECM can optionally run diffusion and decay through the top-level pybind11 extension `bacteria_c_kernel`. The unified extension is compiled from `bacteria/src/ecm_kernel.cpp`, `bacteria/src/physics_kernel.cpp`, and `bacteria/src/metabolic_kernel.cpp`; the existing `process_layers`, `process_interactions`, and `openmp_enabled` APIs remain available alongside the `MetabolicKernel` class described in Section 10.3. This is an acceleration backend, not a separate ECM model: `ECM(cell_size=..., backend='auto')` retains the original public layer dictionaries and the `add`, `sample`, and `tick` methods. After a native update, each public dictionary is cleared and updated in place so callers that retain a reference continue to observe the same object.
 
 Backend selection has three modes:
 
@@ -1327,8 +1330,9 @@ In one local Windows environment using Python 3.12, MSVC, and OpenMP, 20 ordinar
 
 The unified optional `bacteria_c_kernel` module also exposes the top-level `process_interactions`
 binding for contact physics. The extension continues to expose the Phase A `process_layers` and
-`openmp_enabled` APIs, so a current build accelerates both ECM work (Section 10.1) and contact-pair
-processing without creating a second native module.
+`openmp_enabled` APIs and now also owns the stateful `MetabolicKernel` class. A current build
+supports ECM work (Section 10.1), contact-pair processing, and the opt-in reduced metabolic direct
+API (Section 10.3) without creating another native module.
 
 **Simulation and backend contract.** `Simulation` accepts the backward-compatible
 `physics_backend='auto'|'python'|'cpp'` setting. `auto` imports lazily and falls back only when the
@@ -1503,6 +1507,329 @@ metabolism, ECM, and environment work. The final local ordinary combined suite p
 forced-serial and required-OpenMP builds: 147 tests were discovered, 144 passed, and the three
 opt-in cases were skipped.
 
+### 10.3 Constraint-Based Metabolic Caching Kernel
+
+**Scope and rollout boundary.** BacSandbox's production simulation continues to use the existing
+phenomenological, pg-based metabolism path by default. Phase C does not provide a genome-scale
+reconstruction, GEM, SBML model, or genome-scale dFBA. It adds a deliberately reduced,
+three-substrate constraint-based bookkeeping model through the opt-in `MetabolicOrchestrator`
+programmatic API. No `Bacterium.step` or `Simulation.update` integration and no UI mode were added.
+
+The orchestrator constructor is
+`MetabolicOrchestrator(mode='legacy', backend='auto', model=None, priors=None,
+phenotype_config=None)`. Modes have the following contracts:
+
+| Mode | Behavior |
+|---|---|
+| `legacy` | Default no-op. It does not import a solver backend and leaves the production pg-based path unchanged. |
+| `shadow` | Runs the selected solver, restores the supplied concentrations and biomass after a successful batch, and retains the diagnostic growth, biomass-delta, substrate-consumption, and acetate-output arrays. |
+| `fba` | Runs the selected solver and commits all supplied mutable arrays. The name denotes this reduced direct API, not genome-scale dFBA. |
+
+Outside `legacy`, callers must explicitly supply the model, priors, and phenotype configuration.
+Backend `python` uses the reference implementation and never imports the extension. Backend `cpp`
+requires the native `MetabolicKernel`. Backend `auto` falls back to Python only when
+`bacteria_c_kernel` itself is absent or when an installed unified module lacks `MetabolicKernel`;
+broken dependencies, validation failures, solver failures, and other native runtime errors
+propagate. These modes and backends are programmatic controls, not app settings.
+
+**Versioned assets and reduced topology.** The reduced-model interface and topology, flat/CSR ABI,
+deterministic posterior-mean constraint adapter, tolerance-neighbor cache with bounded LRU, and
+adaptive substep design are original, nonempirical BacSandbox designs.<sup>[41](#ref-41)</sup>
+
+| Asset | Revision-1 contents | Interpretation |
+|---|---|---|
+| `bacteria/models/reduced_metabolism_v1.json` | One model, 5 metabolites, and 8 reactions with finite lower and upper bounds. | Three exchanges feed three corresponding routes; each route balances one exchange unit to biomass precursor plus `0.25` acetate bookkeeping. Biomass is the sole objective. |
+| `bacteria/models/metabolic_priors_v1.json` | One neutral row for each of the three substrates; every `alpha` and `beta` is positive and every `max_inhibition` is zero. | The rows make no empirical interaction claim and produce no inhibition in the shipped configuration. |
+
+The reduced model declares schema version 1 and model revision 1.
+The fixed substrate order is `generic_calorie`, `complex_glycan`, then `mdcf_prebiotic`.
+Concentrations are molar glucose-equivalent monomer concentrations. In particular, glycan and MDCF
+values are never literal glycan/polymer molarity. Every batch requires an explicit environment
+volume in $\mathrm{L}$; there is no implicit voxel volume.
+
+Exchange, route, and acetate fluxes use specific units of
+$\mathrm{mol}/\mathrm{gDW}/\mathrm{s}$ of glucose-equivalent monomer. The biomass pseudo-flux uses
+$\mathrm{s}^{-1}$. At full finite uptake in the shipped model, each exchange and route flux is
+`1`, biomass flux is `3`, and acetate flux is `0.75`. These are analytical properties of the
+nonempirical bookkeeping network, not biological predictions.
+
+`bacteria/metabolism.py` validates both versioned assets and converts sparse stoichiometry into
+exact-dtype, C-contiguous, read-only NumPy arrays. Multiple reduced models may be concatenated in
+the same storage. Let `M` be model count, `R` total reaction count, `K` total metabolite count, and
+`Z` stored stoichiometric nonzero count. The native constructor is:
+
+```text
+MetabolicKernel(
+  model_reaction_offsets, model_metabolite_offsets, stoich_row_offsets,
+  stoich_column_indices, stoich_values, lower_bounds, upper_bounds,
+  objective_coefficients, exchange_reaction_indices,
+  biomass_reaction_indices, acetate_reaction_indices,
+  cache_tolerance_molar, cache_capacity)
+```
+
+Constructor buffers are copied into RAII-owned native storage:
+
+| Buffer | Exact dtype | Exact shape | Meaning |
+|---|---|---|---|
+| `model_reaction_offsets` | `int64` | `(M + 1,)` | Concatenated reaction boundaries by model. |
+| `model_metabolite_offsets` | `int64` | `(M + 1,)` | Concatenated metabolite boundaries by model. |
+| `stoich_row_offsets` | `int64` | `(K + 1,)` | CSR row boundaries. |
+| `stoich_column_indices` | `int32` | `(Z,)` | Global reaction columns for CSR entries. |
+| `stoich_values` | `float64` | `(Z,)` | CSR coefficients. |
+| `lower_bounds` | `float64` | `(R,)` | Finite reaction lower bounds. |
+| `upper_bounds` | `float64` | `(R,)` | Finite reaction upper bounds. |
+| `objective_coefficients` | `float64` | `(R,)` | Concatenated objective vector. |
+| `exchange_reaction_indices` | `int32` | `(M, 3)` | Three global exchange indices per model in fixed substrate order. |
+| `biomass_reaction_indices` | `int32` | `(M,)` | Global biomass pseudo-reaction index per model. |
+| `acetate_reaction_indices` | `int32` | `(M,)` | Global acetate bookkeeping index per model. |
+
+`cache_tolerance_molar` is finite and positive, and `cache_capacity` is positive and bounded by the
+Python asset/configuration validation. Native construction precomputes one dense LP matrix from
+each model's CSR rows. Phenotypes are then configured exactly as follows:
+
+```text
+configure_phenotypes(
+  model_indices, uptake_vmax, uptake_km, inhibition_alpha,
+  inhibition_beta, max_inhibition, model_revision, prior_revision)
+```
+
+| Argument | Exact dtype | Exact shape or scalar contract |
+|---|---|---|
+| `model_indices` | `int32` | `(P,)`; one valid model index per phenotype. |
+| `uptake_vmax` | `float64` | `(P, 3)`; finite and nonnegative. |
+| `uptake_km` | `float64` | `(P, 3)`; finite and positive. |
+| `inhibition_alpha` | `float64` | `(P, 3)`; finite and positive. |
+| `inhibition_beta` | `float64` | `(P, 3)`; finite and positive. |
+| `max_inhibition` | `float64` | `(P, 3)`; finite values from zero through one. |
+| `model_revision` | `uint64` | Nonnegative revision scalar. |
+| `prior_revision` | `uint64` | Nonnegative revision scalar. |
+
+Reconfiguration copies the phenotype data and resets every cache entry, counter, and LRU sequence.
+`clear_cache()` performs the same cache reset. `cache_stats()` returns
+`(entries, hits, misses, evictions, lp_solves)`.
+
+The direct solve binding is:
+
+```text
+solve_flux(phenotype_index, concentrations_m, cache_enabled=True)
+  -> (flux_values, cache_hit)
+```
+
+`concentrations_m` must be exact `float64`, C-contiguous, shape `(3,)`, finite, and nonnegative.
+The returned `flux_values` is an independent `float64` vector of shape `(R,)` across all
+concatenated models; reactions outside the phenotype's selected model are zero. `cache_hit` is a
+Boolean. The orchestrator wrapper defaults `phenotype_index` to zero and requires
+`concentrations_m` outside `legacy` mode.
+
+The exact batch binding order is:
+
+```text
+advance_batch(
+    phenotype_id, environment_id, concentrations_m, environment_volume_l,
+    biomass_gdw, growth_rate_s, biomass_delta_gdw,
+    substrate_consumed_mol, acetate_secreted_mol, dt_seconds, *,
+    low_substrate_threshold_m=1e-4, depletion_safety,
+    max_substeps, cache_enabled)
+  -> (substeps, lp_solves, cache_hits, cache_misses, cache_evictions,
+      minimum_substep_seconds)
+```
+
+The `MetabolicOrchestrator.advance_batch` wrapper uses the same buffer order and defaults
+`low_substrate_threshold_m=1e-4`, `depletion_safety=0.9`, `max_substeps=256`, and
+`cache_enabled=True`.
+
+| Buffer | Exact dtype | Exact shape | Ownership during a successful call |
+|---|---|---|---|
+| `phenotype_id` | `int32` | `(N,)` | Read-only configured phenotype IDs. |
+| `environment_id` | `int32` | `(N,)` | Read-only environment IDs; multiple agents may share an environment. |
+| `concentrations_m` | `float64` | `(E, 3)` | Writable; committed concentrations by environment and fixed substrate order. |
+| `environment_volume_l` | `float64` | `(E,)` | Read-only, finite, positive explicit volumes in $\mathrm{L}$. |
+| `biomass_gdw` | `float64` | `(N,)` | Writable, nonnegative biomass in $\mathrm{gDW}$. |
+| `growth_rate_s` | `float64` | `(N,)` | Writable output reset to the time-weighted mean growth rate in $\mathrm{s}^{-1}$. |
+| `biomass_delta_gdw` | `float64` | `(N,)` | Writable output reset and accumulated in $\mathrm{gDW}$. |
+| `substrate_consumed_mol` | `float64` | `(N, 3)` | Writable output reset and accumulated in moles of glucose-equivalent monomer. |
+| `acetate_secreted_mol` | `float64` | `(N,)` | Writable output reset and accumulated in moles of acetate bookkeeping. |
+
+`dt_seconds` is real elapsed time in seconds and must be finite and nonnegative;
+`low_substrate_threshold_m` is finite and nonnegative; `depletion_safety` is finite in `(0, 1]`;
+`max_substeps` is a positive integer; and `cache_enabled` is Boolean. Across native construction,
+configuration, solve, and batch calls, arrays require exact dtype, dimension, shape, and
+C-contiguity under pybind11 `noconvert`; mutable arrays must be writable. Validation rejects
+nonfinite or out-of-range values, invalid IDs, invalid scalars, and any unsafe memory overlap
+involving a mutable array.
+
+**Bounded LP solver.** For the selected reduced model, the deterministic embedded two-phase dense
+simplex maximizes the supplied objective under steady-state balance and finite reaction bounds:
+
+$$
+\max_{v}\quad c^{\mathsf{T}}v
+\qquad \text{subject to}\qquad
+Sv=0,\qquad \ell\le v\le u
+$$
+
+The implementation shifts lower bounds with
+
+$$
+x=v-\ell\ge 0,\qquad
+Sx=-S\ell,\qquad
+x\le u-\ell
+$$
+
+and represents each equality as paired inequalities plus one finite upper constraint per shifted
+reaction. The solver is dependency-free C++17 and uses the lowest stable index for deterministic
+ties. Its tolerance is $10^{-10}$ and is strictly a numerical simplex tolerance, not a biological
+parameter. It reports explicit `optimal`, `infeasible`, `unbounded`, and `numerical_error` states;
+the production asset validator rejects nonfinite bounds, so shipped reduced models are bounded.
+This small dense solver is tested for the reduced assets and does not claim genome-scale
+robustness.
+
+**Deterministic posterior-mean exchange bounds.** There is no random sampling. For phenotype
+$p$ and substrate $k$, the inhibition-probability mean and retained uptake multiplier are
+
+$$
+\bar{p}_{pk}=\frac{\alpha_{pk}}{\alpha_{pk}+\beta_{pk}},\qquad
+m_{pk}=1-\bar{p}_{pk}e_{pk}
+$$
+
+where $e_{pk}$ is `max_inhibition`. At concentration $C_k$, the effective exchange upper bound is
+
+$$
+u_{pk}^{\mathrm{eff}}(C_k)=\min\left(
+u_{k}^{\mathrm{model}},
+V_{pk}^{\max}\frac{C_k}{K_{pk}+C_k}m_{pk}
+\right)
+$$
+
+Zero concentration therefore gives a zero exchange bound. In the shipped neutral priors,
+$e_{pk}=0$ and hence $m_{pk}=1$ for every phenotype/substrate row.
+
+**Tolerant cache and batch ownership.** Each `MetabolicKernel` owns a private
+`std::unordered_map`; cache data never crosses kernel instances or runs. With
+$\delta_C=10^{-5}\thinspace\mathrm{M}$, each concentration component is quantized as
+
+$$
+q_k=\left\lfloor\frac{C_k}{10^{-5}\thinspace\mathrm{M}}\right\rfloor
+$$
+
+The key is `(model_revision, prior_revision, phenotype_index, q_0, q_1, q_2)`. Lookup probes all
+27 adjacent three-dimensional bin combinations and accepts a stored concentration only when
+
+$$
+\max_{k\in\lbrace 0,1,2\rbrace}
+\lvert C'_k-C_k\rvert\le 10^{-5}\thinspace\mathrm{M}
+$$
+
+The stored full flux vector is intentionally reused even though continuously derived effective
+bounds can differ within that tolerance. If several entries match, lookup chooses the oldest
+insertion sequence and then updates its last-used sequence. Capacity is bounded; eviction chooses
+the least recently used entry, breaking a last-use tie by oldest insertion sequence. Each entry
+stores exact concentrations, effective exchange bounds, the full concatenated flux vector, and
+both sequences. Model/prior revisions are part of the key, while reconfiguration and
+`clear_cache()` reset entries and counters.
+
+Within a batch substep, misses with exactly identical phenotype, concentrations, and effective
+bounds are deduplicated. `cache_misses` still counts missed agents, so `lp_solves` can be smaller.
+Cache lookup and insertion remain serial. Unique misses are solved with OpenMP
+`schedule(static)` using preallocated per-request workspaces; no Python API call, shared-cache
+mutation, or dynamic allocation occurs inside that parallel region. The GIL is released around
+pure native solve and batch work.
+
+**Adaptive metabolic integration.** Adaptive substeps apply only inside the requested metabolic
+batch interval. They do not change the global movement, contact, or ECM elapsed-time step. For
+environment $e$ and substrate $k$, fixed-order reduction computes the depletion rate
+
+$$
+D_{ek}=\frac{\sum_{i\mid e_i=e}u_{ik}B_i}{V_e}
+$$
+
+where $u_{ik}$ is specific uptake in
+$\mathrm{mol}/\mathrm{gDW}/\mathrm{s}$, $B_i$ is biomass in $\mathrm{gDW}$, $V_e$ is the
+explicit environment volume in $\mathrm{L}$, and $D_{ek}$ is in $\mathrm{M}/\mathrm{s}$.
+
+Let $\sigma$ be `depletion_safety`. The per-environment safety multiplier is
+
+$$
+\lambda_{ek}=\sigma\quad\mathrm{when}\quad
+k\in\lbrace 1,2\rbrace\text{ and }
+C_{ek}\lt 10^{-4}\thinspace\mathrm{M}=0.1\thinspace\mathrm{mM},
+\qquad \lambda_{ek}=1\quad\text{otherwise}
+$$
+
+Thus glycan and MDCF, indices 1 and 2, receive the additional factor only when strictly below the
+threshold. For every positive depletion rate, the nonnegative concentration limit always applies:
+
+$$
+\Delta t_{\mathrm{sub}}=\min\left(
+\Delta t_{\mathrm{remaining}},
+\min_{e,k\thinspace:\thinspace D_{ek}\gt 0}
+\lambda_{ek}\frac{C_{ek}}{D_{ek}}
+\right)
+$$
+
+An empty set of positive rates contributes no tighter limit. Zero concentration produces zero
+uptake. There is no lower time-step clamp that could override depletion safety; failure to make
+numerical progress or exhaustion of `max_substeps` raises an error.
+
+For substep $r$, explicit Euler updates per-agent substrate use, biomass, and acetate as
+
+$$
+\Delta n_{ik}^{(r)}=u_{ik}^{(r)}B_i^{(r)}\Delta t_r,\qquad
+\Delta B_i^{(r)}=g_i^{(r)}B_i^{(r)}\Delta t_r,\qquad
+\Delta a_i^{(r)}=a_i^{\mathrm{flux},(r)}B_i^{(r)}\Delta t_r
+$$
+
+and shared environments and biomass advance by
+
+$$
+C_{ek}^{(r+1)}=\max\left(
+0,
+C_{ek}^{(r)}-\frac{\sum_{i\mid e_i=e}\Delta n_{ik}^{(r)}}{V_e}
+\right),\qquad
+B_i^{(r+1)}=B_i^{(r)}+\Delta B_i^{(r)}
+$$
+
+If floating-point summation requests slightly more substrate than an environment contains, all
+requests for that environment/substrate are scaled proportionally to availability as a
+deterministic roundoff backstop. `substrate_consumed_mol`, `biomass_delta_gdw`, and
+`acetate_secreted_mol` accumulate across substeps. The final growth output is the time-weighted
+mean
+
+$$
+\bar{g}_i=\frac{1}{\Delta t}\sum_r g_i^{(r)}\Delta t_r
+$$
+
+Native calls snapshot all six mutable arrays together with the complete cache, counters, and LRU
+sequence. Any validation, solver, substep, or allocation failure restores that state
+transactionally before propagating. Successful `shadow` orchestration performs its separate
+documented restoration of concentrations and biomass while preserving diagnostics.
+
+**QA and measured fixtures.** `bacteria/test_metabolic_architecture.py` contains 39 focused asset,
+architecture, and solver tests. A focused `bacteria/test_metabolic_kernel.py` run contains 29 broad
+tests: 27 ordinary cases passed and two opt-in cases skipped. Coverage includes 120 seeded
+Python/native references, $Sv=0$ residuals, unsaturated cache-tolerance boundaries, deterministic
+LRU/revision/deduplication behavior, the adaptive shared-environment crash regression with 1,000
+agents, exact ABI and aliases, transactional arrays plus cache state, ownership, native stress,
+scale parity, and the opt-in benchmark.
+
+One fresh synthetic scale fixture ran 1,000 agents for 12 repeated adaptive ticks. Python took
+`0.596254s` and native code took `0.010737s`; both recorded 11,000 cache hits and 24 LP solves. This
+compares the Python and native implementations of the same reduced fixture. It is not a required
+cache-speedup metric, full-`Simulation` benchmark, genome-scale workload, or biological prediction.
+
+The fresh repeated-identical-workload cache benchmark, with output parity, reported
+`FBA Caching Speedup: 1.636x (Uncached median: 0.004914s; Cached median: 0.003003s)`. This is one
+environment-specific observation with no fixed threshold or performance guarantee. A separate
+2,000-iteration native stress run took `0.113406s` and ended with cache statistics
+`(8, 8685, 17315, 9181, 9189)`.
+
+Valgrind is unavailable in the local Windows environment. The kernel workflow builds required
+OpenMP variants on Windows, Linux, and macOS plus a forced-serial Linux variant, runs the metabolic
+scale fixture, and runs 2,000-iteration metabolic, physics, and ECM stress workloads under serial
+Linux Valgrind checks for definite and indirect losses. These focused counts and measurements do
+not replace the parent workflow's final full-matrix result. The final local ordinary suite passed
+under both forced-serial and required-OpenMP builds: 215 tests were discovered, 210 passed, and the
+five opt-in cases were skipped.
+
 ## Appendix A: Scientific References
 
 Every biological or mathematical model, formula, named equation, scaling law, or empirically-derived
@@ -1590,3 +1917,5 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-39"></a>**[39]** **Own (BacSandbox model).** Flat sparse-buffer ABI, lazy backend orchestration, and layer-parallel dispatch, §10.1.
 
 <a id="ref-40"></a>**[40]** **Own (BacSandbox model).** Flat agent/species array interface, CSR ordering, staged OpenMP design, and six-counter event contract, §10.2.
+
+<a id="ref-41"></a>**[41]** **Own (BacSandbox model)**. Reduced-model interface and topology, flat/CSR ABI, deterministic posterior-mean constraint adapter, tolerance-neighbor cache/LRU policy, and adaptive substep design, §10.3.

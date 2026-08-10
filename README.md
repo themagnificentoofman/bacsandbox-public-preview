@@ -21,7 +21,7 @@ For the full technical model, equations, constants, CSV schemas, and implementat
 
 ### Optional Compiled Kernel
 
-The normal requirements-only setup above needs no compiler and retains Python fallbacks for both ECM and contact physics. The optional unified extension accelerates ECM diffusion/decay and contact-pair processing when it is installed. To build it in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
+The normal requirements-only setup above needs no compiler and retains Python fallbacks for both ECM and contact physics. The optional unified extension accelerates ECM diffusion/decay and contact-pair processing and also exposes the reduced metabolic kernel through an opt-in direct API. The app's existing pg-based metabolism remains the default; the reduced API is not a UI mode or automatic `Simulation` integration and is not a genome-scale model. To build the extension in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
 
 PowerShell:
 
@@ -36,7 +36,7 @@ POSIX shells:
 BACSANDBOX_OPENMP=auto python -m pip install -e .
 ```
 
-Use `BACSANDBOX_OPENMP=on` to require OpenMP or `BACSANDBOX_OPENMP=off` to build deliberately without it. OpenMP builds on macOS require `libomp`. Backend and build details are documented in [DOCUMENTATION.md §10.1](DOCUMENTATION.md#101-hybrid-c-computational-kernel) and [§10.2](DOCUMENTATION.md#102-vectorized-physics-and-spatial-hash-kernel).
+Use `BACSANDBOX_OPENMP=on` to require OpenMP or `BACSANDBOX_OPENMP=off` to build deliberately without it. OpenMP builds on macOS require `libomp`. Backend and build details are documented in [DOCUMENTATION.md §10.1](DOCUMENTATION.md#101-hybrid-c-computational-kernel), [§10.2](DOCUMENTATION.md#102-vectorized-physics-and-spatial-hash-kernel), and [§10.3](DOCUMENTATION.md#103-constraint-based-metabolic-caching-kernel).
 
 ## Using The App
 

@@ -163,16 +163,19 @@ setup(
     ],
     packages=find_packages(exclude=('tests', 'tests.*')),
     include_package_data=False,
+    package_data={'bacteria': ['models/*.json']},
     ext_modules=[
         Extension(
             'bacteria_c_kernel',
             sources=[
                 'bacteria/src/ecm_kernel.cpp',
+                'bacteria/src/metabolic_kernel.cpp',
                 'bacteria/src/physics_kernel.cpp',
             ],
             include_dirs=[pybind11.get_include(), numpy.get_include()],
             depends=[
                 'bacteria/src/ecm_kernel.h',
+                'bacteria/src/metabolic_kernel.h',
                 'bacteria/src/physics_kernel.h',
             ],
             language='c++',

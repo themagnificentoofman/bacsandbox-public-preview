@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "prior_id": "metabolic_priors_v1",
+  "prior_revision": 1,
+  "provenance": "Own (BacSandbox model)",
+  "scope": "Neutral production priors only; no empirical interaction or inhibition evidence is asserted.",
+  "parameter_rationale": {
+    "alpha_beta": "The positive 1.0/1.0 shapes are symmetric neutral placeholders and assert no empirical interaction evidence.",
+    "max_inhibition": "The production value 0.0 makes every posterior inhibition multiplier exactly neutral."
+  },
+  "substrate_order": [
+    "generic_calorie",
+    "complex_glycan",
+    "mdcf_prebiotic"
+  ],
+  "rows": [
+    {
+      "phenotype_id": "neutral_default",
+      "substrate": "generic_calorie",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "max_inhibition": 0.0,
+      "evidence_scope": "neutral; no empirical interaction asserted"
+    },
+    {
+      "phenotype_id": "neutral_default",
+      "substrate": "complex_glycan",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "max_inhibition": 0.0,
+      "evidence_scope": "neutral; no empirical interaction asserted"
+    },
+    {
+      "phenotype_id": "neutral_default",
+      "substrate": "mdcf_prebiotic",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "max_inhibition": 0.0,
+      "evidence_scope": "neutral; no empirical interaction asserted"
+    }
+  ]
+}
