@@ -2076,7 +2076,7 @@ $$
 The affinity $a_{p,k}$ scales uptake capacity only. The half-saturation concentration
 $K_{p,k}$ is independent of that multiplier.<sup>[47](#ref-47)</sup> The shipped calibration is:
 
-| ABI substrate $k$ | $V_k^{\mathrm{base}}$ ($\mathrm{mol}\thinspace\mathrm{GE}/(\mathrm{gDW}\thinspace\mathrm{s})$) | $K_{p,k}$ ($\mathrm{M}$) | Provenance |
+| ABI substrate $k$ | $V_k^{\mathrm{base}}\thinspace(\mathrm{mol}\thinspace\mathrm{GE}/(\mathrm{gDW}\thinspace\mathrm{s}))$ | $K_{p,k}\thinspace(\mathrm{M})$ | Provenance |
 |---|---:|---:|---|
 | `generic_calorie` | $2.8 \times 10^{-6}$ | $1.0 \times 10^{-4}$ | Own calibration.<sup>[47](#ref-47)</sup> |
 | `complex_glycan` | $1.4 \times 10^{-6}$ | $2.0 \times 10^{-4}$ | Own calibration.<sup>[47](#ref-47)</sup> |
