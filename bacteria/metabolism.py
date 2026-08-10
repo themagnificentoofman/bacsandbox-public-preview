@@ -37,6 +37,20 @@ MODEL_DIRECTORY = Path(__file__).resolve().parent / 'models'
 DEFAULT_MODEL_PATH = MODEL_DIRECTORY / 'reduced_metabolism_v1.json'
 DEFAULT_PRIOR_PATH = MODEL_DIRECTORY / 'metabolic_priors_v1.json'
 
+# Own-model base capacities keep reduced whole-cell exchange in the single-digit
+# micromole/gDW/s range and make generic monomer uptake less preprocessing-limited
+# than glycan-derived pools; see DOCUMENTATION.md section 10.4.
+SPECIES_BASE_UPTAKE_VMAX_MOL_GDW_S = (2.8e-6, 1.4e-6, 1.8e-6)
+# Positive 0.10-0.20 mM half-saturation concentrations keep the Phase 1 MDCF bolus
+# concentration-responsive while separating Km from capacity; see DOCUMENTATION.md section 10.4.
+SPECIES_UPTAKE_KM_MOLAR = (1.0e-4, 2.0e-4, 1.5e-4)
+SPECIES_AFFINITY_FIELDS = ('aff_calorie', 'aff_glycan', 'aff_mdcf')
+# Missing legacy fields remain calorie-only, preserving the pre-diet fallback;
+# see DOCUMENTATION.md section 10.4.
+SPECIES_DEFAULT_AFFINITY_MULTIPLIERS = (1.0, 0.0, 0.0)
+# Shipped CSV profiles use Own-model relative tiers: glycan 2, MAG-like MDCF 3,
+# cultured BgF5_2 MDCF 4, and explicit MDCF non-utilization 0; see DOCUMENTATION.md section 10.4.
+
 _MODEL_KEYS = frozenset((
     'schema_version',
     'model_id',
@@ -1629,6 +1643,88 @@ def build_neutral_phenotype_config(
         'max_inhibition': np.asarray(
             (tuple(row.max_inhibition for row in prior_data.rows),), dtype=np.float64
         ),
+        'model_revision': model_data.model_revision,
+        'prior_revision': prior_data.prior_revision,
+        'cache_capacity': cache_capacity,
+    })
+
+
+def build_species_phenotype_config(
+    species_profiles: Sequence[Any],
+    model: Optional[MetabolicModelData] = None,
+    priors: Optional[MetabolicPriorData] = None,
+    cache_capacity: int = DEFAULT_CACHE_CAPACITY,
+) -> Mapping[str, Any]:
+    """Build the reduced-model phenotype matrix from legacy species affinities.
+
+    ``aff_*`` values are dimensionless multipliers of substrate-specific base
+    capacities in mol glucose-equivalent / gDW / s. ``Km`` remains an independent
+    positive molar concentration. The numerical calibration is Own (BacSandbox
+    model), not an empirical whole-cell kinetic measurement.
+    """
+    if isinstance(species_profiles, (str, bytes)) or not isinstance(species_profiles, Sequence):
+        raise TypeError('species_profiles must be a sequence of mappings or species objects')
+    profiles = tuple(species_profiles)
+    if not profiles:
+        raise ValueError('species_profiles must contain at least one species')
+
+    model_data = load_metabolic_model() if model is None else model
+    prior_data = load_metabolic_priors() if priors is None else priors
+    if tuple(row.substrate for row in prior_data.rows) != SUBSTRATE_ORDER:
+        raise ValueError('species prior rows must follow the fixed substrate order')
+
+    affinities = np.empty((len(profiles), len(SUBSTRATE_ORDER)), dtype=np.float64)
+    for profile_index, profile in enumerate(profiles):
+        for substrate_index, (field_name, default_value) in enumerate(zip(
+            SPECIES_AFFINITY_FIELDS,
+            SPECIES_DEFAULT_AFFINITY_MULTIPLIERS,
+        )):
+            if isinstance(profile, Mapping):
+                raw_value = profile.get(field_name, default_value)
+            else:
+                raw_value = getattr(profile, field_name, default_value)
+            if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+                raw_value = default_value
+            if isinstance(raw_value, bool):
+                raise TypeError(f'species_profiles[{profile_index}].{field_name} must be numeric')
+            try:
+                affinity = float(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f'species_profiles[{profile_index}].{field_name} must be numeric'
+                ) from exc
+            if not math.isfinite(affinity) or affinity < 0.0:
+                raise ValueError(
+                    f'species_profiles[{profile_index}].{field_name} must be finite and nonnegative'
+                )
+            affinities[profile_index, substrate_index] = affinity
+
+    base_vmax = np.asarray(SPECIES_BASE_UPTAKE_VMAX_MOL_GDW_S, dtype=np.float64)
+    # A legacy affinity scales capacity, so zero produces an exact zero exchange
+    # upper bound without changing Michaelis-Menten Km; see DOCUMENTATION.md section 10.4.
+    uptake_vmax = affinities * base_vmax
+    if not np.all(np.isfinite(uptake_vmax)):
+        raise ValueError('species affinity scaling produced nonfinite uptake_vmax')
+    # Every phenotype shares the positive Own-model substrate Km calibration while
+    # retaining an independent writable row; see DOCUMENTATION.md section 10.4.
+    uptake_km = np.tile(
+        np.asarray(SPECIES_UPTAKE_KM_MOLAR, dtype=np.float64),
+        (len(profiles), 1),
+    )
+    prior_alpha = np.asarray(tuple(row.alpha for row in prior_data.rows), dtype=np.float64)
+    prior_beta = np.asarray(tuple(row.beta for row in prior_data.rows), dtype=np.float64)
+    prior_inhibition = np.asarray(
+        tuple(row.max_inhibition for row in prior_data.rows), dtype=np.float64
+    )
+    # Every species selects the shared reduced bookkeeping model at index zero, and
+    # neutral prior rows repeat per phenotype; see DOCUMENTATION.md section 10.4.
+    return MappingProxyType({
+        'model_indices': np.zeros(len(profiles), dtype=np.int32),
+        'uptake_vmax': np.array(uptake_vmax, copy=True, order='C'),
+        'uptake_km': np.array(uptake_km, copy=True, order='C'),
+        'inhibition_alpha': np.tile(prior_alpha, (len(profiles), 1)),
+        'inhibition_beta': np.tile(prior_beta, (len(profiles), 1)),
+        'max_inhibition': np.tile(prior_inhibition, (len(profiles), 1)),
         'model_revision': model_data.model_revision,
         'prior_revision': prior_data.prior_revision,
         'cache_capacity': cache_capacity,

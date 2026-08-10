@@ -124,9 +124,9 @@ SUBSTRATE_COLORS = {
     SUBSTRATE_COMPLEX_GLYCAN: (210, 140, 50),    # amber/orange (fibre)
     SUBSTRATE_MDCF_PREBIOTIC: (140, 90, 200),    # violet (engineered prebiotic)
 }
-# Default per-species substrate affinities (uptake-rate multipliers on consumption_speed).
-# Legacy species eat only generic calories at full rate, preserving original dynamics; fibre and
-# MDCF utilisation must be explicitly granted per species, making them selective taxon traits.
+# Default dimensionless per-species uptake-capacity multipliers. The legacy node path scales
+# consumption_speed, while the reduced model scales each substrate's base Vmax; zero disables
+# uptake in either path, and legacy species remain calorie-only; see DOCUMENTATION.md section 10.4.
 DEFAULT_AFF_CALORIE = 1.0
 DEFAULT_AFF_GLYCAN = 0.0
 DEFAULT_AFF_MDCF = 0.0

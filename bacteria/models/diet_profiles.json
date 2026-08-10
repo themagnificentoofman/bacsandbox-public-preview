@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "profile_id": "diet_profiles_v1",
+  "profile_revision": 1,
+  "provenance": "Own (BacSandbox model)",
+  "documentation_anchor": "DOCUMENTATION.md section 10.4",
+  "scope": "Dry food ingredient composition to glucose-equivalent environmental concentration increments; species uptake kinetics are excluded.",
+  "basis": {
+    "feed_mass": "g dry feed delivered as an interval-total bolus",
+    "ingredient_amount": "source-reported g per 100 g dry formulation",
+    "component_fraction": "g glucose-equivalent component per g dry ingredient",
+    "volume": "L",
+    "output": "mol glucose-equivalent monomer per L",
+    "feed_semantics": "interval_total_bolus"
+  },
+  "constants": {
+    "glucose_equivalent_molar_mass_g_per_mol": 180.156,
+    "recipe_rounding_tolerance_g_per_100g": 0.1
+  },
+  "substrate_order": [
+    "generic_calorie",
+    "complex_glycan",
+    "mdcf_prebiotic"
+  ],
+  "component_order": [
+    "simple_hexose",
+    "digestible_starch",
+    "resistant_starch",
+    "cellulose",
+    "arabinan",
+    "xylan",
+    "beta_1_4_galactan",
+    "beta_1_4_mannan"
+  ],
+  "components": {
+    "simple_hexose": {
+      "display_name": "Simple-sugar glucose equivalent",
+      "substrate": "generic_calorie",
+      "source_hook": "bac-sandbox-glucose-equivalent"
+    },
+    "digestible_starch": {
+      "display_name": "FITDOG total starch treated as hydrolysable glucose equivalent",
+      "substrate": "generic_calorie",
+      "source_hook": "bac-sandbox-starch-allocation"
+    },
+    "resistant_starch": {
+      "display_name": "Resistant starch where independently quantified",
+      "substrate": "complex_glycan",
+      "source_hook": "bac-sandbox-starch-allocation"
+    },
+    "cellulose": {
+      "display_name": "Cellulose",
+      "substrate": "complex_glycan",
+      "source_hook": "hibberd-2024-table-9d"
+    },
+    "arabinan": {
+      "display_name": "Arabinan",
+      "substrate": "complex_glycan",
+      "source_hook": "hibberd-2024-table-9d"
+    },
+    "xylan": {
+      "display_name": "Xylan and hemicellulose backbone",
+      "substrate": "complex_glycan",
+      "source_hook": "hibberd-2024-table-9d"
+    },
+    "beta_1_4_galactan": {
+      "display_name": "Beta-1,4-linked galactan backbone",
+      "substrate": "mdcf_prebiotic",
+      "source_hook": "hibberd-2024-table-9d"
+    },
+    "beta_1_4_mannan": {
+      "display_name": "Beta-1,4-linked mannan backbone",
+      "substrate": "mdcf_prebiotic",
+      "source_hook": "hibberd-2024-table-9d"
+    }
+  },
+  "ingredient_order": [
+    "chickpea",
+    "peanut",
+    "soy",
+    "banana",
+    "rice",
+    "lentil",
+    "milk_powder",
+    "added_sugar",
+    "soybean_oil",
+    "micronutrient_mix"
+  ],
+  "ingredients": {
+    "chickpea": {
+      "display_name": "Chickpea flour",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.341888523903813,
+        "resistant_starch": 0.0,
+        "cellulose": 0.00233924391005217,
+        "arabinan": 0.000626126386101464,
+        "xylan": 0.000298979267924993,
+        "beta_1_4_galactan": 0.000776876552935304,
+        "beta_1_4_mannan": 0.0000289635534648459
+      }
+    },
+    "peanut": {
+      "display_name": "Peanut flour",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.227661169400376,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0011680163509425,
+        "arabinan": 0.000282381611476868,
+        "xylan": 0.000191346080221905,
+        "beta_1_4_galactan": 0.000346004579631969,
+        "beta_1_4_mannan": 0.00000647099669383131
+      }
+    },
+    "soy": {
+      "display_name": "Soybean flour",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.0361953953854319,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0081111121363649,
+        "arabinan": 0.00195013618108989,
+        "xylan": 0.00118271248824652,
+        "beta_1_4_galactan": 0.00227227509861473,
+        "beta_1_4_mannan": 0.000154385892674677
+      }
+    },
+    "banana": {
+      "display_name": "Mashed green banana pulp",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.344297418457011,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0149221268750927,
+        "arabinan": 0.000622227681118122,
+        "xylan": 0.000388571665375806,
+        "beta_1_4_galactan": 0.00372276503639862,
+        "beta_1_4_mannan": 0.000300055607716832
+      }
+    },
+    "rice": {
+      "display_name": "Rice",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.492073991789556,
+        "resistant_starch": 0.0,
+        "cellulose": 0.00548416629823811,
+        "arabinan": 0.000677427473296529,
+        "xylan": 0.00019139625003062,
+        "beta_1_4_galactan": 0.00118505446443222,
+        "beta_1_4_mannan": 0.0000548720321143281
+      }
+    },
+    "lentil": {
+      "display_name": "Lentil",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.293160330988321,
+        "resistant_starch": 0.0,
+        "cellulose": 0.00134004542191012,
+        "arabinan": 0.001004374947928,
+        "xylan": 0.000409317862573939,
+        "beta_1_4_galactan": 0.00236275834528528,
+        "beta_1_4_mannan": 0.0000202168108753193
+      }
+    },
+    "milk_powder": {
+      "display_name": "Powdered skimmed milk",
+      "source_hook": "hibberd-2024-table-9d",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.0090982724698979,
+        "resistant_starch": 0.0,
+        "cellulose": 0.000427218376620125,
+        "arabinan": 0.000122689548979155,
+        "xylan": 0.000129033245011099,
+        "beta_1_4_galactan": 0.0000995154258117196,
+        "beta_1_4_mannan": 0.00000144601665638246
+      }
+    },
+    "added_sugar": {
+      "display_name": "Added sugar",
+      "source_hook": "bac-sandbox-glucose-equivalent",
+      "component_mass_fractions": {
+        "simple_hexose": 1.0,
+        "digestible_starch": 0.0,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0,
+        "arabinan": 0.0,
+        "xylan": 0.0,
+        "beta_1_4_galactan": 0.0,
+        "beta_1_4_mannan": 0.0
+      }
+    },
+    "soybean_oil": {
+      "display_name": "Soybean oil",
+      "source_hook": "chen-2021-table-s1",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.0,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0,
+        "arabinan": 0.0,
+        "xylan": 0.0,
+        "beta_1_4_galactan": 0.0,
+        "beta_1_4_mannan": 0.0
+      }
+    },
+    "micronutrient_mix": {
+      "display_name": "Micronutrient mix",
+      "source_hook": "chen-2021-table-s1",
+      "component_mass_fractions": {
+        "simple_hexose": 0.0,
+        "digestible_starch": 0.0,
+        "resistant_starch": 0.0,
+        "cellulose": 0.0,
+        "arabinan": 0.0,
+        "xylan": 0.0,
+        "beta_1_4_galactan": 0.0,
+        "beta_1_4_mannan": 0.0
+      }
+    }
+  },
+  "diet_order": [
+    "malnutrition",
+    "rusf",
+    "mdcf_2"
+  ],
+  "diets": {
+    "malnutrition": {
+      "description": "Own low-diversity, high-simple-carbohydrate baseline derived from RUSF by replacing lentil and milk solids with equal source-reported mass of added sugar.",
+      "source_hook": "bac-sandbox-malnutrition-baseline",
+      "reported_total_g_per_100g": 100.04,
+      "ingredient_mass_g_per_100g": {
+        "chickpea": 0.0,
+        "peanut": 0.0,
+        "soy": 0.0,
+        "banana": 0.0,
+        "rice": 18.9,
+        "lentil": 0.0,
+        "milk_powder": 0.0,
+        "added_sugar": 49.0,
+        "soybean_oil": 29.0,
+        "micronutrient_mix": 3.14
+      }
+    },
+    "rusf": {
+      "description": "Published rice- and lentil-based ready-to-use supplementary food comparison formulation.",
+      "source_hook": "chen-2021-table-s1",
+      "reported_total_g_per_100g": 100.04,
+      "ingredient_mass_g_per_100g": {
+        "chickpea": 0.0,
+        "peanut": 0.0,
+        "soy": 0.0,
+        "banana": 0.0,
+        "rice": 18.9,
+        "lentil": 21.5,
+        "milk_powder": 10.5,
+        "added_sugar": 17.0,
+        "soybean_oil": 29.0,
+        "micronutrient_mix": 3.14
+      }
+    },
+    "mdcf_2": {
+      "description": "Published MDCF-2 formulation enriched in chickpea, peanut, soybean and green banana glycans.",
+      "source_hook": "chen-2021-table-s1",
+      "reported_total_g_per_100g": 99.94,
+      "ingredient_mass_g_per_100g": {
+        "chickpea": 10.0,
+        "peanut": 10.0,
+        "soy": 8.0,
+        "banana": 19.0,
+        "rice": 0.0,
+        "lentil": 0.0,
+        "milk_powder": 0.0,
+        "added_sugar": 29.8,
+        "soybean_oil": 20.0,
+        "micronutrient_mix": 3.14
+      }
+    }
+  },
+  "source_hooks": {
+    "bac-sandbox-glucose-equivalent": "DOCUMENTATION.md section 10.4.2 and Appendix A",
+    "bac-sandbox-starch-allocation": "DOCUMENTATION.md section 10.4.2 and Appendix A",
+    "bac-sandbox-malnutrition-baseline": "DOCUMENTATION.md section 10.4.3 and Appendix A",
+    "chen-2021-table-s1": "DOCUMENTATION.md section 10.4.3 and Appendix A",
+    "hibberd-2024-table-9d": "DOCUMENTATION.md section 10.4.3 and Appendix A"
+  }
+}

@@ -15,8 +15,11 @@ from bacteria.metabolism import (
     MetabolicOrchestrator,
     MetabolicSolverUnavailable,
     PythonMetabolicKernel,
+    SPECIES_BASE_UPTAKE_VMAX_MOL_GDW_S,
+    SPECIES_UPTAKE_KM_MOLAR,
     SUBSTRATE_ORDER,
     build_neutral_phenotype_config,
+    build_species_phenotype_config,
     concentration_dependent_uptake_bound,
     enumerate_neighbor_cache_keys,
     load_metabolic_model,
@@ -660,6 +663,72 @@ class TestMetabolicOrchestrator(unittest.TestCase):
             concentration=2.0e-4,
         )
 
+    def configured_species_arguments(self):
+        model = load_metabolic_model()
+        priors = load_metabolic_priors()
+        # Own-model multipliers represent one high-capacity and one non-utilizing MDCF
+        # profile without asserting measured kinetics; see DOCUMENTATION.md section 10.4.
+        profiles = (
+            {'aff_calorie': '1', 'aff_glycan': '2', 'aff_mdcf': '4'},
+            {'aff_calorie': '1', 'aff_glycan': '1', 'aff_mdcf': '0'},
+        )
+        return {
+            'model': model,
+            'priors': priors,
+            'phenotype_config': build_species_phenotype_config(
+                profiles,
+                model,
+                priors,
+                8,
+            ),
+        }
+
+    def make_species_batch(self):
+        batch = TestPythonMetabolicSolver().make_batch(
+            agent_count=2,
+            environment_count=2,
+            concentration=0.0,
+        )
+        batch['phenotype_id'][:] = (0, 1)
+        # Equal MDCF pools isolate phenotype capacity as the only uptake difference;
+        # see DOCUMENTATION.md section 10.4.
+        batch['concentrations_m'][:, 2] = 2.0e-4
+        return batch
+
+    def test_species_affinities_scale_vmax_without_changing_km(self):
+        config = self.configured_species_arguments()['phenotype_config']
+        base_vmax = np.asarray(SPECIES_BASE_UPTAKE_VMAX_MOL_GDW_S, dtype=np.float64)
+        expected_vmax = np.asarray(((1.0, 2.0, 4.0), (1.0, 1.0, 0.0))) * base_vmax
+        expected_km = np.tile(np.asarray(SPECIES_UPTAKE_KM_MOLAR), (2, 1))
+
+        np.testing.assert_array_equal(config['uptake_vmax'], expected_vmax)
+        np.testing.assert_array_equal(config['uptake_km'], expected_km)
+        self.assertEqual(config['uptake_vmax'][1, 2], 0.0)
+        for name in ('uptake_vmax', 'uptake_km'):
+            self.assertEqual(config[name].dtype, np.float64)
+            self.assertTrue(config[name].flags.c_contiguous)
+
+    def test_python_species_batch_preserves_exact_mdcf_non_utilization(self):
+        orchestrator = MetabolicOrchestrator(
+            mode='fba',
+            backend='python',
+            **self.configured_species_arguments(),
+        )
+        batch = self.make_species_batch()
+        initial_concentrations = batch['concentrations_m'].copy()
+        orchestrator.advance_batch(
+            **batch,
+            dt_seconds=0.1,
+            depletion_safety=0.9,
+            max_substeps=8,
+            cache_enabled=False,
+        )
+
+        self.assertGreater(batch['substrate_consumed_mol'][0, 2], 0.0)
+        self.assertEqual(batch['substrate_consumed_mol'][1, 2], 0.0)
+        self.assertLess(batch['concentrations_m'][0, 2], initial_concentrations[0, 2])
+        self.assertEqual(batch['concentrations_m'][1, 2], initial_concentrations[1, 2])
+
     def test_mode_and_backend_validation(self):
         with self.assertRaisesRegex(ValueError, 'legacy.*shadow.*fba'):
             MetabolicOrchestrator(mode='invalid')
@@ -1104,6 +1173,45 @@ class TestNativeMetabolicKernel(unittest.TestCase):
                 else:
                     self.assertTrue(np.all(batch['concentrations_m'] < initial_concentrations))
                     self.assertTrue(np.all(batch['biomass_gdw'] > initial_biomass))
+
+    def test_cpp_species_batch_matches_python_capacity_gating(self):
+        fixture = TestMetabolicOrchestrator()
+        arguments = fixture.configured_species_arguments()
+        python_batch = fixture.make_species_batch()
+        native_batch = {name: value.copy() for name, value in python_batch.items()}
+        python_orchestrator = MetabolicOrchestrator(
+            mode='fba',
+            backend='python',
+            **arguments,
+        )
+        native_orchestrator = MetabolicOrchestrator(
+            mode='fba',
+            backend='cpp',
+            **arguments,
+        )
+
+        for orchestrator, batch in (
+            (python_orchestrator, python_batch),
+            (native_orchestrator, native_batch),
+        ):
+            orchestrator.advance_batch(
+                **batch,
+                dt_seconds=0.1,
+                depletion_safety=0.9,
+                max_substeps=8,
+                cache_enabled=False,
+            )
+
+        for name in (
+            'concentrations_m',
+            'biomass_gdw',
+            'growth_rate_s',
+            'biomass_delta_gdw',
+            'substrate_consumed_mol',
+            'acetate_secreted_mol',
+        ):
+            np.testing.assert_allclose(native_batch[name], python_batch[name], rtol=1.0e-12)
+        self.assertEqual(native_batch['substrate_consumed_mol'][1, 2], 0.0)
 
 
 if __name__ == '__main__':

@@ -167,10 +167,9 @@ class Bacterium:
         # Units: pg glucose-equivalent nutrient absorbed per second, later scaled by elapsed dt.
         self.consumption_speed = getattr(species, 'consumption_speed', DEFAULT_CONSUMPTION_SPEED_PG_S) * (self.base_size ** 2)
         
-        # Phase I diet model: per-substrate uptake-efficiency multipliers (generic calorie, complex
-        # glycan, MDCF prebiotic), indexed by SUBSTRATE_* id. Effective uptake of a node equals
-        # consumption_speed * affinity[substrate]; zero affinity means the cell cannot metabolise
-        # that substrate, so MDCF prebiotics selectively reward only competent taxa.
+        # Dimensionless per-substrate capacity multipliers use SUBSTRATE_* order. The legacy node
+        # path computes consumption_speed * multiplier, while the reduced model applies the same
+        # trait to base Vmax; zero exactly disables uptake; see DOCUMENTATION.md section 10.4.
         self.substrate_affinity = (
             max(0.0, getattr(species, 'aff_calorie', DEFAULT_AFF_CALORIE)),
             max(0.0, getattr(species, 'aff_glycan', DEFAULT_AFF_GLYCAN)),
@@ -621,10 +620,9 @@ class BacteriaSpecies:
         # transfer of resistance (0 disables both donating and receiving).
         self.phage_resistance = max(0.0, min(float(phage_resistance), 1.0))
         self.hgt_competence = max(0.0, min(float(hgt_competence), 1.0))
-        # Phase I diet model: per-substrate uptake-efficiency multipliers (>=0) scaling
-        # consumption_speed for generic calories, complex glycans, and MDCF prebiotics. Defaults
-        # grant only calorie use, so fibre/MDCF utilisation is an explicit, taxon-specific trait
-        # that lets the MDCF diet selectively favour competent species; see DOCUMENTATION.md §4.19 (Diet-Driven Substrate Metabolism).
+        # Dimensionless per-substrate uptake-capacity multipliers are nonnegative. The legacy path
+        # scales consumption_speed and the reduced model scales substrate-specific base Vmax;
+        # zero disables uptake exactly; see DOCUMENTATION.md section 10.4.
         self.aff_calorie = max(0.0, float(aff_calorie))
         self.aff_glycan = max(0.0, float(aff_glycan))
         self.aff_mdcf = max(0.0, float(aff_mdcf))

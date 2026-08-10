@@ -55,8 +55,8 @@ class SpeciesDataManager:
                 'persister_exit_thresh': '0.5',
                 'phage_resistance': '0.0',
                 'hgt_competence': '0.0',
-                # Phase I diet affinities: default to calorie-only utilisation for back-compat
-                # so legacy CSVs (no affinity columns) reproduce the original feeding behaviour.
+                # Missing legacy affinities default to dimensionless calorie-only uptake-capacity
+                # multipliers for backward compatibility; see DOCUMENTATION.md section 10.4.
                 'aff_calorie': '1.0',
                 'aff_glycan': '0.0',
                 'aff_mdcf': '0.0'

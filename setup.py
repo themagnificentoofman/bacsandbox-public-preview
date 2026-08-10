@@ -41,9 +41,9 @@ class KernelBuildExt(build_ext):
             )
 
         if self.compiler.compiler_type == 'msvc':
-            release_compile_args = ['/O2', '/fp:fast', '/std:c++17']
+            release_compile_args = ['/O2', '/fp:precise', '/std:c++17']
         else:
-            release_compile_args = ['-O3', '-ffast-math', '-std=c++17']
+            release_compile_args = ['-O3', '-std=c++17']
 
         openmp_compile_args, openmp_link_args = self._select_openmp_flags(policy)
         openmp_enabled = bool(openmp_compile_args or openmp_link_args)

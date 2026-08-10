@@ -1830,6 +1830,284 @@ not replace the parent workflow's final full-matrix result. The final local ordi
 under both forced-serial and required-OpenMP builds: 215 tests were discovered, 210 passed, and the
 five opt-in cases were skipped.
 
+### 10.4 Empirical Dietary Parameterization and Molar Translation
+
+#### 10.4.1 Versioned asset, engine, and injection contract
+
+Phase 4 ships the versioned asset `bacteria/models/diet_profiles.json`, with schema version 1,
+profile ID `diet_profiles_v1`, profile revision 1, and provenance `Own (BacSandbox model)`.
+`bacteria.diet_translator.DietTranslationEngine` eagerly loads and validates this asset. These
+schema and API choices are original BacSandbox design.<sup>[47](#ref-47)</sup>
+
+The public bolus API is
+
+```text
+get_molar_substrate_bounds(diet_name, feed_mass_g, volume_L, dt_s)
+  -> float64[3]
+```
+
+Every successful call returns a fresh, writable, owning, C-contiguous NumPy `float64` array with
+shape `(3,)`. Its exact ABI order is `generic_calorie`, `complex_glycan`, then
+`mdcf_prebiotic`.<sup>[47](#ref-47)</sup> The vector is one environment's additive concentration
+increment in $\mathrm{M}$; it is not an exchange flux and is not itself a valid `concentrations_m`
+argument to `advance_batch`. A caller allocates writable, C-contiguous `(E, 3)` concentration
+storage and adds the returned vector into the selected environment row before advancing the batch:
+
+```python
+increment_m = engine.get_molar_substrate_bounds('mdcf_2', 50.0, 1.0, dt_s)
+concentrations_m = np.zeros((environment_count, 3), dtype=np.float64, order='C')
+concentrations_m[environment_index] += increment_m
+```
+
+`volume_L` is explicit because the two-dimensional simulation has no physical depth-to-liter
+model. `feed_mass_g` is the total dry bolus delivered by that call, not a rate. `dt_s` must be a
+finite positive real number, but it is validation-only and is absent from the bolus equation. No
+continuous-feed API currently exists; such an API would need an explicitly named dry-mass rate and
+would multiply that rate by elapsed seconds before translation.<sup>[47](#ref-47)</sup>
+
+The schema is intentionally strict. It rejects duplicate JSON keys at every depth; missing or
+unknown fields; wrong schema, profile, revision, provenance, diet order, component order,
+ingredient order, or substrate order; unresolved source hooks and cross-references; and nonfinite
+or out-of-range numbers. Every component and ingredient slot must be present, including explicit
+zeros. There are no profile aliases, clipping rules, fallback profiles, inferred components, or
+automatic normalization. The sole normalization divides source-reported recipe parts by that
+recipe's explicit reported total, absorbing the small rounding offsets in the published tables
+while preserving their stated parts.<sup>[42](#ref-42), [47](#ref-47)</sup>
+
+#### 10.4.2 Ingredient-to-substrate equations and units
+
+Let $r_{d,i}$ be the source-reported dry recipe part for diet $d$ and ingredient $i$, $R_d$ the
+corresponding reported total, $f_{i,j}$ the mass fraction of measured or explicitly modeled
+component $j$ in ingredient $i$, and $A_{j,k}$ the one-hot indicator routing component $j$ to ABI
+substrate $k$. The normalized dry ingredient fraction is
+
+$$
+q_{d,i} = \frac{r_{d,i}}{R_d}
+$$
+
+<sup>[42](#ref-42), [47](#ref-47)</sup>
+
+and the represented mass fraction routed to substrate $k$ is
+
+$$
+\omega_{d,k} = \sum_i q_{d,i}\sum_j f_{i,j}A_{j,k}.
+$$
+
+<sup>[43](#ref-43), [47](#ref-47)</sup>
+
+For dry feed mass $m_{\mathrm{feed}}$ and explicit volume $V$, the additive concentration is
+
+$$
+C_{d,k} = \frac{m_{\mathrm{feed}}\thinspace\omega_{d,k}}
+{M_{\mathrm{GE}}\thinspace V}.
+$$
+
+<sup>[46](#ref-46), [47](#ref-47)</sup>
+
+Here $m_{\mathrm{feed}}$ is in $\mathrm{g}$, $V$ is in $\mathrm{L}$, and the asset fixes the
+D-glucose-equivalent molar mass at
+$M_{\mathrm{GE}} = 180.156\thinspace\mathrm{g}/\mathrm{mol}$ by rounding NIST's
+$180.1559\thinspace\mathrm{g}/\mathrm{mol}$ molecular weight to three decimal places.<sup>[46](#ref-46)</sup> The
+output is therefore $\mathrm{mol}/\mathrm{L} = \mathrm{M}$ glucose-equivalent monomer. Glycan
+values are monomer-equivalent bookkeeping concentrations, not literal polymer molarities. The
+complete recipe-component-routing translator, including use of one molar mass for all represented
+classes, is **Own (BacSandbox model)**.<sup>[47](#ref-47)</sup>
+
+The source totals $R_d = 99.94\thinspace\mathrm{g}/100\thinspace\mathrm{g}$ for MDCF-2 and
+$R_d = 100.04\thinspace\mathrm{g}/100\thinspace\mathrm{g}$ for RUSF are retained rather than
+silently replaced by 100.<sup>[42](#ref-42)</sup> Dividing every reported part by its own total
+gives
+
+$$
+\sum_i q_{d,i} = 1,
+\qquad
+\sum_k A_{j,k} = 1.
+$$
+
+<sup>[42](#ref-42), [47](#ref-47)</sup>
+
+Consequently, every represented component gram is routed exactly once and
+$\sum_k\omega_{d,k} = \sum_i q_{d,i}\sum_j f_{i,j}$. Oil, micronutrients, and unrepresented
+ingredient mass remain outside the three carbohydrate pools, so the represented substrate
+fractions need not sum to one. This is exact conservation of represented component mass, not a
+claim that the entire dry bolus is carbohydrate.<sup>[47](#ref-47)</sup>
+
+The revision-1 component routing is fixed as follows:
+
+| Component $j$ | ABI substrate $k$ | Provenance |
+|---|---|---|
+| `simple_hexose` | `generic_calorie` | Glucose-equivalent bookkeeping, Own.<sup>[47](#ref-47)</sup> |
+| `digestible_starch` | `generic_calorie` | FITDOG total-starch allocation, Own.<sup>[47](#ref-47)</sup> |
+| `resistant_starch` | `complex_glycan` | Explicit reserved class; revision-1 values are zero, Own.<sup>[47](#ref-47)</sup> |
+| `cellulose` | `complex_glycan` | Measured class from Supplementary Table 9d; routing Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| `arabinan` | `complex_glycan` | Measured class from Supplementary Table 9d; routing Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| `xylan` | `complex_glycan` | Measured class from Supplementary Table 9d; routing Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| `beta_1_4_galactan` | `mdcf_prebiotic` | Measured class from Supplementary Table 9d; routing Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| `beta_1_4_mannan` | `mdcf_prebiotic` | Measured class from Supplementary Table 9d; routing Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+
+#### 10.4.3 Empirical recipe and ingredient profiles
+
+The MDCF-2 and RUSF parts come from Chen et al. Supplementary Table S1.<sup>[42](#ref-42)</sup>
+Zeros below are explicit asset values, not omitted data:
+
+| Dry ingredient ($\mathrm{g}/100\thinspace\mathrm{g}$) | MDCF-2 | RUSF | Source |
+|---|---:|---:|---|
+| Micronutrient mix | $3.14$ | $3.14$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Chickpea | $10.0$ | $0.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Peanut | $10.0$ | $0.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Soybean | $8.0$ | $0.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Green banana | $19.0$ | $0.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Rice | $0.0$ | $18.9$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Lentil | $0.0$ | $21.5$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Powdered skimmed milk | $0.0$ | $10.5$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Added sugar | $29.8$ | $17.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| Soybean oil | $20.0$ | $29.0$ | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+| **Reported total** | **$99.94$** | **$100.04$** | Chen et al. Table S1.<sup>[42](#ref-42)</sup> |
+
+The `malnutrition` profile is not a clinical formulation. It is an **Own (BacSandbox model)**
+low-diversity baseline containing
+$3.14\thinspace\mathrm{g}$ micronutrient mix,
+$18.9\thinspace\mathrm{g}$ rice,
+$49.0\thinspace\mathrm{g}$ added sugar, and
+$29.0\thinspace\mathrm{g}$ soybean oil per source-style recipe, with reported total
+$100.04\thinspace\mathrm{g}$; every other ingredient is explicitly zero.<sup>[47](#ref-47)</sup>
+
+For chickpea, peanut, soybean, green banana, rice, lentil, and milk powder, the asset's ingredient
+component fractions are replicate means derived from Hibberd et al. Supplementary Table 9d.
+That table reports micrograms of polysaccharide class per milligram of dry ingredient; the numeric
+conversion used by the asset is
+
+$$
+f_{i,j}\quad[\mathrm{g}/\mathrm{g}]
+= 10^{-3}\thinspace\bar{x}_{i,j}\quad[\mu\mathrm{g}/\mathrm{mg}].
+$$
+
+<sup>[43](#ref-43)</sup>
+
+The measured classes represented in revision 1 are FITDOG total starch, cellulose, arabinan,
+xylan/hemicellulose backbone, beta-1,4-linked galactan, and beta-1,4-linked mannan.<sup>[43](#ref-43)</sup>
+The JSON asset preserves the full machine-readable replicate-mean coefficients; prose rounds no
+coefficient into a second source of truth.
+
+The source quantified total starch but did not establish a validated digestible-versus-resistant
+partition. Revision 1 therefore assigns the measured FITDOG total-starch value to
+`digestible_starch` and sets `resistant_starch` to exactly zero. This is an Own allocation and is
+not evidence that resistant starch is absent from an ingredient.<sup>[43](#ref-43), [47](#ref-47)</sup>
+Added sugar contributes one gram of simple-hexose glucose equivalent per gram of sugar, whereas
+soybean oil and micronutrient mix contribute zero to all three carbohydrate pools. Those are also
+Own bookkeeping choices, not measurements reported by the recipe source.<sup>[47](#ref-47)</sup>
+
+#### 10.4.4 Frozen MDCF-2 translation fixture
+
+For a $50\thinspace\mathrm{g}$ dry MDCF-2 bolus in $1\thinspace\mathrm{L}$, the verified
+revision-1 fixture is:<sup>[47](#ref-47)</sup>
+
+| Output | Concentration ($\mathrm{M}$) | Concentration ($\mathrm{mM}$) |
+|---|---:|---:|
+| Beta-1,4 galactan component | $0.0002780913974742124$ | $0.2780913974742124$ |
+| Beta-1,4 mannan component | $0.000020245970462459088$ | $0.020245970462459088$ |
+| Combined `mdcf_prebiotic` | $0.00029833736793667145$ | $0.29833736793667145$ |
+| `generic_calorie` | $0.11754291369757508$ | $117.54291369757508$ |
+| `complex_glycan` | $0.0012267241245826435$ | $1.2267241245826435$ |
+
+The acceptance test explicitly checks combined `mdcf_prebiotic` error
+$\le 10^{-6}\thinspace\mathrm{M}$ and also freezes the component and substrate values with
+$10^{-15}\thinspace\mathrm{M}$ absolute checks. These are regression tolerances, not estimates of
+experimental uncertainty.<sup>[47](#ref-47)</sup>
+
+#### 10.4.5 Species capacities and evidence boundary
+
+`build_species_phenotype_config` reads the nonnegative, dimensionless CSV values `aff_calorie`,
+`aff_glycan`, and `aff_mdcf` in ABI order. For phenotype $p$ and substrate $k$, it constructs
+
+$$
+V_{p,k}^{\max} = a_{p,k}V_k^{\mathrm{base}}.
+$$
+
+<sup>[47](#ref-47)</sup>
+
+The affinity $a_{p,k}$ scales uptake capacity only. The half-saturation concentration
+$K_{p,k}$ is independent of that multiplier.<sup>[47](#ref-47)</sup> The shipped calibration is:
+
+| ABI substrate $k$ | $V_k^{\mathrm{base}}$ ($\mathrm{mol}\thinspace\mathrm{GE}/(\mathrm{gDW}\thinspace\mathrm{s})$) | $K_{p,k}$ ($\mathrm{M}$) | Provenance |
+|---|---:|---:|---|
+| `generic_calorie` | $2.8 \times 10^{-6}$ | $1.0 \times 10^{-4}$ | Own calibration.<sup>[47](#ref-47)</sup> |
+| `complex_glycan` | $1.4 \times 10^{-6}$ | $2.0 \times 10^{-4}$ | Own calibration.<sup>[47](#ref-47)</sup> |
+| `mdcf_prebiotic` | $1.8 \times 10^{-6}$ | $1.5 \times 10^{-4}$ | Own calibration.<sup>[47](#ref-47)</sup> |
+
+These values and every affinity tier below are **Own (BacSandbox model)** calibrations, not
+measured whole-cell kinetic constants.<sup>[47](#ref-47)</sup> With the notation established in
+Section 10.3, the kernel applies the actual upper-bound semantics
+
+$$
+u_{p,k}^{\mathrm{eff}}(C_k) = \min\left(
+u_k^{\mathrm{model}},
+V_{p,k}^{\max}\frac{C_k}{K_{p,k}+C_k}m_{p,k}
+\right).
+$$
+
+<sup>[41](#ref-41), [47](#ref-47)</sup>
+
+Both $u_k^{\mathrm{model}}$ and $V_{p,k}^{\max}$ have units
+$\mathrm{mol}\thinspace\mathrm{GE}/(\mathrm{gDW}\thinspace\mathrm{s})$; $C_k$ and $K_{p,k}$
+are in $\mathrm{M}$. The final factor $m_{p,k}$ is the dimensionless retained uptake fraction
+after deterministic posterior-mean inhibition,
+
+$$
+m_{p,k} = 1 - \frac{\alpha_{p,k}}{\alpha_{p,k}+\beta_{p,k}}e_{p,k},
+$$
+
+<sup>[41](#ref-41)</sup>
+
+where $e_{p,k}$ is `max_inhibition`. It is not biomass, elapsed time, diet affinity, or an
+additional species-capacity tier. The shipped neutral priors have $e_{p,k}=0$ and therefore
+$m_{p,k}=1$.<sup>[41](#ref-41), [47](#ref-47)</sup> An affinity of zero instead makes
+$V_{p,k}^{\max}$ and the effective uptake bound exactly zero.<sup>[47](#ref-47)</sup>
+
+All four empirical-evidence profiles in `species_data.csv` are opt-in with `init=0`:
+
+| CSV profile | Profile type | $(a_{p,0},a_{p,1},a_{p,2})$ | Evidence scope and calibration |
+|---|---|---:|---|
+| Bg0018-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | MAG association and conserved PUL evidence from Hibberd et al.; tier values Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| Bg0019-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | MAG association and conserved PUL evidence from Hibberd et al.; tier values Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| *Segatella copri* BgF5_2 | Cultured representative | $(1,2,4)$ | Direct BgF5_2 glucomannan machinery evidence from Zhou et al.; tier values Own.<sup>[45](#ref-45), [47](#ref-47)</sup> |
+| *Segatella copri* DSM 18205 | Cultured MDCF non-utilizer | $(1,1,0)$ | Direct inability to grow on glucomannan from Zhou et al.; tier values Own.<sup>[45](#ref-45), [47](#ref-47)</sup> |
+
+Source-era papers and the MAG labels may use *Prevotella copri*; this document uses the current
+name *Segatella copri* for the cultured strains while retaining source identifiers.<sup>[44](#ref-44), [45](#ref-45)</sup>
+Utilization is strain-specific. Hibberd et al. supports the growth-associated Bg0018/Bg0019 MAGs
+and conservation of relevant polysaccharide-utilization loci.<sup>[43](#ref-43)</sup> Chang et al.
+supports diet-dependent MDCF-2 degradation and weight effects mediated by *P. copri* and other
+microbiota members; it does not establish universal utilization across the species.<sup>[44](#ref-44)</sup>
+Zhou et al. directly supports BgF5_2 PUL7/PUL8 beta-mannan and glucomannan processing machinery and
+DSM 18205's inability to grow on glucomannan.<sup>[45](#ref-45)</sup> PUL7/PUL8 are not described
+here as generic dual galactan/mannan loci: other conserved PULs provide the evidence boundary for
+pectic galactan and arabinogalactan processing.<sup>[43](#ref-43), [45](#ref-45)</sup>
+
+#### 10.4.6 QA, memory layout, and native floating-point contract
+
+`bacteria/test_diet_translator.py` contains 19 dedicated translator tests. They cover malformed
+assets, exact translation formulas, array ABI and ownership, package-resource inclusion,
+Python/native row injection, broadcast-view rejection, exact zero utilization, and bounded
+repeated-call and performance smoke behavior.
+
+The latest pre-documentation QA run recorded 19 translator tests passed; 69 focused metabolic
+tests passed with two opt-in skips; and full discovery completed with 232 tests passed and five
+opt-in skips. The native C++ path actually ran through a freshly rebuilt forced-serial backend and
+matched Python with `rtol=1e-12` and `atol=1e-15`. In that same environment, 256 translator calls
+took `0.000964s`, 64 Python translated batches took `0.006252s`, and 100 native stress iterations
+took `0.002088s`. These timings are one environment-specific observation, not performance
+guarantees or acceptance thresholds.
+
+`np.broadcast_to(increment, (E, 3))` is rejected because the result is a read-only, stride-zero
+view rather than writable owning batch storage. An allocated writable, C-contiguous `(E, 3)` array
+accepts row-wise additive injection and satisfies both Python and native batch contracts.
+
+Native nonfinite-value rejection depends on IEEE-respecting floating-point behavior. The extension
+build retains `-O3` on non-MSVC compilers and `/O2` on MSVC, removes `-ffast-math`, and uses
+`/fp:precise` rather than `/fp:fast`. This preserves the finite checks exercised by the serial and
+native parity tests.
+
 ## Appendix A: Scientific References
 
 Every biological or mathematical model, formula, named equation, scaling law, or empirically-derived
@@ -1919,3 +2197,15 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-40"></a>**[40]** **Own (BacSandbox model).** Flat agent/species array interface, CSR ordering, staged OpenMP design, and six-counter event contract, §10.2.
 
 <a id="ref-41"></a>**[41]** **Own (BacSandbox model)**. Reduced-model interface and topology, flat/CSR ABI, deterministic posterior-mean constraint adapter, tolerance-neighbor cache/LRU policy, and adaptive substep design, §10.3.
+
+<a id="ref-42"></a>**[42]** Chen et al. (2021). *A Microbiota-Directed Food Intervention for Undernourished Children*. New England Journal of Medicine, 384:1517-1528. [https://doi.org/10.1056/NEJMoa2023294](https://doi.org/10.1056/NEJMoa2023294)
+
+<a id="ref-43"></a>**[43]** Hibberd et al. (2024). *Bioactive glycans in a microbiome-directed food for children with malnutrition*. Nature, 625:157-165. [https://doi.org/10.1038/s41586-023-06838-3](https://doi.org/10.1038/s41586-023-06838-3)
+
+<a id="ref-44"></a>**[44]** Chang et al. (2024). *Prevotella copri and microbiota members mediate the beneficial effects of a therapeutic food for malnutrition*. Nature Microbiology, 9:922-937. [https://doi.org/10.1038/s41564-024-01628-7](https://doi.org/10.1038/s41564-024-01628-7)
+
+<a id="ref-45"></a>**[45]** Zhou et al. (2025). *Glycoside hydrolase-mediated glucomannan catabolism in Segatella copri, a target of microbiota-directed foods for malnourished children*. Proceedings of the National Academy of Sciences, 122(49):e2521522122. [https://doi.org/10.1073/pnas.2521522122](https://doi.org/10.1073/pnas.2521522122)
+
+<a id="ref-46"></a>**[46]** National Institute of Standards and Technology (2026). *Glucose*. NIST Chemistry WebBook, SRD 69. Molecular weight $180.1559\thinspace\mathrm{g}/\mathrm{mol}$, rounded to $180.156\thinspace\mathrm{g}/\mathrm{mol}$ in the versioned asset. [https://webbook.nist.gov/cgi/cbook.cgi?ID=C50997&Units=SI](https://webbook.nist.gov/cgi/cbook.cgi?ID=C50997&Units=SI) *(no DOI)*
+
+<a id="ref-47"></a>**[47]** **Own (BacSandbox model).** Versioned dietary-profile schema and bolus API; multi-substrate recipe, component, and routing translator; source-total normalization and represented-component mass conservation; total-starch allocation; sugar, oil, and micronutrient bookkeeping; nonclinical malnutrition baseline; molar-mass precision; species $V^{\max}$, $K$, and affinity-tier calibration; and translation QA fixtures, §10.4.

@@ -1,3 +1,7 @@
 name,init,rep,aging,so,sf,speed,ph,food_capacity,metabolic_rate,consumption_speed,greediness,t6ss_activity,bacteriocin_production,immunity_factor,rep_thresh,share_thresh,predation_thresh,base_size,sensor_radius,temp_min,temp_max,acetate_secretion,acetate_uptake,baranyi_q0,persister_switch,persister_enter_thresh,persister_exit_thresh,phage_resistance,hgt_competence,aff_calorie,aff_glycan,aff_mdcf
 a,100,1,0,0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,1,1
 b,100,1,0,-0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,1,1
+Prevotella copri MAG Bg0018 (BgF5_2-like model),0,1,0,0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,2,3
+Prevotella copri MAG Bg0019 (BgF5_2-like model),0,1,0,0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,2,3
+Segatella copri BgF5_2 (cultured representative),0,1,0,0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,2,4
+Segatella copri DSM 18205 (cultured MDCF non-utilizer),0,1,0,0.1,1,200,7,100,0.1,1.0,0.5,0.5,0.5,0.5,0.8,0.6,0.9,1.0,200.0,4.0,47.0,0.5,0.5,0,1,0.2,0.5,0,1,1,1,0
