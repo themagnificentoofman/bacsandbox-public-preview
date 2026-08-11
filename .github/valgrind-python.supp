@@ -167,3 +167,14 @@
    fun:_dl_allocate_tls_storage
    fun:_dl_allocate_tls
 }
+
+{
+   setup-python glibc dlopen scope resize
+   Memcheck:Leak
+   fun:malloc
+   fun:malloc
+   fun:resize_scopes
+   fun:dl_open_worker_begin
+   ...
+   fun:_PyImport_FindSharedFuncptr
+}
