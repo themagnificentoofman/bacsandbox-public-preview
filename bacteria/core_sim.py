@@ -1,3 +1,4 @@
+import copy
 import math, random
 import sys
 import os
@@ -10,6 +11,7 @@ if __package__ is None and not hasattr(sys, 'frozen'):
 
 from .constants import *
 from .ecm import ECM
+from .metabolic_integration import DietBolus, FbaPhysiology
 from .physics import InteractionSummary, PhysicsOrchestrator
 
 def _spawn_sector(species_index, species_total):
@@ -515,6 +517,127 @@ class Bacterium:
                 vy_new = vy - 2 * dot * ny
                 self.heading = math.atan2(vy_new, vx_new) + random.uniform(-BACTERIA_BOUNDARY_REFLECTION_NOISE_RAD, BACTERIA_BOUNDARY_REFLECTION_NOISE_RAD)
 
+    def step_fba_kinematics(
+        self,
+        ecm,
+        bounds,
+        dt_seconds,
+        physiology,
+        viewport_bounds=None,
+        temp_factor=1.0,
+    ):
+        """Move from continuous substrate gradients without legacy pg metabolism or uptake."""
+        if not isinstance(physiology, FbaPhysiology):
+            raise TypeError('physiology must be FbaPhysiology')
+        if dt_seconds < 0.0 or not math.isfinite(dt_seconds):
+            raise ValueError('dt_seconds must be finite and nonnegative')
+
+        self.age += dt_seconds
+        self.size = self.base_size * physiology.render_scale
+        coordinate = ecm.world_to_cell(self.x, self.y)
+        cx, cy = coordinate
+        neighbor_coordinates = (
+            coordinate,
+            (cx - 1, cy),
+            (cx + 1, cy),
+            (cx, cy - 1),
+            (cx, cy + 1),
+        )
+        concentrations = ecm.sample_substrate_batch_m(neighbor_coordinates)
+        scores = tuple(
+            sum(float(row[index]) * self.substrate_affinity[index] for index in range(3))
+            for row in concentrations
+        )
+        current_score = scores[0] * physiology.chemotactic_drive
+        gradient_x = (scores[2] - scores[1]) * physiology.chemotactic_drive
+        gradient_y = (scores[4] - scores[3]) * physiology.chemotactic_drive
+        has_gradient = math.hypot(gradient_x, gradient_y) > CHEMOTAXIS_GRADIENT_EPSILON
+
+        self.last_score = getattr(self, 'last_score', 0.0)
+        self.state_timer -= dt_seconds
+        if self.state_timer <= 0.0:
+            self.is_tumbling = not self.is_tumbling
+            if self.is_tumbling:
+                self.state_timer = self.base_tumble_duration
+                self._tumble_reoriented = False
+            elif current_score > self.last_score:
+                self.state_timer = (
+                    self._sample_run_duration() * BACTERIA_CHEMOTAXIS_RUN_EXTENSION_FACTOR
+                )
+            else:
+                self.state_timer = self._sample_run_duration()
+        self.last_score = current_score
+
+        if has_gradient and not self.is_tumbling:
+            desired_heading = math.atan2(gradient_y, gradient_x)
+            heading_error = math.atan2(
+                math.sin(desired_heading - self.heading),
+                math.cos(desired_heading - self.heading),
+            )
+            max_turn = (
+                CHEMOTAXIS_STEER_RATE_RAD_S
+                * physiology.chemotactic_drive
+                * dt_seconds
+            )
+            self.heading += max(-max_turn, min(max_turn, heading_error))
+
+        speed = self.speed * dt_seconds * temp_factor * physiology.motility_scale
+        if self.is_tumbling:
+            if not getattr(self, '_tumble_reoriented', False):
+                if has_gradient:
+                    self.heading = math.atan2(gradient_y, gradient_x) + random.gauss(
+                        0.0,
+                        BACTERIA_TUMBLE_TURN_STD_RAD,
+                    )
+                else:
+                    turn_magnitude = max(
+                        0.0,
+                        random.gauss(
+                            BACTERIA_TUMBLE_MEAN_TURN_RAD,
+                            BACTERIA_TUMBLE_TURN_STD_RAD,
+                        ),
+                    )
+                    self.heading += random.choice((-1.0, 1.0)) * turn_magnitude
+                self._tumble_reoriented = True
+            speed *= BACTERIA_TUMBLE_TRANSLATION_FACTOR
+
+        rotational_diffusion = (
+            BACTERIA_ROTATIONAL_DIFFUSION_COEFFICIENT_RAD2_S
+            / max(0.1, self.base_size ** 3)
+        )
+        rotational_sigma_rad = math.sqrt(
+            BROWNIAN_ROTATIONAL_VARIANCE_FACTOR * rotational_diffusion * dt_seconds
+        )
+        self.heading += random.gauss(0.0, rotational_sigma_rad)
+
+        center_x, center_y, radius = bounds
+        if radius > 0.0 and math.hypot(
+            self.x - center_x,
+            self.y - center_y,
+        ) >= radius * MUCUS_LAYER_RADIUS_FRACTION:
+            speed *= MUCUS_MOTILITY_FACTOR
+        self.x += math.cos(self.heading) * speed
+        self.y += math.sin(self.heading) * speed
+
+        delta_x = self.x - center_x
+        delta_y = self.y - center_y
+        distance = math.hypot(delta_x, delta_y)
+        if distance > radius and distance > NUMERIC_DISTANCE_EPSILON_UM:
+            normal_x = delta_x / distance
+            normal_y = delta_y / distance
+            self.x = center_x + normal_x * (radius - BACTERIA_BOUNDARY_OFFSET_UM)
+            self.y = center_y + normal_y * (radius - BACTERIA_BOUNDARY_OFFSET_UM)
+            velocity_x = math.cos(self.heading)
+            velocity_y = math.sin(self.heading)
+            outward_component = velocity_x * normal_x + velocity_y * normal_y
+            if outward_component > 0.0:
+                reflected_x = velocity_x - 2.0 * outward_component * normal_x
+                reflected_y = velocity_y - 2.0 * outward_component * normal_y
+                self.heading = math.atan2(reflected_y, reflected_x) + random.uniform(
+                    -BACTERIA_BOUNDARY_REFLECTION_NOISE_RAD,
+                    BACTERIA_BOUNDARY_REFLECTION_NOISE_RAD,
+                )
+
     def attempt_fission(self, envf, rep_prob, rep_thresh, dt):
         """
         Evaluate and execute cell division (binary fission).
@@ -837,7 +960,18 @@ class Simulation:
     """
     Manages multiple species, environment, and global stats.
     """
-    def __init__(self, spp, env, cap, steps=500, seed=None, physics_backend='auto'):
+    def __init__(
+        self,
+        spp,
+        env,
+        cap,
+        steps=500,
+        seed=None,
+        physics_backend='auto',
+        *,
+        ecm_backend='auto',
+        metabolic_adapter=None,
+    ):
         # Phase I reproducibility: a non-None seed makes every stochastic draw deterministic so
         # extinction/abundance baselines are repeatable. Seed BEFORE any other RNG use so runs that
         # construct species after this point (programmatic tests) share the same stream.
@@ -852,8 +986,14 @@ class Simulation:
         self.env = env           # environment dict: oxygen/CO2/food
         self.cap = cap           # carrying capacity
         self.steps = steps       # legacy max update count (not used by the real-time loop)
-        self.ecm = ECM(cell_size=ECM_CELL_SIZE_UM) # Inject Extracellular Matrix for molecular diffusion
+        self.ecm = ECM(
+            cell_size=ECM_CELL_SIZE_UM,
+            backend=ecm_backend,
+        ) # Inject Extracellular Matrix for molecular diffusion
         self.physics = PhysicsOrchestrator(backend=physics_backend)
+        self.metabolic_adapter = metabolic_adapter
+        self._pending_diet_boluses = []
+        self.last_fba_result = None
         self._last_interaction_summary = InteractionSummary()
         # stats collected each step
         self.stats = self._empty_stats()
@@ -894,8 +1034,21 @@ class Simulation:
             # 2 = MDCF prebiotic). Monotonic non-decreasing; supports diet-efficacy comparisons.
             'consumed_calorie': [],
             'consumed_glycan': [],
-            'consumed_mdcf': []
+            'consumed_mdcf': [],
+            'fba_biomass_gdw': [],
+            'fba_acetate_mol': [],
+            'fba_consumed_calorie_mol': [],
+            'fba_consumed_glycan_mol': [],
+            'fba_consumed_mdcf_mol': [],
         }
+
+    def queue_diet_bolus(self, bolus):
+        """Queue one validated continuous-substrate bolus for the next FBA tick."""
+        if self.metabolic_adapter is None:
+            raise RuntimeError('diet boluses require an explicit live FBA adapter')
+        if not isinstance(bolus, DietBolus):
+            raise TypeError('bolus must be a DietBolus')
+        self._pending_diet_boluses.append(bolus)
 
     def _ensure_petri_geometry(self, w, h):
         """Establish the circular petri-dish geometry (centre + radius) from the window size on the
@@ -993,6 +1146,12 @@ class Simulation:
         self.stats = self._empty_stats()
         self.species_step_stats = []
         self._last_interaction_summary = InteractionSummary()
+        self._pending_diet_boluses.clear()
+        self.last_fba_result = None
+        if self.metabolic_adapter is not None:
+            self.ecm.clear_substrate_layers()
+            self.metabolic_adapter.state_store.clear()
+            self.metabolic_adapter.orchestrator.clear_cache()
         self.step_idx = 0
         self.running = False
 
@@ -1110,6 +1269,9 @@ class Simulation:
 
         if not self.running:
             return
+
+        if self.metabolic_adapter is not None:
+            return self._update_fba(w, h, dt, viewport_bounds)
             
         # Poisson-rate approximation: expected drops = lambda * dt, so spawning is real-time rather than FPS-bound.
         expected_drops = max(0.0, self.drop_frequency * dt)
@@ -1361,6 +1523,280 @@ class Simulation:
 
         self.step_idx += 1
 
+    def _snapshot_fba_transaction(self):
+        agents = tuple(
+            bacterium
+            for species in self.species
+            for bacterium in species.members
+        )
+        identity_objects = (
+            self,
+            self.ecm,
+            self.metabolic_adapter,
+            self.metabolic_adapter.state_store,
+            *self.species,
+            *agents,
+        )
+        memo = {id(value): value for value in identity_objects}
+        return {
+            'substrate_snapshot': self.ecm.snapshot_substrate_layers(),
+            'signal_layers': tuple(
+                (name, dict(self.ecm._layers[name]))
+                for name in self.ecm._layers
+            ),
+            'ecm_backend_used': self.ecm._backend_used,
+            'state_store': self.metabolic_adapter.state_store.snapshot(),
+            'solver_cache': self.metabolic_adapter.orchestrator.snapshot_cache(),
+            'species': tuple(
+                (species, copy.deepcopy(species.__dict__, memo))
+                for species in self.species
+            ),
+            'agents': tuple(
+                (agent, copy.deepcopy(agent.__dict__, memo))
+                for agent in agents
+            ),
+            'stats': copy.deepcopy(self.stats),
+            'species_step_stats': copy.deepcopy(self.species_step_stats),
+            'environment': copy.deepcopy(self.env),
+            'pending_boluses': tuple(self._pending_diet_boluses),
+            'last_fba_result': self.last_fba_result,
+            'step_idx': self.step_idx,
+            'random_state': random.getstate(),
+        }
+
+    def _restore_fba_transaction(self, snapshot):
+        self.ecm.restore_substrate_layers(snapshot['substrate_snapshot'])
+        for name, values in snapshot['signal_layers']:
+            layer = self.ecm._layers[name]
+            layer.clear()
+            layer.update(values)
+        self.ecm._backend_used = snapshot['ecm_backend_used']
+        self.metabolic_adapter.state_store.restore(snapshot['state_store'])
+        self.metabolic_adapter.orchestrator.restore_cache(snapshot['solver_cache'])
+        for species, attributes in snapshot['species']:
+            species.__dict__.clear()
+            species.__dict__.update(attributes)
+        for agent, attributes in snapshot['agents']:
+            agent.__dict__.clear()
+            agent.__dict__.update(attributes)
+        self.stats.clear()
+        self.stats.update(snapshot['stats'])
+        self.species_step_stats[:] = snapshot['species_step_stats']
+        self.env.clear()
+        self.env.update(snapshot['environment'])
+        self._pending_diet_boluses[:] = snapshot['pending_boluses']
+        self.last_fba_result = snapshot['last_fba_result']
+        self.step_idx = snapshot['step_idx']
+        random.setstate(snapshot['random_state'])
+
+    def _update_fba(self, w, h, dt, viewport_bounds=None):
+        snapshot = self._snapshot_fba_transaction()
+        try:
+            result = self._advance_fba_transaction(w, h, dt, viewport_bounds)
+            self.metabolic_adapter.emit_success(result)
+            return result
+        except BaseException as error:
+            self._restore_fba_transaction(snapshot)
+            self.metabolic_adapter.emit_failure(
+                snapshot['step_idx'],
+                'simulation',
+                error,
+            )
+            raise
+
+    def _advance_fba_transaction(self, w, h, dt, viewport_bounds=None):
+        """Advance one opt-in molar FBA tick without invoking legacy pg nutrition."""
+        self.ecm.tick(dt)
+        result = self.metabolic_adapter.advance_tick(
+            species=self.species,
+            ecm=self.ecm,
+            tick_index=self.step_idx,
+            dt_seconds=dt,
+            boluses=tuple(self._pending_diet_boluses),
+            defer_events=True,
+        )
+        self._pending_diet_boluses.clear()
+        self.last_fba_result = result
+
+        total_before_lifecycle = sum(len(species.members) for species in self.species)
+        safe_capacity = self.cap if self.cap > 0 else 1
+        carrying_capacity_factor = max(
+            0.0,
+            1.0 - total_before_lifecycle / safe_capacity,
+        )
+        births_list = []
+        deaths_list = []
+        for species in self.species:
+            current_ph = self.env.get('ph', NEUTRAL_PH)
+            ph_difference = current_ph - species.preferred_ph
+            ph_suitability = math.exp(
+                -0.5 * (ph_difference / PH_TOLERANCE_GAUSSIAN_SD) ** 2
+            )
+            oxygen = self.env.get('o2', ATMOSPHERIC_O2_FRACTION)
+            if species.o2_sens > 0.0:
+                oxygen_suitability = (
+                    min(1.0, oxygen / AEROBE_O2_SATURATION_LEVEL) * species.o2_sens
+                    + (1.0 - species.o2_sens)
+                )
+            elif species.o2_sens < 0.0:
+                oxygen_suitability = 1.0 - (
+                    min(1.0, oxygen / ANAEROBE_O2_TOXICITY_THRESHOLD)
+                    * abs(species.o2_sens)
+                )
+            else:
+                oxygen_suitability = 1.0
+            environmental_fitness = ph_suitability * max(0.0, oxygen_suitability)
+            temperature_factor = species.temperature_factor(
+                self.env.get('temperature', DEFAULT_ENV_TEMPERATURE_C)
+            )
+
+            births = []
+            deaths = []
+            for bacterium in tuple(species.members):
+                state = self.metabolic_adapter.state_store.state_for(bacterium)
+                physiology = self.metabolic_adapter.lifecycle_policy.evaluate(
+                    bacterium,
+                    state,
+                    dt_seconds=dt,
+                    environmental_fitness=environmental_fitness,
+                    carrying_capacity_factor=carrying_capacity_factor,
+                )
+                if not isinstance(physiology, FbaPhysiology):
+                    raise TypeError('FBA lifecycle evaluate must return FbaPhysiology')
+                bacterium.step_fba_kinematics(
+                    self.ecm,
+                    (self.petri_center[0], self.petri_center[1], self.petri_radius),
+                    dt,
+                    physiology,
+                    viewport_bounds=viewport_bounds,
+                    temp_factor=temperature_factor,
+                )
+                if physiology.starved:
+                    deaths.append(bacterium)
+                    continue
+                if physiology.division_probability > 0.0 and random.random() < min(
+                    1.0,
+                    physiology.division_probability,
+                ):
+                    child = Bacterium(
+                        species,
+                        bacterium.x,
+                        bacterium.y,
+                        size=max(
+                            0.1,
+                            random.gauss(
+                                bacterium.base_size,
+                                bacterium.base_size * 0.2,
+                            ),
+                        ),
+                        initial_q=bacterium.q,
+                    )
+                    self.metabolic_adapter.state_store.partition_for_fission(
+                        bacterium,
+                        child,
+                        self.metabolic_adapter.lifecycle_policy,
+                    )
+                    births.append(child)
+            for bacterium in deaths:
+                species.members.remove(bacterium)
+                self.metabolic_adapter.state_store.remove(bacterium)
+            species.members.extend(births)
+            species.total_births += len(births)
+            species.total_deaths += len(deaths)
+            species.history.append(len(species.members))
+            births_list.append(len(births))
+            deaths_list.append(len(deaths))
+
+        excess = sum(len(species.members) for species in self.species) - self.cap
+        if excess > 0:
+            candidates = [
+                (species, bacterium)
+                for species in self.species
+                for bacterium in species.members
+            ]
+            for species, bacterium in random.sample(candidates, min(excess, len(candidates))):
+                species.members.remove(bacterium)
+                species.total_deaths += 1
+                self.metabolic_adapter.state_store.remove(bacterium)
+                species_index = self.species.index(species)
+                deaths_list[species_index] += 1
+
+        elapsed_seconds = (
+            self.stats['elapsed_seconds'][-1]
+            if self.stats['elapsed_seconds']
+            else 0.0
+        ) + dt
+        for species in self.species:
+            if species.extinction_time is None and not species.members:
+                species.extinction_time = elapsed_seconds
+            species.history[-1] = len(species.members)
+
+        step_births = sum(births_list)
+        step_deaths = sum(deaths_list)
+        self.stats['time'].append(self.step_idx)
+        self.stats['elapsed_seconds'].append(elapsed_seconds)
+        self.stats['dt_seconds'].append(dt)
+        self.stats['tickrate_hz'].append((1.0 / dt) if dt > 0.0 else 0.0)
+        self.stats['total'].append(sum(len(species.members) for species in self.species))
+        self.stats['births'].append(step_births)
+        self.stats['deaths'].append(step_deaths)
+        self.stats['overall_births'].append(
+            (self.stats['overall_births'][-1] if self.stats['overall_births'] else 0)
+            + step_births
+        )
+        self.stats['overall_deaths'].append(
+            (self.stats['overall_deaths'][-1] if self.stats['overall_deaths'] else 0)
+            + step_deaths
+        )
+        for name in (
+            't6ss_deaths',
+            'hgt_transfers',
+            'overall_t6ss_deaths',
+            'overall_hgt_transfers',
+        ):
+            previous = self.stats[name][-1] if self.stats[name] else 0
+            self.stats[name].append(previous if name.startswith('overall_') else 0)
+
+        mucus_count = 0
+        total_count = 0
+        inverse_radius = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
+        for species in self.species:
+            for bacterium in species.members:
+                total_count += 1
+                if math.hypot(
+                    bacterium.x - self.petri_center[0],
+                    bacterium.y - self.petri_center[1],
+                ) * inverse_radius >= MUCUS_LAYER_RADIUS_FRACTION:
+                    mucus_count += 1
+        self.stats['mucus'].append(mucus_count)
+        self.stats['lumen'].append(total_count - mucus_count)
+        for name in ('consumed_calorie', 'consumed_glycan', 'consumed_mdcf'):
+            self.stats[name].append(self.stats[name][-1] if self.stats[name] else 0.0)
+
+        self.stats['fba_biomass_gdw'].append(
+            sum(
+                self.metabolic_adapter.state_store.state_for(bacterium).biomass_gdw
+                for species in self.species
+                for bacterium in species.members
+            )
+        )
+        self.stats['fba_acetate_mol'].append(result.acetate_secreted_mol)
+        self.stats['fba_consumed_calorie_mol'].append(result.substrate_consumed_mol[0])
+        self.stats['fba_consumed_glycan_mol'].append(result.substrate_consumed_mol[1])
+        self.stats['fba_consumed_mdcf_mol'].append(result.substrate_consumed_mol[2])
+        self.species_step_stats.append({'births': births_list, 'deaths': deaths_list})
+
+        gas_diffusion = GAS_DIFFUSION_RATE_SEC * dt
+        self.env['o2'] += (ATMOSPHERIC_O2_FRACTION - self.env['o2']) * gas_diffusion
+        self.env['co2'] += (ATMOSPHERIC_CO2_FRACTION - self.env['co2']) * gas_diffusion
+        buffer_rate = BUFFER_RESTORATION_RATE_SEC * dt
+        self.env['ph'] += (NEUTRAL_PH - self.env['ph']) * buffer_rate
+        self.env['o2'] = max(0.0, min(1.0, self.env['o2']))
+        self.env['co2'] = max(0.0, min(1.0, self.env['co2']))
+        self.env['ph'] = max(0.0, min(14.0, self.env['ph']))
+        self.step_idx += 1
+        return result
+
     def export(self, dm_species=None, default_env=None):
         """
         Write collected stats and per-species data to CSV file for analysis.
@@ -1387,7 +1823,15 @@ class Simulation:
                 writer.writerow([])
             # Write header for global stats
             writer.writerow(['--- Global Stats ---'])
-            writer.writerow(['time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds', 'tickrate_hz', 'overall_births', 'overall_deaths', 't6ss_deaths', 'hgt_transfers', 'overall_t6ss_deaths', 'overall_hgt_transfers', 'lumen', 'mucus', 'consumed_calorie', 'consumed_glycan', 'consumed_mdcf'])
+            writer.writerow([
+                'time', 'total', 'births', 'deaths', 'elapsed_seconds', 'dt_seconds',
+                'tickrate_hz', 'overall_births', 'overall_deaths', 't6ss_deaths',
+                'hgt_transfers', 'overall_t6ss_deaths', 'overall_hgt_transfers',
+                'lumen', 'mucus', 'consumed_calorie', 'consumed_glycan',
+                'consumed_mdcf', 'fba_biomass_gdw', 'fba_acetate_mol',
+                'fba_consumed_calorie_mol', 'fba_consumed_glycan_mol',
+                'fba_consumed_mdcf_mol',
+            ])
             # Zone and substrate-consumption columns may be absent on stats built by legacy imports
             # or manual construction; fall back to blank so the row width stays consistent without
             # raising IndexError.
@@ -1400,6 +1844,11 @@ class Simulation:
             hgt_transfers_series = self.stats.get('hgt_transfers', [])
             overall_t6ss_deaths_series = self.stats.get('overall_t6ss_deaths', [])
             overall_hgt_transfers_series = self.stats.get('overall_hgt_transfers', [])
+            fba_biomass_series = self.stats.get('fba_biomass_gdw', [])
+            fba_acetate_series = self.stats.get('fba_acetate_mol', [])
+            fba_calorie_series = self.stats.get('fba_consumed_calorie_mol', [])
+            fba_glycan_series = self.stats.get('fba_consumed_glycan_mol', [])
+            fba_mdcf_series = self.stats.get('fba_consumed_mdcf_mol', [])
             for i in range(len(self.stats['time'])):
                 writer.writerow([
                     self.stats['time'][i],
@@ -1419,7 +1868,12 @@ class Simulation:
                     mucus_series[i] if i < len(mucus_series) else '',
                     cal_series[i] if i < len(cal_series) else '',
                     gly_series[i] if i < len(gly_series) else '',
-                    mdcf_series[i] if i < len(mdcf_series) else ''
+                    mdcf_series[i] if i < len(mdcf_series) else '',
+                    fba_biomass_series[i] if i < len(fba_biomass_series) else '',
+                    fba_acetate_series[i] if i < len(fba_acetate_series) else '',
+                    fba_calorie_series[i] if i < len(fba_calorie_series) else '',
+                    fba_glycan_series[i] if i < len(fba_glycan_series) else '',
+                    fba_mdcf_series[i] if i < len(fba_mdcf_series) else '',
                 ])
             # Write per-species stats
             writer.writerow([])
@@ -1513,6 +1967,20 @@ class Simulation:
                 self.stats['hgt_transfers'].append(hgt_transfers)
                 self.stats['overall_t6ss_deaths'].append(int(row[header_index['overall_t6ss_deaths']]) if 'overall_t6ss_deaths' in header_index and row[header_index['overall_t6ss_deaths']] else cumulative_t6ss_deaths)
                 self.stats['overall_hgt_transfers'].append(int(row[header_index['overall_hgt_transfers']]) if 'overall_hgt_transfers' in header_index and row[header_index['overall_hgt_transfers']] else cumulative_hgt_transfers)
+                for field_name in (
+                    'fba_biomass_gdw',
+                    'fba_acetate_mol',
+                    'fba_consumed_calorie_mol',
+                    'fba_consumed_glycan_mol',
+                    'fba_consumed_mdcf_mol',
+                ):
+                    field_index = header_index.get(field_name)
+                    value = (
+                        float(row[field_index])
+                        if field_index is not None and row[field_index]
+                        else 0.0
+                    )
+                    self.stats[field_name].append(value)
         # Parse per-species stats
         species_start = stats_end + 2
         self.species_step_stats = []

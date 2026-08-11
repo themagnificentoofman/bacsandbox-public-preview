@@ -93,6 +93,12 @@ struct CacheStats {
     std::uint64_t lp_solves = 0;
 };
 
+struct CacheSnapshot {
+    std::unordered_map<CacheKey, CacheEntry, CacheKeyHash, CacheKeyEqual> entries;
+    CacheStats stats;
+    std::uint64_t sequence = 0;
+};
+
 struct FluxResult {
     std::vector<double> flux_values;
     bool cache_hit = false;
@@ -182,6 +188,8 @@ public:
 
     void clear_cache() noexcept;
     CacheStats cache_stats() const noexcept;
+    CacheSnapshot snapshot_cache() const;
+    void restore_cache(const CacheSnapshot& snapshot);
 
 private:
     PreparedSolve prepare_solve(

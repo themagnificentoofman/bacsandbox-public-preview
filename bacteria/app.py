@@ -1,4 +1,5 @@
 import math
+import logging
 import re
 import ast
 import random
@@ -44,6 +45,7 @@ class App:
         self.w, self.h = info.current_w, info.current_h
         self.screen = pygame.display.set_mode((self.w, self.h), flags)
         self.clock = pygame.time.Clock()
+        self.last_simulation_error = None
 
         # Data manager for species parameters
         self.dm = SpeciesDataManager()
@@ -625,6 +627,7 @@ class App:
             
         self.active_env = self.default_env.copy()
         self.sim = Simulation(spp, self.active_env, cap=self.active_env['capacity'], steps=500, seed=seed_val)
+        self.last_simulation_error = None
 
     def add_species(self):
         """Append new blank species and re-init simulation, with undo/redo support."""
@@ -1562,7 +1565,19 @@ class App:
                 'top': self.grid_center_y - half_h,
                 'bottom': self.grid_center_y + half_h
             }
-            self.sim.update(self.w, self.h, dt, viewport_bounds)
+            was_running = self.sim.running
+            try:
+                self.sim.update(self.w, self.h, dt, viewport_bounds)
+                if was_running:
+                    self.last_simulation_error = None
+            except Exception as error:
+                if self.sim.metabolic_adapter is None:
+                    raise
+                self.sim.running = False
+                self.last_simulation_error = f'{type(error).__name__}: {error}'
+                logging.getLogger(__name__).exception(
+                    'live FBA simulation paused after a rolled-back tick'
+                )
             
             # Smooth zoom update
             if abs(self.zoom - self.zoom_target) > 0.001:
@@ -1802,6 +1817,16 @@ class App:
                     field_abbrev = self.ABBREV_FIELDNAMES.get(field, field)
                     text = constants.FONT.render(f"{field_abbrev}: {desc}", True, WHITE)
                     self.screen.blit(text, (self.species_desc_dialog_rect.x + 10, self.species_desc_dialog_rect.y + 50 + idx * 30))
+
+            if self.last_simulation_error:
+                message = f"FBA paused: {self.last_simulation_error}"
+                max_characters = max(20, int((self.w - 40) / max(1, constants.FONT.get_linesize() * 0.55)))
+                if len(message) > max_characters:
+                    message = message[:max_characters - 3] + '...'
+                error_surface = constants.FONT.render(message, True, WHITE)
+                error_rect = pygame.Rect(12, self.h - error_surface.get_height() - 12, self.w - 24, error_surface.get_height() + 8)
+                pygame.draw.rect(self.screen, (150, 35, 35), error_rect)
+                self.screen.blit(error_surface, (error_rect.x + 6, error_rect.y + 4))
 
             pygame.display.flip()
 

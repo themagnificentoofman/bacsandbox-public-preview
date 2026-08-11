@@ -1067,6 +1067,7 @@ py::tuple metabolic_advance_batch_binding(
 
 PYBIND11_MODULE(bacteria_c_kernel, module) {
     module.doc() = "Native BacSandbox computational kernels";
+    py::class_<bacsandbox::metabolism::CacheSnapshot>(module, "_MetabolicCacheSnapshot");
     py::class_<bacsandbox::metabolism::MetabolicKernel>(module, "MetabolicKernel")
         .def(
             py::init(&make_metabolic_kernel),
@@ -1095,6 +1096,8 @@ PYBIND11_MODULE(bacteria_c_kernel, module) {
             py::arg("model_revision").noconvert(),
             py::arg("prior_revision").noconvert())
         .def("clear_cache", &bacsandbox::metabolism::MetabolicKernel::clear_cache)
+        .def("snapshot_cache", &bacsandbox::metabolism::MetabolicKernel::snapshot_cache)
+        .def("restore_cache", &bacsandbox::metabolism::MetabolicKernel::restore_cache)
         .def("cache_stats", &metabolic_cache_stats_binding)
         .def(
             "solve_flux",

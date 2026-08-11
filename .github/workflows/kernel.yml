@@ -48,13 +48,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --editable .
       - name: Verify OpenMP extension
-        run: python -c "import bacteria_c_kernel as kernel; assert kernel.openmp_enabled(), 'OpenMP build was requested but is disabled'"
+        run: python -c "import bacteria_c_kernel as kernel; assert kernel.openmp_enabled(), 'OpenMP build was requested but is disabled'; assert hasattr(kernel, 'MetabolicKernel'), 'Native MetabolicKernel is missing'"
       - name: Run kernel suite
         run: python -m unittest bacteria.test_kernel
       - name: Run physics kernel suite
         run: python -m unittest bacteria.test_physics_kernel
       - name: Run metabolic kernel suite
         run: python -m unittest bacteria.test_metabolic_architecture bacteria.test_metabolic_kernel
+      - name: Run dietary translation suite
+        run: python -m unittest bacteria.test_diet_translator
+      - name: Run live FBA integration suite
+        run: python -m unittest bacteria.test_metabolic_integration
+      - name: Run FBA integration stress suite
+        run: python -m unittest bacteria.test_integration_stress
+      - name: Run comparative sweep suite
+        run: python -m unittest bacteria.test_comparative_sweeps
       - name: Run existing full suite
         run: python -m unittest bacteria.test_bacteria
 
@@ -74,13 +82,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --editable .
       - name: Verify serial extension
-        run: python -c "import bacteria_c_kernel as kernel; assert not kernel.openmp_enabled(), 'Serial build unexpectedly enabled OpenMP'"
+        run: python -c "import bacteria_c_kernel as kernel; assert not kernel.openmp_enabled(), 'Serial build unexpectedly enabled OpenMP'; assert hasattr(kernel, 'MetabolicKernel'), 'Native MetabolicKernel is missing'"
       - name: Run kernel suite
         run: python -m unittest bacteria.test_kernel
       - name: Run physics kernel suite
         run: python -m unittest bacteria.test_physics_kernel
       - name: Run metabolic kernel suite
         run: python -m unittest bacteria.test_metabolic_architecture bacteria.test_metabolic_kernel
+      - name: Run dietary translation suite
+        run: python -m unittest bacteria.test_diet_translator
+      - name: Run live FBA integration suite
+        run: python -m unittest bacteria.test_metabolic_integration
+      - name: Run FBA integration stress suite
+        run: python -m unittest bacteria.test_integration_stress
+      - name: Run comparative sweep suite
+        run: python -m unittest bacteria.test_comparative_sweeps
       - name: Run required metabolic scale parity
         env:
           BACSANDBOX_RUN_METABOLIC_SCALE: '1'

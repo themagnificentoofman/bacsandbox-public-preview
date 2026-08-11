@@ -1195,7 +1195,7 @@ Globals are stored in `env_config.json` and can be edited in the Globals tab.
 The Global Stats header is:
 
 ```csv
-time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths,t6ss_deaths,hgt_transfers,overall_t6ss_deaths,overall_hgt_transfers,lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf
+time,total,births,deaths,elapsed_seconds,dt_seconds,tickrate_hz,overall_births,overall_deaths,t6ss_deaths,hgt_transfers,overall_t6ss_deaths,overall_hgt_transfers,lumen,mucus,consumed_calorie,consumed_glycan,consumed_mdcf,fba_biomass_gdw,fba_acetate_mol,fba_consumed_calorie_mol,fba_consumed_glycan_mol,fba_consumed_mdcf_mol
 ```
 
 Column meanings:
@@ -1218,6 +1218,12 @@ Column meanings:
 * `consumed_calorie`: cumulative generic-calorie substrate mass (pg) ingested by the whole community through this row (see Section 4.22).
 * `consumed_glycan`: cumulative complex-glycan substrate mass (pg) ingested through this row.
 * `consumed_mdcf`: cumulative MDCF-prebiotic substrate mass (pg) ingested through this row. Each `consumed_*` series is monotonic non-decreasing; the three columns are blank for stats produced by legacy imports that predate diet analytics.
+* `fba_biomass_gdw`: total committed sidecar biomass of the live cells after that live-FBA update, in gDW.
+* `fba_acetate_mol`: acetate bookkeeping output reported for that live-FBA update, in moles.
+* `fba_consumed_calorie_mol`, `fba_consumed_glycan_mol`, and `fba_consumed_mdcf_mol`: represented substrate consumed during that live-FBA update, in moles; these are per-tick values, not cumulative pg-path totals.<sup>[41](#ref-41)</sup>
+
+Legacy-path exports leave the five FBA-only columns blank. Import accepts files that omit them and
+initializes each absent FBA series to zero.<sup>[41](#ref-41)</sup>
 
 The time fields are computed as:
 
@@ -1269,11 +1275,12 @@ research questions, hypotheses, scope, timeline, and intended deliverables. The 
 below describes implemented components; it does not redefine those proposal phases.
 
 * `bacteria/app.py`: Pygame application loop, rendering, tabs, UI state, and high-level simulation orchestration.
-* `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`.
-* `bacteria/ecm.py`: Public sparse-grid ECM API and Python/native backend orchestration for quorum-sensing molecules, bacteriocins, acetate, and phage.
+* `bacteria/core_sim.py`: Headless biological and physical simulation models: `FoodNode`, `Bacterium`, `BacteriaSpecies`, `FoodSpatialHash`, and `Simulation`, including the opt-in live-FBA transaction boundary.
+* `bacteria/ecm.py`: Public sparse-grid ECM API and Python/native backend orchestration for the four signal layers, plus separate Python-transported continuous substrate maps for the opt-in live-FBA path.
 * `bacteria/physics.py`: Reusable structure-of-arrays buffers, the reference contact implementation, and Python/native physics backend orchestration.
 * `bacteria/metabolism.py`: Versioned reduced-model and prior loading, exact immutable NumPy model buffers, the Python reference solver/cache/adaptive batch implementation, and lazy `MetabolicOrchestrator` modes and backends.
-* `bacteria/diet_translator.py`: Strict loader and validator for the versioned diet-profile asset plus the opt-in dry-bolus-to-three-substrate molar translation API; it does not update `Simulation` or the UI.
+* `bacteria/metabolic_integration.py`: Opt-in spatial substrate registration, diet-bolus deposition, deterministic live-agent batching, reduced-metabolism state ownership, lifecycle policy, represented-amount validation, and adapter-level transactions used within the complete `Simulation` transaction.
+* `bacteria/diet_translator.py`: Strict loader and validator for the versioned diet-profile asset plus the pure dry-bolus-to-three-substrate molar translation API.
 * `bacteria/models/diet_profiles.json`: Versioned dry-recipe, measured-component, and Own-model routing/calibration asset used only by `DietTranslationEngine` (Section 10.4).
 * `bacteria/models/reduced_metabolism_v1.json` and `bacteria/models/metabolic_priors_v1.json`: Revision-1 reduced metabolic bookkeeping model and neutral, nonempirical prior rows.
 * `bacteria/src/ecm_kernel.cpp`, `bacteria/src/ecm_kernel.h`, `bacteria/src/physics_kernel.cpp`, `bacteria/src/physics_kernel.h`, `bacteria/src/metabolic_kernel.cpp`, and `bacteria/src/metabolic_kernel.h`: Optional C++17 ECM, contact-physics, and reduced-metabolism implementations compiled into the unified top-level pybind11 module `bacteria_c_kernel`; the sole `PYBIND11_MODULE` definition remains in `ecm_kernel.cpp`.
@@ -1284,9 +1291,11 @@ below describes implemented components; it does not redefine those proposal phas
 * `setup.py` and `pyproject.toml`: Unified ECM/physics/metabolism native-extension build configuration, all three C++ source files, model-asset packaging, and Python package metadata.
 * `bacteria/test_kernel.py`, `bacteria/test_physics_kernel.py`, `bacteria/test_metabolic_architecture.py`, and `bacteria/test_metabolic_kernel.py`: ECM, contact, and reduced-metabolism architecture, parity, solver, backend, ABI, boundary, transaction, cache, scale, stress, and opt-in performance checks.
 * `bacteria/test_diet_translator.py`: Focused diet-asset schema, translation formula, array contract, reduced-orchestrator injection, parity, rejection, and smoke coverage.
+* `bacteria/test_metabolic_integration.py` and `bacteria/test_integration_stress.py`: Live-FBA coordinate, bolus, batch, lifecycle, conservation, full-transaction rollback, scale, ownership, and conditional Python/native parity coverage.
+* `run_comparative_sweeps.py` and `bacteria/test_comparative_sweeps.py`: Paired-seed legacy-pg benchmark harness and its spatial-control, censoring, schema, affinity-audit, RNG-isolation, and non-overwrite tests.
 * `bacteria/test_bacteria.py`: Legacy production-simulation regression suite, including core biology, categorical pg diet drops, lumen/mucus mechanics, serialization, and contact behavior.
 * `plot_baselines.py`: Standalone parser and plotting utility for exported `simulation_stats.csv`, producing abundance, extinction/survival, zone-occupancy, and substrate-consumption figures when the corresponding data are present.
-* `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` run the ECM, physics, reduced-metabolism, and legacy `bacteria.test_bacteria` suites on OpenMP Windows/Linux/macOS and serial Linux builds, required metabolic and physics scale parity, and serial Linux Valgrind stress checks. The workflow does not currently invoke `bacteria.test_diet_translator`, so translator coverage is not continuous.
+* `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` define OpenMP Windows/Linux/macOS and serial Linux build/test jobs. Both build paths assert that the unified extension exposes `MetabolicKernel` and invoke the ECM, physics, reduced-metabolism, translator, live-integration, integration-stress, comparative-sweep, and legacy suites; the serial job also invokes the required metabolic and physics scale fixtures. The file separately defines a serial Linux Valgrind job. These are workflow contracts, not evidence that a hosted workflow or Valgrind run passed.
 
 ## 10. Hybrid C++ Computational Architecture, Empirical Parameterization, and Validation
 
@@ -1294,8 +1303,9 @@ This section is organized by implemented component, not by proposal phase. The C
 optional accelerators and are not proposal Phase II; optimization remains secondary to biological
 correctness, reproducibility, and interpretation. The production Pygame simulation retains the
 categorical pg glucose-equivalent metabolism and nutrient-drop path described in Section 4.19. The
-reduced molar translator and LP orchestrator are opt-in programmatic APIs with no `Simulation.update`
-or UI integration.
+reduced molar translator and LP orchestrator remain opt-in: a caller may attach the live adapter to
+`Simulation`, but the application has no user-facing FBA configuration and the default constructor
+continues to select the legacy pg/`FoodNode` path.
 
 Cross-cutting implementation notes:
 
@@ -1312,9 +1322,24 @@ The ECM can optionally run diffusion and decay through the top-level pybind11 ex
 
 Backend selection has three modes:
 
-* `auto` performs no native import during construction or empty ticks. On the first nonempty tick it lazily imports the extension, falling back to Python only when the module is absent; native computation errors propagate instead of silently changing backends.
+* `auto` performs no native import during construction or empty ticks. On the first nonempty tick it lazily imports the extension, falling back to Python only when the module is absent or lacks the required `process_layers` symbol; native computation errors propagate instead of silently changing backends.
 * `python` always uses the reference implementation and never imports the extension.
-* `cpp` requires the extension and reports its absence rather than falling back.
+* `cpp` requires both the extension and `process_layers`, and reports either absence rather than falling back.
+
+All sparse ECM fields use one world-to-cell convention. For finite world coordinates $x$ and $y$
+in micrometers and ECM cell width $h$ in micrometers, Python applies mathematical floor on each
+axis, including for negative coordinates:<sup>[39](#ref-39)</sup>
+
+$$
+(c_x,c_y)=\left(
+\left\lfloor\frac{x}{h}\right\rfloor,
+\left\lfloor\frac{y}{h}\right\rfloor
+\right).
+$$
+
+Thus, with $h=10\thinspace\mu\mathrm{m}$, $x=-0.1\thinspace\mu\mathrm{m}$ maps to $c_x=-1$,
+not zero. The four signal dictionaries and the three continuous FBA substrate maps share this
+integer coordinate system.
 
 The pybind11 binding exposes this fixed interface:
 
@@ -1336,7 +1361,16 @@ All array buffers use C-contiguous storage:
 
 The fixed layer order is `qs`, `bac`, `acetate`, then `phage`. The return tuple uses the same coordinate/value/offset layout, with `N` denoting the returned entry count. Python flattens only active dictionary entries into these buffers and reconstructs only retained entries, avoiding dense bounding boxes on the unbounded grid. The flat sparse-buffer ABI, lazy backend orchestration, and four-layer parallel dispatch are original BacSandbox interface designs.<sup>[39](#ref-39)</sup>
 
-While holding the GIL, the binding validates buffer layouts, shapes, offsets, and scalar parameters, then copies inputs into RAII-owned native vectors. It releases the GIL around native dispatch and reacquires it before constructing the NumPy outputs. The native and OpenMP regions make no Python/C API calls. RAII provides explicit ownership discipline; CI separately checks native definite and indirect memory losses rather than treating ownership style alone as proof of leak freedom.
+This native ABI remains signal-only: it always has the four layers above and an offsets array of
+shape `(5,)`. The separately registered `generic_calorie`, `complex_glycan`, and
+`mdcf_prebiotic` concentration maps are not inserted into `_layers`, are not flattened into
+`process_layers`, and are not passed to the native ECM kernel. `ECM.tick_substrates` currently
+advances each of those three maps with the Python Fickian reference stencil<sup>[9](#ref-9)</sup>
+and the same stability-clamp principle<sup>[5](#ref-5)</sup>, regardless of the signal-layer
+backend selection. There is therefore no implemented C++ substrate-diffusion path or associated
+performance claim.<sup>[39](#ref-39)</sup>
+
+While holding the GIL, the binding validates buffer layouts, shapes, offsets, and scalar parameters, then copies inputs into RAII-owned native vectors. It releases the GIL around native dispatch and reacquires it before constructing the NumPy outputs. The native and OpenMP regions make no Python/C API calls. RAII provides explicit ownership discipline; neither that style nor an unexecuted Valgrind workflow definition is proof of leak freedom.
 
 The native path preserves the §4.9 Fickian stencil<sup>[9](#ref-9)</sup> and stability clamp<sup>[5](#ref-5)</sup> exactly. Python supplies every model constant, so the C++ source duplicates none. For each layer, native code applies the alpha clamp and linear decay clamp; visits center, left, right, down, and up contributions in that order; applies the per-contribution floor; aggregates equal coordinates; and performs final concentration pruning. It preserves open signed coordinates and deterministic first-insertion output order, and guards neighbor calculations against signed `int64` overflow.
 
@@ -1350,7 +1384,7 @@ Kernel QA in `bacteria/test_kernel.py` uses `unittest`. Its parity fixture runs 
 BACSANDBOX_RUN_BENCHMARK=1 python -m unittest bacteria.test_kernel
 ```
 
-Performance measurements are environment- and workload-specific, not fixed guarantees. The kernel workflow exercises OpenMP builds on Windows, Linux, and macOS, a Linux serial build, and Linux Valgrind stress checks for definite and indirect losses.
+Performance measurements are environment- and workload-specific, not fixed guarantees. The kernel workflow is configured for OpenMP builds on Windows, Linux, and macOS, a Linux serial build, and Linux Valgrind stress checks for definite and indirect losses; no hosted result is asserted here.
 
 ### 10.2 Optional Contact-Physics Spatial Hash Kernel
 
@@ -1507,10 +1541,11 @@ fields initialize them to zero.
 per-tick Python/native parity sequence with grow/shrink/regrow transitions; direct malformed-ABI
 calls; signed and overflow cell coordinates; transactional callback failure; buffer-tail and event
 isolation; retained Python allocation; native stress; the required scale fixture; and an opt-in
-benchmark. The kernel workflow runs the physics suite with OpenMP on Windows, Linux, and macOS and
-with a serial extension on Linux. It also runs the 1,000-agent/500-tick scale test and serial Linux
-Valgrind checks that fail on definite or indirect losses. The required scale fixture can also be
-run directly:
+benchmark. The kernel workflow is configured to run the physics suite with OpenMP on Windows,
+Linux, and macOS and with a serial extension on Linux. The serial job also configures the
+1,000-agent/500-tick scale test, and a separate workflow job defines serial Linux Valgrind checks
+for definite or indirect losses. These statements describe configuration, not hosted results. The
+required scale fixture can also be run directly:
 
 ```bash
 BACSANDBOX_RUN_PHYSICS_SCALE=1 python -m unittest bacteria.test_physics_kernel.TestPhysicsScale.test_thousand_agents_five_hundred_ticks
@@ -1539,9 +1574,13 @@ the synthetic fixture is not a biological prediction or a full-`Simulation` benc
 **Scope and rollout boundary.** BacSandbox's production simulation continues to use the existing
 phenomenological, pg-based metabolism path by default. This component provides a deliberately
 reduced, three-substrate constraint-based bookkeeping model through the opt-in
-`MetabolicOrchestrator` programmatic API. It is not a GEM, SBML reconstruction, genome-scale model,
-or full dFBA implementation. No `Bacterium.step` or `Simulation.update` integration and no UI mode
-were added.
+`MetabolicOrchestrator` programmatic API. A caller may now attach an `FbaIntegrationAdapter` through
+the keyword-only `Simulation(..., metabolic_adapter=adapter)` argument. On that explicit path,
+`Simulation.update` dispatches a live molar transaction and bypasses legacy food-node generation,
+legacy pg reserve changes, and `BacteriaSpecies.step`. With no adapter, behavior remains on the
+legacy pg/`FoodNode` path. The application does not construct or configure an adapter through its
+UI. This reduced integration is not a GEM, SBML reconstruction, genome-scale model, or full dFBA
+implementation.<sup>[41](#ref-41)</sup>
 
 The orchestrator constructor is:
 
@@ -1565,6 +1604,210 @@ requires the native `MetabolicKernel`. Backend `auto` falls back to Python only 
 `bacteria_c_kernel` itself is absent or when an installed unified module lacks `MetabolicKernel`;
 broken dependencies, validation failures, solver failures, and other native runtime errors
 propagate. These modes and backends are programmatic controls, not app settings.
+
+**Live spatial configuration and state ownership.** `FbaSpatialConfig` makes the live boundary
+explicit. `environment_volume_l` must be finite and strictly positive, and every occupied sparse
+cell receives that declared volume in liters; the two-dimensional geometry does not infer a depth
+or volume. The configuration also owns the three ordered `SubstrateLayerSpec` records,
+low-substrate threshold, depletion safety, maximum substeps, cache switch, and concentration-space
+conservation tolerance. The substrate names must exactly match `generic_calorie`,
+`complex_glycan`, and `mdcf_prebiotic` in that order. `conservation_atol_m` defaults to
+$10^{-15}\thinspace\mathrm{M}$. The requested ceiling was `1e-10 M`, so the implemented default is
+stricter.<sup>[41](#ref-41)</sup>
+
+Continuous-substrate snapshots include registration specifications, canonical layer order, and
+all sparse values. Restoring a snapshot taken before first use therefore removes registration as
+well as values if that first transaction fails. Single-cell deposits validate every resulting
+concentration, and batch replacements validate every proposed value, before mutating any substrate
+map. A positive nonzero value below its layer's retention floor raises an error for the whole
+operation rather than being silently discarded; an exact zero remains the explicit
+absence/removal value.
+<sup>[41](#ref-41)</sup>
+
+`FbaAgentStateStore` is a sidecar keyed by live `Bacterium` identity, so reduced state remains
+separate from each cell's legacy pg reserve. It reconciles additions and removals against the
+current member lists and commits immutable `FbaAgentState` records containing biomass, growth rate,
+biomass delta, three reported substrate amounts, and acetate bookkeeping. It also snapshots and
+restores those records without moving pooled or live agent objects.<sup>[41](#ref-41)</sup>
+
+**Deterministic spatial batch.** Batch construction first flattens agents in
+`Simulation.species` order and then in each species' member order. It maps each agent through the
+Section 10.1 floor rule, sorts the unique coordinate pairs lexicographically, and assigns shared
+environment IDs from that sorted coordinate list. Repeated construction from unchanged state
+therefore preserves both agent order and environment numbering.<sup>[41](#ref-41)</sup> For $N$
+agents and $E$ occupied coordinates, the builder allocates C-contiguous NumPy arrays with these
+exact contracts:
+
+| Buffer | NumPy dtype | Shape |
+|---|---|---|
+| `phenotype_id` | `int32` | `(N,)` |
+| `environment_id` | `int32` | `(N,)` |
+| `concentrations_m` | `float64` | `(E, 3)` |
+| `environment_volume_l` | `float64` | `(E,)` |
+| `biomass_gdw` | `float64` | `(N,)` |
+| `growth_rate_s` | `float64` | `(N,)` |
+| `biomass_delta_gdw` | `float64` | `(N,)` |
+| `substrate_consumed_mol` | `float64` | `(N, 3)` |
+| `acetate_secreted_mol` | `float64` | `(N,)` |
+
+The sampled concentration matrix is fresh, owning, writable storage. The adapter passes these
+arrays to `MetabolicOrchestrator.advance_batch` in the direct ABI order documented below and does
+not infer or coerce an alternate unit system.
+
+**Diet bolus deposition.** A `DietBolus` carries an event ID, one versioned translator diet name,
+total dry feed mass in grams, and a nonempty footprint of distinct integer ECM coordinates with
+finite positive weights. The weights must be normalized to one within an absolute tolerance of
+$10^{-12}$. Let $F$ be the number of footprint cells, $V_{\mathrm{cell}}$ the configured volume
+of each cell in liters, $C_k^{\mathrm{tr}}$ the translator's additive concentration for substrate
+$k$, and $w_j$ the weight of footprint cell $j$. The implementation uses<sup>[41](#ref-41), [47](#ref-47)</sup>
+
+$$
+\sum_{j=1}^{F}w_j=1,
+\qquad
+V_{\mathrm{tr}}=F V_{\mathrm{cell}},
+\qquad
+n_k^{\mathrm{bolus}}=C_k^{\mathrm{tr}}V_{\mathrm{tr}}.
+$$
+
+It then deposits the concentration increment
+
+$$
+\Delta C_{j,k}
+=\frac{n_k^{\mathrm{bolus}}w_j}{V_{\mathrm{cell}}},
+\qquad
+\sum_{j=1}^{F}V_{\mathrm{cell}}\Delta C_{j,k}
+=n_k^{\mathrm{bolus}}.
+$$
+
+Here $C$ is in $\mathrm{mol}/\mathrm{L}$ and $n$ is in $\mathrm{mol}$ of represented
+glucose-equivalent substrate. This distributes the translator-owned amount rather than applying
+the full bolus independently to every cell. Before writing, the direct deposition function samples
+the complete footprint, computes all weighted shares, and stages the complete updated
+`(F, 3)` concentration matrix. One ECM batch replacement then validates every staged value,
+including every layer's retention floor, before replacing any cell. A sub-floor share in a later
+footprint row therefore rejects the direct call without retaining a write to any earlier row. The
+bolus queue is consumed only after the enclosing live transaction commits.<sup>[41](#ref-41)</sup>
+
+**Separate conservation checks.** After the solver returns and before sparse-map or sidecar commit,
+the adapter requires finite, nonnegative amount arrays and nonincreasing substrate concentrations.
+For every environment $e$ and substrate $k$, it independently compares represented depletion with
+the agents' reported consumption:<sup>[41](#ref-41)</sup>
+
+$$
+n_{e,k}^{\mathrm{depleted}}
+=\left(C_{e,k}^{\mathrm{before}}-C_{e,k}^{\mathrm{after}}\right)V_e,
+\qquad
+n_{e,k}^{\mathrm{reported}}
+=\sum_{i\thinspace:\thinspace e_i=e}\Delta n_{i,k}.
+$$
+
+With configured concentration tolerance $\varepsilon_C$, acceptance requires
+
+$$
+\left\lvert
+n_{e,k}^{\mathrm{depleted}}-n_{e,k}^{\mathrm{reported}}
+\right\rvert
+\le \varepsilon_C V_e.
+$$
+
+Thus the represented conservation allowance is an amount in moles obtained from the configured
+concentration tolerance and each environment's explicit volume; it is not a fixed mole allowance
+independent of volume.<sup>[41](#ref-41)</sup>
+
+Biomass has its own per-agent identity and a fixed absolute tolerance of
+$10^{-18}\thinspace\mathrm{gDW}$:
+
+$$
+B_i^{\mathrm{after}}-B_i^{\mathrm{before}}=\Delta B_i.
+$$
+
+Molar concentration, substrate moles, biomass in $\mathrm{gDW}$, and acetate moles are not added
+into one cross-unit balance. `acetate_secreted_mol` is a separate reduced-network bookkeeping
+output; the live path records it in FBA state/statistics and does not deposit it into the legacy pg
+`ecm.acetate` signal map.<sup>[41](#ref-41)</sup>
+
+**Growth-only lifecycle boundary.** `GrowthOnlyFbaLifecyclePolicy` requires the caller to supply a
+finite positive `initial_biomass_gdw`; the implementation supplies no universal cell-biomass
+calibration. Its division threshold is exactly twice that initial value:<sup>[41](#ref-41)</sup>
+
+$$
+B_{\mathrm{division}}=2B_{\mathrm{initial}}.
+$$
+
+At or above that threshold, and only while the carrying-capacity factor is positive, the policy
+returns division probability one. Fission splits biomass and every cumulative reduced-state amount
+equally between parent and child. Render, motility, and chemotactic scales remain one, and
+`starved` is always false. Revision 1 has no maintenance, damage, starvation, or death reaction, so
+this policy does not invent any of those processes. Hard carrying-capacity culling remains a
+separate `Simulation` rule. Consequently, live-FBA extinction dynamics are not validated and must
+not be interpreted using the legacy pg sweep's extinction results.<sup>[41](#ref-41)</sup>
+
+**Complete live-tick transaction.** `FbaIntegrationAdapter.advance_tick` first snapshots substrate
+registration and every continuous substrate map together with the sidecar state and an opaque
+solver-cache snapshot; a failure in registration, reconciliation, translation, bolus deposition,
+Python substrate diffusion, solve, validation, grid commit, or state commit restores them and
+re-raises the original exception.
+`Simulation._update_fba` wraps that narrower adapter transaction in a full pre-tick snapshot. It
+restores all of the following on any exception or other `BaseException` from the live update:
+<sup>[41](#ref-41)</sup>
+
+* Python RNG state and the pending bolus queue.
+* Registered substrate specifications, all three complete substrate maps, all four signal maps, and the last ECM backend marker.
+* Sidecar states and the exact pre-tick solver-cache state.
+* Species/member collections and attributes, and every pre-tick agent's attributes.
+* Global statistics, per-species step statistics, environment values, `last_fba_result`, and `step_idx`.
+
+For a `Simulation`-owned tick, adapter notifications are deferred. Exactly one success event is
+emitted only after adapter commit, lifecycle changes, statistics, environment updates, and the step
+index have all committed. Any outer failure restores the snapshot, emits exactly one rollback event
+with phase `simulation`, and uses a bare re-raise to preserve the original exception object, type,
+and message. Adapter rollback and the outer `Simulation` rollback each restore the exact cache state
+captured at their transaction boundary, so a valid warmed cache is preserved rather than cleared.
+If no kernel existed at the first snapshot, the opaque snapshot remains lazy as `None`; if that
+failed transaction creates a kernel, restoring `None` returns the created cache and all counters to
+their empty initial state without having initialized a backend merely to take the snapshot.
+<sup>[41](#ref-41)</sup>
+
+The Pygame loop is the presentation boundary. After rollback it catches ordinary exceptions only
+when an adapter is attached, pauses the simulation, records a displayable error string, and logs
+the traceback. That error remains visible while paused; only a later successful running update or
+simulation reinitialization clears it. Legacy-mode exceptions still propagate from the application
+loop.<sup>[41](#ref-41)</sup>
+
+**Reset and serialization.** `Simulation.reset` clears pending boluses, `last_fba_result`, all
+continuous-substrate values, all sidecar states, and any already-created solver cache deliberately
+for the new run, without forcing cache initialization. It retains the registered substrate
+definitions for the attached adapter. Reset also recreates empty statistics, including the five
+FBA series documented in Section 7. CSV export/import includes `fba_biomass_gdw`,
+`fba_acetate_mol`, and the three per-tick `fba_consumed_*_mol` fields.<sup>[41](#ref-41)</sup>
+
+**Live-integration validation status.** `bacteria.test_metabolic_integration` covers floor mapping,
+strict and atomic substrate mutation, registration-restoring first-use rollback, Python transport,
+weighted deposition, a later-share retention-floor partial-write regression, deterministic
+shared-cell batches, growth-only fission, commit, conservation rejection, adapter rollback,
+reset/cache clearing, FBA CSV fields, and legacy-pg bypass. `bacteria.test_integration_stress`
+injects failures from translation through late statistics commit, verifies deferred event
+cardinality, exact first-use and warmed-cache rollback restoration, full owner-state restoration,
+and original-error propagation, exercises exactly 5,001 agents, checks bounded Python retention,
+and runs warmed-cache snapshot/restore round trips on Python and conditionally on the native kernel.
+It also conditionally compares Python/native live outputs at `rtol=0`, `atol=1e-12` when the native
+metabolic kernel is built. These are executable software contracts, not validation of biological
+extinction behavior.
+
+The OpenMP and serial jobs in `.github/workflows/kernel.yml` are configured to run these exact
+commands in addition to the kernel suites:<sup>[41](#ref-41)</sup>
+
+```bash
+python -m unittest bacteria.test_diet_translator
+python -m unittest bacteria.test_metabolic_integration
+python -m unittest bacteria.test_integration_stress
+python -m unittest bacteria.test_comparative_sweeps
+```
+
+Both build paths first assert that the unified extension exposes `MetabolicKernel`; the serial job
+also configures the required metabolic and physics scale fixtures. A separate serial Valgrind job
+is defined for focused native allocation stress. Workflow configuration does not establish that
+hosted CI or Valgrind passed for a particular commit, and no such result is asserted here.
 
 **Versioned assets and reduced topology.** The reduced-model interface and topology, flat/CSR ABI,
 deterministic posterior-mean constraint adapter, tolerance-neighbor cache with bounded LRU, and
@@ -1641,6 +1884,15 @@ configure_phenotypes(
 Reconfiguration copies the phenotype data and resets every cache entry, counter, and LRU sequence.
 `clear_cache()` performs the same cache reset. `cache_stats()` returns
 `(entries, hits, misses, evictions, lp_solves)`.
+
+Both the Python and C++ kernels expose `snapshot_cache()` and `restore_cache(snapshot)`. Their
+backend-specific snapshot objects are opaque to callers and preserve all entries and full flux
+payloads, hit/miss/eviction/LP-solve counters, each entry's insertion and last-used sequences, and
+the global LRU sequence. Restoration therefore recovers eviction order and future hit behavior as
+well as the visible statistics. `MetabolicOrchestrator.snapshot_cache()` does not force lazy kernel
+construction and returns `None` before first use; `restore_cache(None)` clears a kernel created
+during the failed transaction, while a non-`None` snapshot restores the warmed backend exactly.
+<sup>[41](#ref-41)</sup>
 
 The direct solve binding is:
 
@@ -1869,10 +2121,10 @@ BACSANDBOX_RUN_FBA_BENCHMARK=1 python -m unittest bacteria.test_metabolic_kernel
 ```
 
 Performance measurements are environment- and workload-specific, not guarantees. The kernel
-workflow builds required OpenMP variants on Windows, Linux, and macOS plus a forced-serial Linux
-variant, runs the metabolic suite and required scale fixture, and runs 2,000-iteration metabolic,
-physics, and ECM stress workloads under serial Linux Valgrind checks for definite and indirect
-losses.
+workflow is configured to build required OpenMP variants on Windows, Linux, and macOS plus a
+forced-serial Linux variant, run the metabolic suite and required scale fixture, and define
+2,000-iteration metabolic, physics, and ECM stress workloads under serial Linux Valgrind checks for
+definite and indirect losses. No hosted or Valgrind execution result is asserted here.
 
 ### 10.4 Empirically Sourced Dietary Parameterization and Own-Model Molar Translation
 
@@ -2111,12 +2363,12 @@ additional species-capacity tier. The shipped neutral priors have $e_{p,k}=0$ an
 $m_{p,k}=1$.<sup>[41](#ref-41), [47](#ref-47)</sup> An affinity of zero instead makes
 $V_{p,k}^{\max}$ and the effective uptake bound exactly zero.<sup>[47](#ref-47)</sup>
 
-All four empirical-evidence profiles in `species_data.csv` are opt-in with `init=0`:
+The four strain-evidence profiles in `species_data.csv` are opt-in with `init=0`:
 
 | CSV profile | Profile type | $(a_{p,0},a_{p,1},a_{p,2})$ | Evidence scope and calibration |
 |---|---|---:|---|
-| Bg0018-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | MAG association and conserved PUL evidence from Hibberd et al.; tier values Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
-| Bg0019-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | MAG association and conserved PUL evidence from Hibberd et al.; tier values Own.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| Bg0018-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | The MDCF tier 3 is an Own qualitative encoding tied narrowly to Bg0018 strain-specific MAG association and conserved-PUL evidence; it is not a kinetic measurement.<sup>[43](#ref-43), [47](#ref-47)</sup> |
+| Bg0019-like | Growth-associated MAG, not a cultured BgF5_2 isolate | $(1,2,3)$ | The MDCF tier 3 is an Own qualitative encoding tied narrowly to Bg0019 strain-specific MAG association and conserved-PUL evidence; it is not a kinetic measurement.<sup>[43](#ref-43), [47](#ref-47)</sup> |
 | *Segatella copri* BgF5_2 | Cultured representative | $(1,2,4)$ | Direct BgF5_2 glucomannan machinery evidence from Zhou et al.; tier values Own.<sup>[45](#ref-45), [47](#ref-47)</sup> |
 | *Segatella copri* DSM 18205 | Cultured MDCF non-utilizer | $(1,1,0)$ | Direct inability to grow on glucomannan from Zhou et al.; tier values Own.<sup>[45](#ref-45), [47](#ref-47)</sup> |
 
@@ -2131,6 +2383,12 @@ DSM 18205's inability to grow on glucomannan.<sup>[45](#ref-45)</sup> PUL7/PUL8 
 here as generic dual galactan/mannan loci: other conserved PULs provide the evidence boundary for
 pectic galactan and arabinogalactan processing.<sup>[43](#ref-43), [45](#ref-45)</sup>
 
+The separate *Escherichia coli* K-12 row is also configured with `init=0` and affinity vector
+$(1,0,0)$. Its `aff_mdcf=0` makes MDCF-prebiotic uptake exactly zero in both implemented diet
+paths for this configuration. This is an **Own (BacSandbox model)** zero-founder/configuration
+choice, not evidence of a measured K-12 kinetic constant or a species-wide utilization
+claim.<sup>[47](#ref-47)</sup>
+
 #### 10.4.6 QA, memory layout, and native floating-point contract
 
 `bacteria/test_diet_translator.py` covers malformed assets, exact translation formulas, array ABI
@@ -2144,9 +2402,12 @@ python -m unittest bacteria.test_diet_translator
 python -m unittest discover
 ```
 
-`.github/workflows/kernel.yml` does not currently invoke `bacteria.test_diet_translator`; these
-translator checks therefore are not yet continuous CI coverage. No observed test count or timing
-is a versioned acceptance contract.
+`.github/workflows/kernel.yml` invokes `bacteria.test_diet_translator`,
+`bacteria.test_metabolic_integration`, `bacteria.test_integration_stress`, and
+`bacteria.test_comparative_sweeps` in both its OpenMP matrix and serial Linux job. Both jobs assert
+that the built extension exposes `MetabolicKernel`. A configured command is not a claim that a
+particular hosted workflow run passed, and no observed test count or timing is a versioned
+acceptance contract.
 
 `np.broadcast_to(increment, (E, 3))` is rejected because the result is a read-only, stride-zero
 view rather than writable owning batch storage. An allocated writable, C-contiguous `(E, 3)` array
@@ -2156,6 +2417,130 @@ Native nonfinite-value rejection depends on IEEE-respecting floating-point behav
 build retains `-O3` on non-MSVC compilers and `/O2` on MSVC, removes `-ffast-math`, and uses
 `/fp:precise` rather than `/fp:fast`. This preserves the finite checks exercised by the serial and
 native parity tests.
+
+### 10.5 Comparative Spatial-Control Sweep Harness
+
+**Purpose and model boundary.** `run_comparative_sweeps.py` is a headless paired-seed harness for
+the implemented legacy pg production model. It compares the categorical production diet profiles
+`malnutrition`, `standard`, and `mdcf` under an explicit homogeneous control and the spatial-niche
+control. It does not activate the reduced model, translator boluses, or
+`GrowthOnlyFbaLifecyclePolicy`; its extinction records therefore do not validate live-FBA
+extinction dynamics.<sup>[50](#ref-50)</sup>
+
+The default configuration runs every diet for 1,000 updates per condition, with
+$\Delta t=0.1\thinspace\mathrm{s}$, seed 0, Python backends, and the checked-in species data. A
+typical multi-seed invocation that retains those other defaults is
+
+```bash
+python run_comparative_sweeps.py --seeds 0 1 2
+```
+
+The default output base is `/workspace/scratch`. By default, each invocation derives a fresh run
+directory from its timestamped sweep ID; an existing name is never replaced, and explicit name
+collisions receive a numeric suffix such as `-001`. Each CSV is opened in exclusive-create mode
+inside that new directory.<sup>[50](#ref-50)</sup>
+
+**Paired seed isolation.** For every diet/seed pair, the harness runs the homogeneous and spatial
+conditions sequentially from independently reconstructed state. `isolated_rng` saves the caller's
+Python and NumPy global RNG states, seeds both streams for one condition, and restores both states
+on exit. Before accepting a pair, the harness requires equal hashes for the complete founder state
+and for the post-founder RNG state. Its temporary spatial-global overrides are also restored after
+each condition. This is paired stochastic control, not a claim that one seed demonstrates
+robustness.<sup>[50](#ref-50)</sup>
+
+The homogeneous control disables the partition, sets the mucus radius fraction and motility factor
+to one, uses the lumen food-washout rate in both zones, deposits the full food-node amount, and uses
+uniform carrying-capacity culling. The spatial-niche control enables the implemented
+Section 4.20 settings: radius fraction $0.75$, mucus motility factor $0.3$, lumen and mucus
+food-node washout rates $0.02\thinspace\mathrm{s}^{-1}$ and
+$0.002\thinspace\mathrm{s}^{-1}$, mucus drop factor $0.5$, and lumen cull weight $3.0$.
+These are **Own (BacSandbox model)** controls for testing the proposal's refuge hypothesis, not
+measured gut-flow or persistence parameters.<sup>[48](#ref-48), [50](#ref-50)</sup>
+
+**Presence/absence distance.** At each paired time point, let $A_t$ and $B_t$ be the sets of
+species with positive counts in the homogeneous and spatial runs. The emitted Jaccard community
+distance is<sup>[49](#ref-49)</sup>
+
+$$
+d_J(A_t,B_t)
+=1-\frac{\lvert A_t\cap B_t\rvert}{\lvert A_t\cup B_t\rvert}.
+$$
+
+The implementation defines $d_J(\varnothing,\varnothing)=0$. Counts affect set membership only;
+the abundance magnitudes do not enter this metric.<sup>[50](#ref-50)</sup>
+
+**Extinction and right-censoring.** Extinction rows include only configured low-abundance founders,
+defined by $0\lt N_s(0)\le L$, where the default threshold is $L=10$ cells. Let
+$T_s^{\mathrm{ext}}$ be the first recorded zero crossing and $T_{\mathrm{end}}$ the final observed
+time. The exported event indicator and analysis time are<sup>[16](#ref-16), [50](#ref-50)</sup>
+
+$$
+\delta_s=1,
+\qquad
+\widetilde{T}_s=T_s^{\mathrm{ext}}
+\quad\text{when }T_s^{\mathrm{ext}}\text{ is observed by }T_{\mathrm{end}}.
+$$
+
+$$
+\delta_s=0,
+\qquad
+\widetilde{T}_s=T_{\mathrm{end}}
+\quad\text{otherwise}.
+$$
+
+Rows with $\delta_s=0$ are labeled `right_censored`; absence of an observed event is not recorded
+as infinite survival or proof of persistence.
+
+**Exact CSV schemas.** The four files have stable, ordered headers; tests reject drift and verify
+that a second write cannot overwrite a prior run.<sup>[50](#ref-50)</sup>
+
+`relative_abundance.csv` stores every species count and within-community proportion at every
+timepoint in both conditions:
+
+```text
+sweep_id,pair_id,seed,diet,condition,step,elapsed_seconds,species,abundance_count,total_count,relative_abundance
+```
+
+`jaccard_distance.csv` stores one paired presence/absence comparison per timepoint:
+
+```text
+sweep_id,pair_id,seed,diet,step,elapsed_seconds,left_condition,right_condition,left_present_species_count,right_present_species_count,intersection_size,union_size,jaccard_community_distance
+```
+
+`extinction_censoring.csv` stores event/censoring records only for the predefined low-abundance
+founders:
+
+```text
+sweep_id,pair_id,seed,diet,condition,species,initial_count,final_count,low_abundance_max_initial_count,low_abundance_definition,low_abundance_evidence_class,event_observed,status,time_to_event_seconds,censor_time_seconds
+```
+
+`run_metadata.csv` stores one reproducibility/provenance row per condition:
+
+```text
+sweep_id,pair_id,seed,diet,condition,dt_seconds,step_count,timepoint_count,simulation_engine,backend,physics_backend_used,ecm_backend_used,metabolic_model_id,metabolic_model_revision,metabolic_prior_id,metabolic_prior_revision,reduced_model_active,available_fba_lifecycle_policy,fba_extinction_dynamics_validated,fba_lifecycle_limitation,species_data_path,species_data_sha256,founder_state_sha256,post_founder_rng_state_sha256,world_width_um,world_height_um,carrying_capacity_cells,drop_frequency_s_inv,drop_range_min_pg,drop_range_max_pg,low_abundance_max_initial_count,low_abundance_definition,low_abundance_evidence_class,spatial_parameter_evidence_class,spatial_partition_enabled,mucus_layer_radius_fraction,mucus_motility_anchoring_factor,lumen_food_washout_rate_s_inv,mucus_food_washout_rate_s_inv,mucus_drop_amount_factor,lumen_competition_cull_weight,initial_spawn_mode,initial_species_arrangement,initial_spawn_lumen_bias,initial_spawn_lumen_radius_fraction,initial_spawn_cluster_count,initial_spawn_cluster_spread_fraction,initial_spawn_central_radius_fraction,petri_radius_padding_um,ecm_cell_size_um
+```
+
+The `backend` column records the requested selection. `physics_backend_used` and
+`ecm_backend_used` record only a backend actually selected by successful dispatch; either field is
+`not_exercised` when that subsystem never selected a backend, rather than repeating the requested
+value.<sup>[50](#ref-50)</sup>
+
+`bacteria.test_comparative_sweeps` verifies the 1,000-step and scratch-directory defaults, paired
+RNG restoration and founder equivalence, distinct controls, Jaccard bounds, observed and censored
+events, exact schemas, unexercised-backend metadata, non-overwriting writes, and the checked-in
+affinity audit. It is configured in both the OpenMP and serial workflow jobs and can be run
+directly with:
+
+```bash
+python -m unittest bacteria.test_comparative_sweeps
+```
+
+**Interpretive limitation.** In these production-model sweeps, lumen washout decreases and removes
+free pg `FoodNode` mass. It does not advect, flush, or otherwise transport bacterial cells, and it
+does not operate on the three live-FBA substrate maps. The benchmark produces analysis-ready
+paired outputs, not a refuge result. A mucus-associated refuge remains a proposal hypothesis until
+predefined multi-seed analyses demonstrate a robust difference against the homogeneous control.
+<sup>[48](#ref-48), [50](#ref-50)</sup>
 
 ## Appendix A: Scientific References
 
@@ -2187,7 +2572,7 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-11"></a>**[11]** Gehrig, Venkatesh, Chang, Hibberd, Kung, Cheng, Chen, Subramanian, Cowardin, Meier et al. (2019). *Effects of microbiota-directed foods in gnotobiotic animals and undernourished children*. Science, 365(6449):eaau4732. [https://doi.org/10.1126/science.aau4732](https://doi.org/10.1126/science.aau4732)
 
-<a id="ref-12"></a>**[12]** Gompertz (1825). *On the nature of the function expressive of the law of human mortality*. Philosophical Transactions of the Royal Society of London, 115:513–583. [https://doi.org/10.1098/rstl.1825.0026](https://doi.org/10.1098/rstl.1825.0026)
+<a id="ref-12"></a>**[12]** Gompertz (1825). *XXIV. On the nature of the function expressive of the law of human mortality, and on a new mode of determining the value of life contingencies. In a letter to Francis Baily, Esq. F. R. S. &c.* Philosophical Transactions of the Royal Society of London, 115:513–583. [https://doi.org/10.1098/rstl.1825.0026](https://doi.org/10.1098/rstl.1825.0026)
 
 <a id="ref-13"></a>**[13]** Harman (1956). *Aging: a theory based on free radical and radiation chemistry*. Journal of Gerontology, 11(3):298–300. [https://doi.org/10.1093/geronj/11.3.298](https://doi.org/10.1093/geronj/11.3.298)
 
@@ -2199,7 +2584,7 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-17"></a>**[17]** Kleiber (1932). *Body size and metabolism*. Hilgardia, 6(11):315–353. [https://doi.org/10.3733/hilg.v06n11p315](https://doi.org/10.3733/hilg.v06n11p315)
 
-<a id="ref-18"></a>**[18]** Earle, Billings, Sigal, Lichtman, Hansson, Elias, Amieva, Huang & Sonnenburg (2015). Quantitative Imaging of Gut Microbiota Spatial Organization. Cell Host & Microbe, 18(4):478–488. [https://doi.org/10.1016/j.chom.2015.09.002](https://doi.org/10.1016/j.chom.2015.09.002)
+<a id="ref-18"></a>**[18]** Earle, Billings, Sigal, Lichtman, Hansson, Elias, Amieva, Huang & Sonnenburg (2015). *Quantitative Imaging of Gut Microbiota Spatial Organization*. Cell Host & Microbe, 18(4):478–488. [https://doi.org/10.1016/j.chom.2015.09.002](https://doi.org/10.1016/j.chom.2015.09.002)
 
 <a id="ref-19"></a>**[19]** Levin, Stewart & Chao (1977). *Resource-Limited Growth, Competition, and Predation: A Model and Experimental Studies with Bacteria and Bacteriophage*. The American Naturalist, 111(977):3–24. [https://doi.org/10.1086/283134](https://doi.org/10.1086/283134)
 
@@ -2241,11 +2626,11 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-38"></a>**[38]** **Own (BacSandbox model).** Initial-inoculum spawning policy (lumen-bias, clustered microcolonies) and elastic boundary reflection, §4.6/§4.23.
 
-<a id="ref-39"></a>**[39]** **Own (BacSandbox model).** Flat sparse-buffer ABI, lazy backend orchestration, and layer-parallel dispatch, §10.1.
+<a id="ref-39"></a>**[39]** **Own (BacSandbox model).** Floor-based world-to-sparse-cell mapping; fixed four-signal flat-buffer ABI; separate Python-transported three-substrate maps; lazy backend orchestration; and signal-layer parallel dispatch, §10.1.
 
 <a id="ref-40"></a>**[40]** **Own (BacSandbox model).** Flat agent/species array interface, CSR ordering, staged OpenMP design, and six-counter event contract, §10.2.
 
-<a id="ref-41"></a>**[41]** **Own (BacSandbox model)**. Reduced-model interface and topology, flat/CSR ABI, deterministic posterior-mean constraint adapter, tolerance-neighbor cache/LRU policy, and adaptive substep design, §10.3.
+<a id="ref-41"></a>**[41]** **Own (BacSandbox model).** Reduced-model interface and topology; flat/CSR ABI; deterministic posterior-mean constraint adapter; tolerance-neighbor cache/LRU policy and exact cache snapshots; adaptive substeps; live spatial configuration and registration-aware substrate snapshots; atomic retention-floor enforcement and complete weighted-bolus batch staging; state store; deterministic coordinate batching; normalized bolus deposition; represented-substrate and biomass checks; growth-only lifecycle; deferred transaction events; reset and serialization contracts; and full live-tick rollback, §10.3.
 
 <a id="ref-42"></a>**[42]** Chen et al. (2021). *A Microbiota-Directed Food Intervention for Undernourished Children*. New England Journal of Medicine, 384:1517-1528. [https://doi.org/10.1056/NEJMoa2023294](https://doi.org/10.1056/NEJMoa2023294)
 
@@ -2260,3 +2645,7 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-47"></a>**[47]** **Own (BacSandbox model).** Versioned dietary-profile schema and bolus API; multi-substrate recipe, component, and routing translator; source-total normalization and represented-component mass conservation; total-starch allocation; sugar, oil, and micronutrient bookkeeping; nonclinical malnutrition baseline; molar-mass precision; species $V^{\max}$, $K$, and affinity-tier calibration; and translation QA fixtures, §10.4.
 
 <a id="ref-48"></a>**[48]** **Own (BacSandbox model).** Production pg glucose-equivalent substrate classes, categorical nutrient-drop ratios, energy-yield calibrations, and dimensionless throughput/capacity rules, §4.19; lumen/mucus geometry, motility multiplier, food-washout rates, drop-retention factor, and carrying-capacity cull weighting used to construct a candidate-refuge hypothesis, §4.20.
+
+<a id="ref-49"></a>**[49]** Real & Vargas (1996). *The Probabilistic Basis of Jaccard's Index of Similarity*. Systematic Biology, 45(3):380–385. [https://doi.org/10.1093/sysbio/45.3.380](https://doi.org/10.1093/sysbio/45.3.380)
+
+<a id="ref-50"></a>**[50]** **Own (BacSandbox model).** Paired-seed legacy-pg comparative harness; RNG isolation and founder-state checks; homogeneous/spatial control construction; low-abundance definition; empty-community distance convention; CSV schemas; actual-versus-unexercised backend metadata; metadata provenance; and non-overwriting output policy, §10.5.

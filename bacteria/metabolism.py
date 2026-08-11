@@ -1160,6 +1160,34 @@ class PythonMetabolicKernel:
     def cache_stats(self) -> Tuple[int, int, int, int, int]:
         return len(self._cache), self._hits, self._misses, self._evictions, self._lp_solves
 
+    def snapshot_cache(self) -> Tuple[dict, int, int, int, int, int]:
+        """Return an opaque deep copy of cache payload, counters, and LRU sequence."""
+        return (
+            copy.deepcopy(self._cache),
+            self._hits,
+            self._misses,
+            self._evictions,
+            self._lp_solves,
+            self._sequence,
+        )
+
+    def restore_cache(self, snapshot: Tuple[dict, int, int, int, int, int]) -> None:
+        """Restore a snapshot produced by this kernel implementation."""
+        if not isinstance(snapshot, tuple) or len(snapshot) != 6:
+            raise TypeError('cache snapshot is invalid')
+        cache, hits, misses, evictions, lp_solves, sequence = snapshot
+        if not isinstance(cache, dict):
+            raise TypeError('cache snapshot payload is invalid')
+        counters = (hits, misses, evictions, lp_solves, sequence)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters):
+            raise ValueError('cache snapshot counters must be nonnegative integers')
+        self._cache = copy.deepcopy(cache)
+        self._hits = hits
+        self._misses = misses
+        self._evictions = evictions
+        self._lp_solves = lp_solves
+        self._sequence = sequence
+
     def _prepare_solve(
         self,
         phenotype_index: int,
@@ -1910,6 +1938,27 @@ class MetabolicOrchestrator:
             concentrations_m,
             cache_enabled,
         )
+
+    def clear_cache(self) -> None:
+        """Clear an already-created solver cache without forcing backend initialization."""
+        if self._kernel is not None:
+            self._kernel.clear_cache()
+
+    def snapshot_cache(self) -> Optional[Any]:
+        """Snapshot an initialized backend cache without forcing lazy construction."""
+        if self._kernel is None:
+            return None
+        return self._kernel.snapshot_cache()
+
+    def restore_cache(self, snapshot: Optional[Any]) -> None:
+        """Restore the initialized backend cache captured before a live transaction."""
+        if snapshot is None:
+            if self._kernel is not None:
+                self._kernel.clear_cache()
+            return
+        if self._kernel is None:
+            raise RuntimeError('cannot restore a cache before backend initialization')
+        self._kernel.restore_cache(snapshot)
 
     def advance_batch(
         self,

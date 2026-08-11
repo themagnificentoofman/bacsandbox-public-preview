@@ -575,6 +575,19 @@ CacheStats MetabolicKernel::cache_stats() const noexcept {
     return result;
 }
 
+CacheSnapshot MetabolicKernel::snapshot_cache() const {
+    return {cache_, cache_stats_, sequence_};
+}
+
+void MetabolicKernel::restore_cache(const CacheSnapshot& snapshot) {
+    if (snapshot.entries.size() > model_.cache_capacity) {
+        throw std::invalid_argument("cache snapshot exceeds configured capacity");
+    }
+    cache_ = snapshot.entries;
+    cache_stats_ = snapshot.stats;
+    sequence_ = snapshot.sequence;
+}
+
 PreparedSolve MetabolicKernel::prepare_solve(
     std::int32_t phenotype_index,
     const std::array<double, substrate_count>& concentrations_m) const {

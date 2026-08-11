@@ -297,6 +297,21 @@ class TestECMBackendDispatch(unittest.TestCase):
         self.assertIsNone(ecm.backend_used)
         self.assertTrue(ecm.native_available)
 
+    def test_missing_native_symbol_falls_back_only_in_auto_mode(self):
+        incomplete_module = object()
+        auto = ECM(backend='auto')
+        auto.add(0.0, 0.0, ACTIVE_CONCENTRATION, layer='qs')
+        with patch('bacteria.ecm.importlib.import_module', return_value=incomplete_module):
+            auto.tick(TEST_DT_SECONDS)
+        self.assertEqual(auto.backend_used, 'python')
+        self.assertFalse(auto.native_available)
+
+        explicit = ECM(backend='cpp')
+        explicit.add(0.0, 0.0, ACTIVE_CONCENTRATION, layer='qs')
+        with patch('bacteria.ecm.importlib.import_module', return_value=incomplete_module):
+            with self.assertRaisesRegex(ImportError, 'lacks process_layers'):
+                explicit.tick(TEST_DT_SECONDS)
+
     @unittest.skipUnless(NATIVE_AVAILABLE, 'bacteria_c_kernel is not built')
     def test_native_tick_preserves_layer_dictionary_identities(self):
         ecm = ECM(backend='cpp')

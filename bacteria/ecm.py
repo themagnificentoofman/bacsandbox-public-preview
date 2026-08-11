@@ -1,4 +1,7 @@
+from dataclasses import dataclass
 import importlib
+import math
+from numbers import Integral, Real
 import os
 import sys
 
@@ -19,6 +22,7 @@ from .constants import (
     ECM_PHAGE_DIFFUSION_UM2_S,
     ECM_QS_DECAY_S,
     ECM_QS_DIFFUSION_UM2_S,
+    SUBSTRATE_NAMES,
 )
 
 
@@ -38,6 +42,26 @@ _LAYER_DECAY = (
     ECM_ACETATE_DECAY_S,
     ECM_PHAGE_DECAY_S,
 )
+
+
+@dataclass(frozen=True)
+class SubstrateLayerSpec:
+    """Configuration for one continuous molar substrate field."""
+
+    name: str
+    diffusion_um2_s: float
+    decay_rate_s_inv: float
+    min_concentration_m: float
+    provenance: str
+
+
+@dataclass(frozen=True)
+class SubstrateLayerSnapshot:
+    """Immutable copy of substrate registration and all field values."""
+
+    layer_specs: tuple
+    layer_order: tuple
+    layer_items: tuple
 
 
 class _NativeModuleUnavailable(ImportError):
@@ -72,6 +96,10 @@ class ECM:
             'acetate': self.acetate,
             'phage': self.phage,
         }
+        # FBA substrate fields are deliberately separate from the fixed four-layer
+        # signal ABI consumed by bacteria_c_kernel.process_layers.
+        self._substrate_layer_specs = ()
+        self._substrate_layers = {}
 
     @property
     def backend_used(self):
@@ -84,6 +112,230 @@ class ECM:
         if not self._native_import_attempted:
             return None
         return self._native_module is not None
+
+    @property
+    def substrate_layer_names(self):
+        """Return the registered molar substrate fields in canonical ABI order."""
+        return tuple(spec.name for spec in self._substrate_layer_specs)
+
+    def register_substrate_layers(self, specs):
+        """Register exactly the three canonical continuous substrate fields."""
+        specs = self._validate_substrate_specs(specs)
+
+        if self._substrate_layer_specs:
+            if specs != self._substrate_layer_specs:
+                raise RuntimeError('substrate layers are already registered with different specs')
+            return
+
+        self._substrate_layer_specs = specs
+        self._substrate_layers = {spec.name: {} for spec in specs}
+
+    def world_to_cell(self, x_um, y_um):
+        """Map finite world coordinates in micrometers to one sparse grid key."""
+        for name, value in (('x_um', x_um), ('y_um', y_um)):
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise TypeError(f'{name} must be a real number')
+            if not math.isfinite(float(value)):
+                raise ValueError(f'{name} must be finite')
+        return (
+            int(math.floor(float(x_um) / self.cell_size)),
+            int(math.floor(float(y_um) / self.cell_size)),
+        )
+
+    def deposit_substrates_m(self, coordinate, increment_m):
+        """Add one canonical molar concentration vector at a grid coordinate."""
+        import numpy as np
+
+        coordinate = self._validate_substrate_coordinate(coordinate)
+        values = self._validate_substrate_matrix(
+            increment_m,
+            expected_shape=(len(SUBSTRATE_NAMES),),
+            name='increment_m',
+        )
+        updated = []
+        for layer_index, spec in enumerate(self._substrate_layer_specs):
+            current = self._substrate_layers[spec.name].get(coordinate, 0.0)
+            value = current + float(values[layer_index])
+            if not np.isfinite(value):
+                raise OverflowError('deposited substrate concentration is not finite')
+            if 0.0 < value < spec.min_concentration_m:
+                raise ValueError(
+                    f'deposited {spec.name} concentration is below its retention floor'
+                )
+            updated.append(value)
+        for spec, value in zip(self._substrate_layer_specs, updated):
+            if value >= spec.min_concentration_m:
+                self._substrate_layers[spec.name][coordinate] = value
+
+    def sample_substrate_batch_m(self, coordinates):
+        """Return fresh C-contiguous ``(E, 3)`` concentrations for unique cells."""
+        import numpy as np
+
+        coordinates = self._validate_substrate_coordinates(coordinates)
+        result = np.zeros((len(coordinates), len(SUBSTRATE_NAMES)), dtype=np.float64)
+        for environment, coordinate in enumerate(coordinates):
+            for substrate, spec in enumerate(self._substrate_layer_specs):
+                result[environment, substrate] = self._substrate_layers[spec.name].get(
+                    coordinate,
+                    0.0,
+                )
+        return result
+
+    def replace_substrate_batch_m(self, coordinates, concentrations_m):
+        """Atomically replace sampled cells from a validated ``(E, 3)`` matrix."""
+        coordinates = self._validate_substrate_coordinates(coordinates)
+        values = self._validate_substrate_matrix(
+            concentrations_m,
+            expected_shape=(len(coordinates), len(SUBSTRATE_NAMES)),
+            name='concentrations_m',
+        )
+        replacements = []
+        for substrate, spec in enumerate(self._substrate_layer_specs):
+            replacement = tuple(float(value) for value in values[:, substrate])
+            if any(0.0 < value < spec.min_concentration_m for value in replacement):
+                raise ValueError(
+                    f'replacement {spec.name} concentration is below its retention floor'
+                )
+            replacements.append(replacement)
+        for substrate, spec in enumerate(self._substrate_layer_specs):
+            layer = self._substrate_layers[spec.name]
+            for coordinate, value in zip(coordinates, replacements[substrate]):
+                if value == 0.0:
+                    layer.pop(coordinate, None)
+                else:
+                    layer[coordinate] = value
+
+    def snapshot_substrate_layers(self):
+        """Capture registration and every cell because diffusion may touch neighbors."""
+        return SubstrateLayerSnapshot(
+            layer_specs=self._substrate_layer_specs,
+            layer_order=self.substrate_layer_names,
+            layer_items=tuple(
+                tuple(sorted(self._substrate_layers[name].items()))
+                for name in self.substrate_layer_names
+            ),
+        )
+
+    def restore_substrate_layers(self, snapshot):
+        """Restore registration and values, preserving dict identities when possible."""
+        if not isinstance(snapshot, SubstrateLayerSnapshot):
+            raise TypeError('snapshot must be a SubstrateLayerSnapshot')
+        if not snapshot.layer_specs:
+            if snapshot.layer_order or snapshot.layer_items:
+                raise ValueError('unregistered substrate snapshot must not contain layers')
+            for layer in self._substrate_layers.values():
+                layer.clear()
+            self._substrate_layer_specs = ()
+            self._substrate_layers = {}
+            return
+
+        specs = self._validate_substrate_specs(snapshot.layer_specs)
+        if snapshot.layer_order != tuple(spec.name for spec in specs):
+            raise ValueError('snapshot substrate order does not match its layer specs')
+        if len(snapshot.layer_items) != len(specs):
+            raise ValueError('snapshot substrate values do not match its layer specs')
+        rebuilt = []
+        for spec, items in zip(specs, snapshot.layer_items):
+            layer = {}
+            for coordinate, value in items:
+                coordinate = self._coerce_substrate_coordinate(coordinate)
+                if not math.isfinite(value) or value < spec.min_concentration_m:
+                    raise ValueError('snapshot contains an invalid substrate concentration')
+                if coordinate in layer:
+                    raise ValueError('snapshot contains a duplicate substrate coordinate')
+                layer[coordinate] = float(value)
+            rebuilt.append(layer)
+        if self._substrate_layer_specs == specs:
+            for spec, layer in zip(specs, rebuilt):
+                target = self._substrate_layers[spec.name]
+                target.clear()
+                target.update(layer)
+        else:
+            self._substrate_layer_specs = specs
+            self._substrate_layers = {
+                spec.name: layer for spec, layer in zip(specs, rebuilt)
+            }
+
+    def clear_substrate_layers(self):
+        """Remove all continuous substrate values while retaining registration."""
+        for layer in self._substrate_layers.values():
+            layer.clear()
+
+    def tick_substrates(self, dt_seconds):
+        """Diffuse and decay the three FBA substrate fields on the Python path."""
+        self._require_substrate_layers()
+        if isinstance(dt_seconds, bool) or not isinstance(dt_seconds, Real):
+            raise TypeError('dt_seconds must be a real number')
+        dt_seconds = float(dt_seconds)
+        if not math.isfinite(dt_seconds) or dt_seconds < 0.0:
+            raise ValueError('dt_seconds must be finite and nonnegative')
+        for spec in self._substrate_layer_specs:
+            self._process_layer_python(
+                self._substrate_layers[spec.name],
+                float(spec.diffusion_um2_s),
+                float(spec.decay_rate_s_inv),
+                dt_seconds,
+                min_concentration=spec.min_concentration_m,
+            )
+
+    def _require_substrate_layers(self):
+        if not self._substrate_layer_specs:
+            raise RuntimeError('continuous substrate layers are not registered')
+
+    def _validate_substrate_coordinate(self, coordinate):
+        self._require_substrate_layers()
+        return self._coerce_substrate_coordinate(coordinate)
+
+    @staticmethod
+    def _coerce_substrate_coordinate(coordinate):
+        if not isinstance(coordinate, tuple) or len(coordinate) != 2:
+            raise TypeError('substrate coordinate must be a two-integer tuple')
+        if any(isinstance(value, bool) or not isinstance(value, Integral) for value in coordinate):
+            raise TypeError('substrate coordinate must be a two-integer tuple')
+        return int(coordinate[0]), int(coordinate[1])
+
+    @staticmethod
+    def _validate_substrate_specs(specs):
+        specs = tuple(specs)
+        if len(specs) != len(SUBSTRATE_NAMES) or not all(
+            isinstance(spec, SubstrateLayerSpec) for spec in specs
+        ):
+            raise TypeError('substrate layer specs must be SubstrateLayerSpec records')
+        if tuple(spec.name for spec in specs) != SUBSTRATE_NAMES:
+            raise ValueError(f'substrate layer names must exactly match {SUBSTRATE_NAMES}')
+        for spec in specs:
+            for name, value in (
+                ('diffusion_um2_s', spec.diffusion_um2_s),
+                ('decay_rate_s_inv', spec.decay_rate_s_inv),
+                ('min_concentration_m', spec.min_concentration_m),
+            ):
+                if isinstance(value, bool) or not isinstance(value, Real):
+                    raise TypeError(f'{spec.name}.{name} must be a real number')
+                if not math.isfinite(float(value)) or float(value) < 0.0:
+                    raise ValueError(f'{spec.name}.{name} must be finite and nonnegative')
+            if not isinstance(spec.provenance, str) or not spec.provenance.strip():
+                raise ValueError(f'{spec.name}.provenance must be a non-empty string')
+        return specs
+
+    def _validate_substrate_coordinates(self, coordinates):
+        coordinates = tuple(self._validate_substrate_coordinate(value) for value in coordinates)
+        if len(set(coordinates)) != len(coordinates):
+            raise ValueError('substrate coordinates must be unique')
+        return coordinates
+
+    def _validate_substrate_matrix(self, values, expected_shape, name):
+        import numpy as np
+
+        self._require_substrate_layers()
+        if not isinstance(values, np.ndarray) or values.dtype != np.dtype(np.float64):
+            raise TypeError(f'{name} must be a float64 NumPy array')
+        if values.shape != expected_shape:
+            raise ValueError(f'{name} must have shape {expected_shape}')
+        if not values.flags.c_contiguous:
+            raise ValueError(f'{name} must be C-contiguous')
+        if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+            raise ValueError(f'{name} must contain finite nonnegative concentrations')
+        return values
 
     def add(self, x, y, amount, layer='qs'):
         """
@@ -151,6 +403,15 @@ class ECM:
         except Exception as exc:
             self._native_import_error = exc
             raise
+
+        if not callable(getattr(self._native_module, 'process_layers', None)):
+            error = _NativeModuleUnavailable(
+                "The 'bacteria_c_kernel' extension lacks process_layers; "
+                "rebuild it or use backend='python'."
+            )
+            self._native_module = None
+            self._native_import_error = error
+            raise error
 
         return self._native_module
 
@@ -235,7 +496,14 @@ class ECM:
 
         return rebuilt_layers
 
-    def _process_layer_python(self, grid, diffusion_um2_s, decay_s, dt):
+    def _process_layer_python(
+        self,
+        grid,
+        diffusion_um2_s,
+        decay_s,
+        dt,
+        min_concentration=ECM_MIN_CONCENTRATION,
+    ):
         if not grid:
             return
 
@@ -245,23 +513,23 @@ class ECM:
         next_grid = {}
 
         for k, val in list(grid.items()):
-            if val < ECM_MIN_CONCENTRATION:
+            if val < min_concentration:
                 continue
 
             decayed = val * decay_multiplier
             retained = decayed * (1.0 - 4.0 * alpha)
             neighbor_share = decayed * alpha
 
-            if retained >= ECM_MIN_CONCENTRATION:
+            if retained >= min_concentration:
                 next_grid[k] = next_grid.get(k, 0.0) + retained
 
             cx, cy = k
-            if neighbor_share >= ECM_MIN_CONCENTRATION:
+            if neighbor_share >= min_concentration:
                 for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
                     next_grid[(nx, ny)] = next_grid.get((nx, ny), 0.0) + neighbor_share
 
         grid.clear()
-        grid.update({k: v for k, v in next_grid.items() if v >= ECM_MIN_CONCENTRATION})
+        grid.update({k: v for k, v in next_grid.items() if v >= min_concentration})
 
     def _process_layer(self, grid, diffusion_um2_s, decay_s, dt):
         return self._process_layer_python(grid, diffusion_um2_s, decay_s, dt)
