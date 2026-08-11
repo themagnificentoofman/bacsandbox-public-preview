@@ -42,6 +42,7 @@ jobs:
           brew install libomp
           echo "CPPFLAGS=-I$(brew --prefix libomp)/include" >> "$GITHUB_ENV"
           echo "LDFLAGS=-L$(brew --prefix libomp)/lib" >> "$GITHUB_ENV"
+          echo "ARCHFLAGS=-arch $(uname -m)" >> "$GITHUB_ENV"
       - name: Build and install
         run: |
           python -m pip install --upgrade pip
@@ -120,7 +121,12 @@ jobs:
           PYTHONMALLOC: malloc
         run: |
           suppression_args=()
-          for candidate in /usr/lib/valgrind/python3.supp /usr/share/doc/python3.12/valgrind-python.supp; do
+          python_prefix="$(python -c 'import sys; print(sys.prefix)')"
+          for candidate in \
+            "$python_prefix/share/valgrind/python3.supp" \
+            "$python_prefix/share/doc/python3.12/valgrind-python.supp" \
+            /usr/lib/valgrind/python3.supp \
+            /usr/share/doc/python3.12/valgrind-python.supp; do
             if [[ -f "$candidate" ]]; then
               suppression_args+=("--suppressions=$candidate")
               break

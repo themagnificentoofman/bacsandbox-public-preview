@@ -105,7 +105,7 @@ class KernelBuildExt(build_ext):
 
         cppflags = shlex.split(os.environ.get('CPPFLAGS', ''))
         ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
-        candidates = [(['-fopenmp'], ['-fopenmp'])]
+        candidates = []
         if cppflags or ldflags:
             candidates.extend((
                 (
