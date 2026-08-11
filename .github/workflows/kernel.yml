@@ -121,6 +121,9 @@ jobs:
           PYTHONMALLOC: malloc
         run: |
           suppression_args=()
+          if [[ -f "$GITHUB_WORKSPACE/.github/valgrind-python.supp" ]]; then
+            suppression_args+=("--suppressions=$GITHUB_WORKSPACE/.github/valgrind-python.supp")
+          fi
           python_prefix="$(python -c 'import sys; print(sys.prefix)')"
           for candidate in \
             "$python_prefix/share/valgrind/python3.supp" \

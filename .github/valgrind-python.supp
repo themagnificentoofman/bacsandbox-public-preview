@@ -1,0 +1,169 @@
+# Valgrind suppressions for BacSandbox's native leak job.
+#
+# This is based on CPython's Misc/valgrind-python.supp. The release build used
+# by the CI job does not recompile CPython with the preferred valgrind-aware
+# allocator hooks, so we keep the generic Python/runtime suppressions active
+# here instead of depending on runner packaging.
+
+{
+   Suppress leaking the GIL after a fork.
+   Memcheck:Leak
+   fun:malloc
+   fun:PyThread_allocate_lock
+   fun:PyEval_ReInitThreads
+}
+
+{
+   Suppress leaking the autoTLSkey.
+   Memcheck:Leak
+   fun:malloc
+   fun:PyThread_create_key
+   fun:_PyGILState_Init
+   fun:Py_InitializeEx
+   fun:Py_Main
+}
+
+{
+   Hmmm, is this a real leak or like the GIL?
+   Memcheck:Leak
+   fun:malloc
+   fun:PyThread_ReInitTLS
+}
+
+{
+   Handle PyMalloc confusing valgrind (possibly leaked)
+   Memcheck:Leak
+   fun:realloc
+   fun:_PyObject_GC_Resize
+   ...
+}
+
+{
+   Handle PyMalloc confusing valgrind (possibly leaked)
+   Memcheck:Leak
+   fun:malloc
+   fun:_PyObject_GC_New
+   ...
+}
+
+{
+   Handle PyMalloc confusing valgrind (possibly leaked)
+   Memcheck:Leak
+   fun:malloc
+   fun:_PyObject_GC_NewVar
+   ...
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Addr4
+   fun:address_in_range
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Value4
+   fun:address_in_range
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 8 (x86_64 aka amd64)
+   Memcheck:Value8
+   fun:address_in_range
+}
+
+{
+   ADDRESS_IN_RANGE/Conditional jump or move depends on uninitialised value
+   Memcheck:Cond
+   fun:address_in_range
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Addr4
+   fun:_PyObject_Free
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Value4
+   fun:_PyObject_Free
+}
+
+{
+   ADDRESS_IN_RANGE/Use of uninitialised value of size 8
+   Memcheck:Addr8
+   fun:_PyObject_Free
+}
+
+{
+   ADDRESS_IN_RANGE/Use of uninitialised value of size 8
+   Memcheck:Value8
+   fun:_PyObject_Free
+}
+
+{
+   ADDRESS_IN_RANGE/Conditional jump or move depends on uninitialised value
+   Memcheck:Cond
+   fun:_PyObject_Free
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Addr4
+   fun:_PyObject_Realloc
+}
+
+{
+   ADDRESS_IN_RANGE/Invalid read of size 4
+   Memcheck:Value4
+   fun:_PyObject_Realloc
+}
+
+{
+   ADDRESS_IN_RANGE/Use of uninitialised value of size 8
+   Memcheck:Addr8
+   fun:_PyObject_Realloc
+}
+
+{
+   ADDRESS_IN_RANGE/Use of uninitialised value of size 8
+   Memcheck:Value8
+   fun:_PyObject_Realloc
+}
+
+{
+   ADDRESS_IN_RANGE/Conditional jump or move depends on uninitialised value
+   Memcheck:Cond
+   fun:_PyObject_Realloc
+}
+
+{
+   bpo-38118: Valgrind emits false alarm on GCC builtin strcmp()
+   Memcheck:Cond
+   fun:PyUnicode_Decode
+}
+
+{
+   Avoid problems w/readline doing a putenv and leaking on exit
+   Memcheck:Leak
+   ...
+   fun:setup_readline
+}
+
+{
+   Handle pthread issue (possibly leaked)
+   Memcheck:Leak
+   fun:calloc
+   fun:allocate_dtv
+   fun:_dl_allocate_tls_storage
+   fun:_dl_allocate_tls
+}
+
+{
+   Handle pthread issue (possibly leaked)
+   Memcheck:Leak
+   fun:memalign
+   fun:_dl_allocate_tls_storage
+   fun:_dl_allocate_tls
+}
