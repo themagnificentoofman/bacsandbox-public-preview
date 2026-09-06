@@ -20,6 +20,8 @@
 
     "setup.py",
     "pyproject.toml",
+    "requirements.txt",
+    ".python-version",
 
     "README.md",
     "DOCUMENTATION.md",

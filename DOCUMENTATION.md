@@ -10,20 +10,75 @@ Food nodes represent an abstract organic nutrient pool measured in pg glucose-eq
 
 ## 2. Setup And Usage
 
-1. Install Python 3.9-3.13 (declared package range `>=3.9,<3.14`).
-2. Install dependencies:
+The project standard is CPython 3.14, with development and CI pinned to **3.14.7**
+in `.python-version`. Package metadata requires `>=3.14,<3.15`. Use the standard
+GIL-enabled interpreter; free-threaded `3.14t` is not part of this validation target.
+Later 3.14 patch upgrades should update `.python-version` and pass the same QA gates.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+Follow the [README setup commands](README.md#setup) to create and activate `.venv`,
+then choose a requirements-only installation or an editable native installation.
+`requirements.txt` is the single runtime dependency list used by both routes:
 
-3. Run the application:
+| Dependency | Range | Role |
+| --- | --- | --- |
+| pygame-ce | `~=2.5.8` | Pygame UI; imported as `pygame` |
+| NumPy | `>=2.3.4,<3` | Numerical buffers and reference kernels |
+| pandas | `>=2.3.3,<4` | CSV analysis |
+| Matplotlib | `>=3.10.7,<4` | Plotting |
 
-   ```bash
-   python -m bacteria
-   ```
+`pyproject.toml` separately declares isolated native build requirements:
+`setuptools>=80.9`, `wheel`, `pybind11>=3.0.1,<4`, and `numpy>=2.3.4,<3`.
+The optional extension still requires a C++17 compiler. OpenMP is selected by
+`BACSANDBOX_OPENMP=auto|on|off`; `off` disables OpenMP but still compiles C++.
+Both install routes can now be used in the same environment without installing
+competing Pygame distributions. Do not install `pygame` alongside `pygame-ce`.
 
-The app records population and event history in `simulation_stats.csv` for spreadsheet or external analysis workflows.
+The app records population and event history in `simulation_stats.csv` for
+spreadsheet or external analysis workflows. For isolated UI runs after an editable
+install, run from a separate directory containing copies of `species_data.csv` and
+`env_config.json` to preserve tracked inputs and outputs.
+
+### 2.1 Python 3.14 Migration And Verification
+
+An existing Python 3.12 virtual environment cannot be upgraded in place. Before
+switching, save its `python -m pip freeze` output outside the checkout and preserve
+it as a backup. Deactivate it, move the old `.venv` out of the checkout, then create
+a fresh `.venv` using the README's Python 3.14 commands. A moved virtual environment
+is only a backup: restore it to its original path before using it for rollback.
+Rebuild `bacteria_c_kernel` for the new interpreter; a CPython 3.12 binary is not a
+CPython 3.14 build. Keep the backup until the new environment passes verification.
+
+Run from the repository root in the new environment:
+
+```bash
+python --version
+python -m pip check
+python -c "import sys, pygame; print(sys.executable); print(pygame.version.ver); assert pygame.IS_CE"
+python -m unittest discover
+```
+
+The version should match `.python-version` and the executable should be inside
+`.venv`. For a native installation, also run:
+
+```bash
+python -c "import bacteria_c_kernel as k; print('OpenMP:', k.openmp_enabled()); assert hasattr(k, 'MetabolicKernel')"
+```
+
+`OpenMP: True` is required for an explicitly requested `on` build; `False` is
+expected for `off`. Native tests skip intentionally in a requirements-only
+installation. Scale tests and timing benchmarks have separate opt-in flags; a
+successful suite with skips does not mean those checks ran. Tests that inject
+synthetic FBA failures print expected rollback tracebacks; use the final unittest
+summary to distinguish these from failures.
+
+VS Code defaults to `.venv` and unittest discovery. Reselect **Python: Select
+Interpreter** after migration if the workspace already has an interpreter choice.
+The C++ editor configuration uses C++17 and leaves compiler discovery to the host;
+any additional Python/pybind11 header paths must come from the active installation,
+not another developer's absolute paths. Editor settings do not control the build.
+Record the actual Python version, installed package versions, OpenMP state, and Git
+commit with each research run. Passing this migration's tests does not establish
+bit-for-bit equivalence with previous Python 3.12 stochastic outputs.
 
 ## 3. Core Units
 
@@ -1295,7 +1350,7 @@ below describes implemented components; it does not redefine those proposal phas
 * `run_comparative_sweeps.py` and `bacteria/test_comparative_sweeps.py`: Paired-seed legacy-pg benchmark harness and its spatial-control, censoring, schema, affinity-audit, RNG-isolation, and non-overwrite tests.
 * `bacteria/test_bacteria.py`: Legacy production-simulation regression suite, including core biology, categorical pg diet drops, lumen/mucus mechanics, serialization, and contact behavior.
 * `plot_baselines.py`: Standalone parser and plotting utility for exported `simulation_stats.csv`, producing abundance, extinction/survival, zone-occupancy, and substrate-consumption figures when the corresponding data are present.
-* `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` define OpenMP Windows/Linux/macOS and serial Linux build/test jobs. Both build paths assert that the unified extension exposes `MetabolicKernel` and invoke the ECM, physics, reduced-metabolism, translator, live-integration, integration-stress, comparative-sweep, and legacy suites; the serial job also invokes the required metabolic and physics scale fixtures. The file separately defines a serial Linux Valgrind job. These are workflow contracts, not evidence that a hosted workflow or Valgrind run passed.
+* `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` read the shared Python version from `.python-version` and define OpenMP Windows/Linux/macOS and serial Linux build/test jobs. A separate requirements-only Linux job verifies `pygame-ce`, absence of the native extension, and the full suite with native-only skips. Both build paths assert that the unified extension exposes `MetabolicKernel` and invoke the ECM, physics, reduced-metabolism, translator, live-integration, integration-stress, comparative-sweep, and legacy suites; the serial job also invokes the required metabolic and physics scale fixtures. The file separately defines a serial Linux Valgrind job. These are workflow contracts, not evidence that a hosted workflow or Valgrind run passed.
 
 ## 10. Hybrid C++ Computational Architecture, Empirical Parameterization, and Validation
 
@@ -1376,7 +1431,7 @@ The native path preserves the §4.9 Fickian stencil<sup>[9](#ref-9)</sup> and st
 
 When OpenMP is compiled in, a guarded `parallel for` with `schedule(static)` distributes the four independent layer updates. Each worker owns its vectors and hash table, captures failures in an `exception_ptr`, and rethrows after the parallel region. A serial build executes the identical dispatch path without the pragma.
 
-The root `pyproject.toml` and `setup.py` support Python `>=3.9,<3.14`, NumPy/pybind11, C++17, and portable compiler optimization flags without CPU-specific options. `BACSANDBOX_OPENMP=auto` probes OpenMP and builds serially when it is unavailable; `on` requires OpenMP and fails clearly if probing fails; `off` deliberately builds the serial path. Windows uses MSVC, Linux supports GCC or Clang, and macOS uses Apple Clang with `libomp` probing.
+The root `pyproject.toml` and `setup.py` support Python `>=3.14,<3.15`, NumPy 2.3.4+/pybind11 3.0.1+, C++17, and portable compiler optimization flags without CPU-specific options. `BACSANDBOX_OPENMP=auto` probes OpenMP and builds serially when it is unavailable; `on` requires OpenMP and fails clearly if probing fails; `off` deliberately builds the serial path. Windows uses MSVC, Linux supports GCC or Clang, and macOS uses Apple Clang with `libomp` probing.
 
 Kernel QA in `bacteria/test_kernel.py` uses `unittest`. Its parity fixture runs 100 ticks and, after every tick, compares all four layers by exact key equality and an absolute value tolerance of `1e-5`. Focused tests cover backend behavior, ABI validation, clamping, pruning, coordinate overflow, and allocation behavior. The bounded-fixture performance benchmark reports repeated medians and is opt-in:
 

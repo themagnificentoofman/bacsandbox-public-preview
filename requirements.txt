@@ -1,5 +1,6 @@
+# Runtime dependencies shared by the requirements-only and editable installs.
+# Native build dependencies are declared separately in pyproject.toml.
 pygame-ce~=2.5.8
-numpy>=1.24,<3
-pandas>=2.0,<4
-matplotlib>=3.7,<4
-pybind11>=2.10,<4
+numpy>=2.3.4,<3
+pandas>=2.3.3,<4
+matplotlib>=3.10.7,<4

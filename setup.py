@@ -154,12 +154,11 @@ setup(
     description='Interactive bacterial ecosystem sandbox',
     long_description=(ROOT / 'README.md').read_text(encoding='utf-8'),
     long_description_content_type='text/markdown',
-    python_requires='>=3.9,<3.14',
+    python_requires='>=3.14,<3.15',
     install_requires=[
-        'pygame==2.6.1',
-        'numpy>=1.24',
-        'pandas>=2.0',
-        'matplotlib>=3.7',
+        line.strip()
+        for line in (ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines()
+        if line.strip() and not line.lstrip().startswith('#')
     ],
     packages=find_packages(exclude=('tests', 'tests.*')),
     include_package_data=False,
