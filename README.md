@@ -95,6 +95,21 @@ The Pygame interface includes:
 * Species: editable species parameter table with duplicate/delete and undo/redo support.
 * Globals: editable environment settings for oxygen, carbon dioxide, pH, carrying capacity, and food drops.
 
+## Research Audits
+
+Inspect species inputs before interpreting a run:
+
+```bash
+python audit_species_parameters.py --output parameter_audit.json
+python -m unittest bacteria.test_parameter_audit bacteria.test_comparative_sweeps
+```
+
+The audit reports explicit/defaulted values and implementation diagnostics; it does
+not infer measured traits. Comparative sweeps export four stable CSVs plus
+`run_manifest.json`, recording realized founders, environment and analysis limits.
+See [parameter auditing](DOCUMENTATION.md#51-parameter-inventory-and-missing-values)
+and [comparative sweeps](DOCUMENTATION.md#105-comparative-spatial-control-sweep-harness).
+
 ## Project Files
 
 * `species_data.csv`: species configuration loaded at startup and edited by the Species tab.

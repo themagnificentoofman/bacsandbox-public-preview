@@ -145,27 +145,26 @@ DIET_PROFILES = {
 DEFAULT_DIET_PROFILE = 'standard'
 
 # --- Phase I: Spatial heterogeneity (gut lumen vs mucus layer) ---
-# The petri dish is geometrically partitioned into a central, well-mixed LUMEN and a thin outer
-# MUCUS annulus. A point is in the mucus layer when its radial position (as a fraction of the dish
-# radius) is at or beyond this threshold; the inner 75% is lumen, the outer 25% is mucus. This
-# mirrors the radial organisation of the intestinal cross-section (concentric lumen/mucus zones).
+# The petri dish is partitioned into a central LUMEN and an accessible outer MUCUS annulus.
+# Membership uses radial position as a fraction of dish radius: the inner 75% of radius is
+# lumen, the outer 25% is mucus. This is an abstract model geometry, not a calibrated host/region
+# cross-section or a resolved inner/outer mucus barrier.
 # see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer)
 MUCUS_LAYER_RADIUS_FRACTION = 0.75
-# Mucus-associated cells adhere to the glycoprotein matrix and move much more slowly than free
-# luminal swimmers, creating an anchoring refuge. Motility is reduced to 30% in the mucus layer.
+# Own-model motility reduction to 30% in the mucus annulus. A retention or persistence benefit
+# must be established by comparison with controls; it does not follow from the multiplier alone.
 # see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer)
 MUCUS_MOTILITY_FACTOR = 0.3
-# Nutrient washout (peristaltic / luminal-flow clearance) of free food mass, per real second.
-# The lumen is rapidly flushed; the mucus layer is a stabilized reservoir with near-zero
-# clearance. Exponential decay: m(t+dt) = m(t) * (1 - rate*dt). Conservative default rates.
+# Own-model free FoodNode mass-loss rates per elapsed second; these do not transport cells or
+# live-FBA substrate maps. The update is m(t+dt) = m(t) * (1 - rate*dt).
 LUMEN_FOOD_WASHOUT_RATE_PER_SEC = 0.02
 MUCUS_FOOD_WASHOUT_RATE_PER_SEC = 0.002
 # Fraction of a nutrient drop's mass retained when it is deposited in the mucus layer; the lumen
 # (factor 1.0) receives the bulk of fresh dietary substrate, the mucus annulus far less.
 MUCUS_DROP_AMOUNT_FACTOR = 0.5
 # Relative carrying-capacity cull weight for luminal cells versus mucus cells (weight 1.0).
-# Stronger luminal competition makes well-mixed lumen cells more likely to be lost under
-# population pressure, leaving the mucus a protective refuge.
+# The Own-model weighting makes lumen cells more likely to be culled under population
+# pressure. A resulting mucus-associated refuge remains a hypothesis to test.
 LUMEN_COMPETITION_CULL_WEIGHT = 3.0
 
 # --- Initial inoculum spawning (founder placement at t = 0) ---
@@ -408,4 +407,3 @@ DATA_FILE = 'species_data.csv'
 ENV_CONFIG_FILE = 'env_config.json'
 # Font placeholder (initialized later)
 FONT = None
-

@@ -475,10 +475,9 @@ class Bacterium:
         rotational_sigma_rad = math.sqrt(BROWNIAN_ROTATIONAL_VARIANCE_FACTOR * rotational_diffusion * dt)
         self.heading += random.gauss(0, rotational_sigma_rad)
         
-        # Spatial heterogeneity: cells in the outer mucus annulus adhere to the matrix and slow
-        # down, forming an anchoring refuge from luminal washout (see DOCUMENTATION.md §4.20 (Spatial
-        # Heterogeneity: Lumen vs Mucus Layer)). `bounds` carries the petri centre/radius also used
-        # for the circular boundary reflection below.
+        # Own-model motility reduction in the accessible mucus annulus (DOCUMENTATION.md §4.20).
+        # This does not implement cell washout or establish a persistence advantage. `bounds`
+        # carries the petri centre/radius also used for circular boundary reflection below.
         cx_b, cy_b, r_b = bounds
         if r_b > 0.0 and math.hypot(self.x - cx_b, self.y - cy_b) >= r_b * MUCUS_LAYER_RADIUS_FRACTION:
             spd *= MUCUS_MOTILITY_FACTOR
@@ -1310,8 +1309,8 @@ class Simulation:
                 py = self.petri_center[1] + r_p * math.sin(th_p)
                 self.ecm.add(px, py, PHAGE_SEED_PACKET_VIRIONS * PHAGE_ECM_UNITS_PER_VIRION, layer='phage')
 
-        # Spatial washout: luminal flow / peristalsis clears free nutrient mass quickly, while the
-        # mucus layer is a stabilized refuge. Exponential mass loss per real second, by zone.
+        # Own-model zone-dependent free FoodNode mass loss per elapsed second. This does not
+        # advect bacterial cells or update the separate live-FBA substrate maps.
         cx0, cy0 = self.petri_center
         inv_r = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
         for node in self.food_nodes:
@@ -1361,9 +1360,9 @@ class Simulation:
                     all_bacteria.append((sp, b))
             if len(all_bacteria) > 0:
                 n_kill = min(excess, len(all_bacteria))
-                # Spatial competition: the well-mixed lumen imposes stronger resource competition
-                # than the stabilized mucus refuge, so luminal cells are preferentially lost under
-                # carrying-capacity pressure. Weighted sampling without replacement: key = U^(1/w);
+                # Own-model spatial cull weighting under carrying-capacity pressure; a protective
+                # refuge is a hypothesis rather than an established consequence.
+                # Weighted sampling without replacement: key = U^(1/w);
                 # the n_kill largest keys are removed, so lumen cells (up-weighted by
                 # LUMEN_COMPETITION_CULL_WEIGHT) are more likely to be culled. With equal weights this
                 # reduces exactly to uniform random sampling. see DOCUMENTATION.md §4.20 (Spatial Heterogeneity: Lumen vs Mucus Layer).
@@ -1504,9 +1503,8 @@ class Simulation:
         self.env['co2'] += co2_production_fraction
         self.env['ph'] -= acid_production
 
-        # Atmospheric gas dissolution and physiological pH buffering mechanics.
-        # Fick's first law of diffusion (J = -D * dC/dx): concentration gradient drives gas toward atmospheric equilibrium.
-        # Assuming a shallow 1 mL volume open to sea-level atmospheric pressure, equilibrium typically reaches ~30% per second. see DOCUMENTATION.md §4.10 (Gas Exchange, Fermentation, and pH).
+        # Own-model relaxation toward atmospheric gas levels (DOCUMENTATION.md §4.10).
+        # The rate is a calibration constant; this 2D geometry does not infer a physical volume.
         diffusion_rate = GAS_DIFFUSION_RATE_SEC * dt
         self.env['o2'] += (ATMOSPHERIC_O2_FRACTION - self.env['o2']) * diffusion_rate
         self.env['co2'] += (ATMOSPHERIC_CO2_FRACTION - self.env['co2']) * diffusion_rate
@@ -2032,4 +2030,3 @@ class Simulation:
             self.step_idx = 0
 
         print(f"Imported stats from {filename}.")
-

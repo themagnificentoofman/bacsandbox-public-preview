@@ -246,18 +246,29 @@ class SweepConfig:
     sweep_id: str = "comparative_sweep"
 
     def __post_init__(self) -> None:
-        if not self.seeds or any(isinstance(seed, bool) or seed < 0 for seed in self.seeds):
+        if not self.seeds or any(type(seed) is not int or seed < 0 for seed in self.seeds):
             raise ValueError("seeds must contain nonnegative integers")
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("seeds must be unique to preserve distinct pair IDs")
         if not self.diets or any(diet not in DIET_PROFILES for diet in self.diets):
             raise ValueError(f"diets must be selected from {tuple(DIET_PROFILES)}")
-        if isinstance(self.steps, bool) or self.steps <= 0:
-            raise ValueError("steps must be a positive integer")
-        if not math.isfinite(self.dt_seconds) or self.dt_seconds <= 0.0:
+        if len(set(self.diets)) != len(self.diets):
+            raise ValueError("diets must be unique to preserve distinct pair IDs")
+        for field in (
+            "steps", "world_width_um", "world_height_um",
+            "carrying_capacity_cells", "low_abundance_max_initial_count",
+        ):
+            value = getattr(self, field)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field} must be a positive integer")
+        if isinstance(self.dt_seconds, bool) or not math.isfinite(self.dt_seconds) or self.dt_seconds <= 0.0:
             raise ValueError("dt_seconds must be finite and positive")
-        if self.world_width_um <= 0 or self.world_height_um <= 0:
-            raise ValueError("world dimensions must be positive")
-        if self.carrying_capacity_cells <= 0:
-            raise ValueError("carrying_capacity_cells must be positive")
+        try:
+            finite_horizon = math.isfinite(self.steps * self.dt_seconds)
+        except OverflowError:
+            finite_horizon = False
+        if not finite_horizon:
+            raise ValueError("steps * dt_seconds must give a finite modeled horizon")
         if not math.isfinite(self.drop_frequency_s_inv) or self.drop_frequency_s_inv < 0.0:
             raise ValueError("drop_frequency_s_inv must be finite and nonnegative")
         if (
@@ -268,8 +279,6 @@ class SweepConfig:
             raise ValueError("drop_range_pg must be a finite nonnegative ordered pair")
         if self.backend not in {"auto", "python", "cpp"}:
             raise ValueError("backend must be auto, python, or cpp")
-        if self.low_abundance_max_initial_count <= 0:
-            raise ValueError("low_abundance_max_initial_count must be positive")
         if not self.sweep_id.strip():
             raise ValueError("sweep_id must be nonempty")
 
@@ -296,6 +305,7 @@ class SweepResult:
     jaccard_rows: Tuple[Mapping[str, object], ...]
     extinction_rows: Tuple[Mapping[str, object], ...]
     metadata_rows: Tuple[Mapping[str, object], ...]
+    run_manifest: Mapping[str, object]
 
 
 def jaccard_community_distance(
@@ -456,19 +466,24 @@ def _population_counts(simulation: Simulation) -> Dict[str, int]:
     return {profile.name: len(profile.members) for profile in simulation.species}
 
 
+def _environment(config: SweepConfig, diet: str) -> Dict[str, object]:
+    """Construct the harness environment; env_config.json does not control sweeps."""
+    return {
+        "ph": NEUTRAL_PH,
+        "o2": ATMOSPHERIC_O2_FRACTION,
+        "co2": 0.0,
+        "temperature": DEFAULT_ENV_TEMPERATURE_C,
+        "drop_frequency": config.drop_frequency_s_inv,
+        "drop_range": config.drop_range_pg,
+        "phage_inflow": 0.0,
+        "diet_profile": diet,
+    }
+
+
 def _run_condition(config: SweepConfig, seed: int, diet: str, control: SpatialControl) -> ConditionRun:
     with isolated_rng(seed):
         species = load_species(config.species_data_path)
-        environment = {
-            "ph": NEUTRAL_PH,
-            "o2": ATMOSPHERIC_O2_FRACTION,
-            "co2": 0.0,
-            "temperature": DEFAULT_ENV_TEMPERATURE_C,
-            "drop_frequency": config.drop_frequency_s_inv,
-            "drop_range": config.drop_range_pg,
-            "phage_inflow": 0.0,
-            "diet_profile": diet,
-        }
+        environment = _environment(config, diet)
         simulation = Simulation(
             species,
             environment,
@@ -674,6 +689,7 @@ def run_comparative_sweep(config: SweepConfig) -> SweepResult:
     jaccard_rows = []
     extinction_rows = []
     metadata_rows = []
+    manifest_runs = []
     for diet in config.diets:
         for seed in config.seeds:
             pair_id = _pair_id(seed, diet)
@@ -701,6 +717,27 @@ def run_comparative_sweep(config: SweepConfig) -> SweepResult:
                     SPATIAL_CONTROLS[condition],
                     species_data_sha256,
                 ))
+                manifest_runs.append({
+                    "pair_id": pair_id,
+                    "seed": seed,
+                    "diet": diet,
+                    "condition": condition,
+                    "initial_counts": dict(run.initial_counts),
+                    "configured_profile_count": len(run.initial_counts),
+                    "inoculated_profile_count": sum(count > 0 for count in run.initial_counts.values()),
+                    "initial_total_count": sum(run.initial_counts.values()),
+                    "final_elapsed_seconds": run.elapsed_seconds[-1],
+                    "initial_environment": {
+                        **_environment(config, diet),
+                        # JSON needs built-in scalars; preserve NumPy inputs in
+                        # the simulation itself and normalize only this report.
+                        "drop_frequency": float(config.drop_frequency_s_inv),
+                        "drop_range": [float(value) for value in config.drop_range_pg],
+                    },
+                    "backend_requested": config.backend,
+                    "physics_backend_used": run.physics_backend_used,
+                    "ecm_backend_used": run.ecm_backend_used,
+                })
             jaccard_rows.extend(_jaccard_rows(
                 config.sweep_id,
                 pair_id,
@@ -713,6 +750,54 @@ def run_comparative_sweep(config: SweepConfig) -> SweepResult:
         jaccard_rows=tuple(jaccard_rows),
         extinction_rows=tuple(extinction_rows),
         metadata_rows=tuple(metadata_rows),
+        run_manifest={
+            "schema_version": 1,
+            "sweep_id": config.sweep_id,
+            "simulation_engine": "legacy_pg_production",
+            "species_data_sha256": species_data_sha256,
+            "time": {
+                "unit": "modeled_seconds",
+                "dt_seconds": float(config.dt_seconds),
+                "step_count": config.steps,
+                "nominal_horizon_seconds": float(config.steps * config.dt_seconds),
+                "biological_time_rescaling_applied": False,
+            },
+            "geometry": {
+                "type": "two_dimensional_disk",
+                "world_width_um": config.world_width_um,
+                "world_height_um": config.world_height_um,
+                "effective_depth_um": None,
+                "represented_volume_liters": None,
+                "anatomical_region_selected": None,
+            },
+            "interpretation": {
+                "empirical_comparison_performed": False,
+                "reduced_model_active": False,
+                "kaplan_meier_curves_computed": False,
+                "compartment_counts_exported": False,
+                "presence_rule": "modeled abundance_count > 0",
+                "experimental_detection_limit": None,
+                "seed_replicates": "simulation stochastic replicates, not biological replicates",
+                "spatial_control": "combined motility, food washout, deposition and culling changes",
+                "environment_source": "harness constants/configuration; env_config.json is not loaded",
+                "environment_dynamics": "pH, oxygen and carbon dioxide evolve under legacy model rules",
+            },
+            "environment_units": {
+                "ph": "pH",
+                "o2": "fraction of modeled oxygen saturation capacity",
+                "co2": "fraction of modeled carbon dioxide saturation capacity",
+                "temperature": "degrees_Celsius",
+                "drop_frequency": "per_second",
+                "drop_range": "pg_glucose_equivalent",
+            },
+            "csv_row_counts": {
+                "relative_abundance.csv": len(relative_rows),
+                "jaccard_distance.csv": len(jaccard_rows),
+                "extinction_censoring.csv": len(extinction_rows),
+                "run_metadata.csv": len(metadata_rows),
+            },
+            "runs": manifest_runs,
+        },
     )
 
 
@@ -752,7 +837,9 @@ def write_sweep_outputs(
     output_directory: Path,
     directory_name: str | None = None,
 ) -> Mapping[str, Path]:
-    """Write four schema-stable CSVs in a newly allocated run directory."""
+    """Write four schema-stable CSVs and a JSON manifest in a fresh run directory."""
+    # Fail serialization before allocating a directory or writing any CSVs.
+    manifest_json = json.dumps(result.run_manifest, indent=2, sort_keys=True, allow_nan=False) + "\n"
     run_directory = allocate_output_directory(
         output_directory,
         directory_name or result.sweep_id,
@@ -768,6 +855,10 @@ def write_sweep_outputs(
         path = run_directory / filename
         _write_csv(path, fields, rows_by_file[filename])
         paths[filename] = path
+    manifest_path = run_directory / "run_manifest.json"
+    with manifest_path.open("x", encoding="utf-8") as handle:
+        handle.write(manifest_json)
+    paths[manifest_path.name] = manifest_path
     return paths
 
 

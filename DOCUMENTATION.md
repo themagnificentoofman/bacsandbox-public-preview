@@ -1217,6 +1217,46 @@ Species are configured in `species_data.csv` and can also be edited in the Speci
 * `aff_glycan`: Nonnegative, dimensionless complex-glycan throughput/capacity multiplier. A value of 0 disables uptake in both diet paths. Default 0; the production pg path's $0.7$ energy yield is a separate Own-model calibration.<sup>[47](#ref-47), [48](#ref-48)</sup>
 * `aff_mdcf`: Nonnegative, dimensionless MDCF-prebiotic throughput/capacity multiplier. A value of 0 disables uptake in both diet paths. Default 0; the production pg path's $0.85$ energy yield is a separate Own-model calibration.<sup>[47](#ref-47), [48](#ref-48)</sup>
 
+### 5.1 Parameter Inventory and Missing Values
+
+`SpeciesDataManager.fieldnames` currently contains 33 fields: `name`, `init`, and 31
+traits. These are 32 numeric fields, not 35 required numeric measurements. The loader
+retains backward-compatible defaults for missing/empty cells and the legacy
+`aggression`/`defense` aliases. The species constructor also normalizes selected
+values. A successful load does not establish that a parameter was measured or is
+biologically appropriate.<sup>[51](#ref-51)</sup>
+
+Run a read-only inventory before interpreting a species configuration:
+
+```bash
+python audit_species_parameters.py --species-data species_data.csv --temperature 37 --output parameter_audit.json
+python -m unittest bacteria.test_parameter_audit
+```
+
+The schema-1 JSON records the input SHA-256, field/profile/founder counts, raw and
+loader-resolved values, explicit/default/alias origins, numeric/structural issues,
+constructor transformations, and each profile's implemented temperature multiplier.
+An explicit CSV value is not a measured value: per-value empirical provenance is
+reported as unrecorded. `--require-explicit` makes compatibility-default use fail
+the audit without changing the loader. Exit status is 0 for a completed audit
+without detected issues, 1 for reported issues or the requested explicit-value
+gate, and 2 for input/output errors. Existing output files are never overwritten.
+The audit also checks the interactive app's integer-text parsing of `init`: values
+such as `2.9`, `100.0`, or `1e2` can be converted by the sweep/constructor path but
+are rejected by the app, which skips that profile. These inputs produce audit
+issues and exit status 1. Constructor founder counts remain diagnostic values, not
+executed populations; `interactive_app_init_count` records the app-compatible count
+or null. `csv_row` numbers logical records including the header, while
+`csv_line_end` locates the physical end of each record, including blank lines and
+quoted multiline cells.<sup>[51](#ref-51)</sup>
+This is a configuration audit, not an empirical imputation or calibration tool.
+<sup>[51](#ref-51)</sup>
+
+A constant environment temperature does not force the implemented species response
+to one. Cardinal-temperature parameters still affect its value. Inspect that value
+before proposing a sensitivity analysis or removing parameters; the audit does not
+change the response model described in Section 4.14.<sup>[51](#ref-51)</sup>
+
 ## 6. Global Environment Parameters
 
 Globals are stored in `env_config.json` and can be edited in the Globals tab.
@@ -1347,7 +1387,8 @@ below describes implemented components; it does not redefine those proposal phas
 * `bacteria/test_kernel.py`, `bacteria/test_physics_kernel.py`, `bacteria/test_metabolic_architecture.py`, and `bacteria/test_metabolic_kernel.py`: ECM, contact, and reduced-metabolism architecture, parity, solver, backend, ABI, boundary, transaction, cache, scale, stress, and opt-in performance checks.
 * `bacteria/test_diet_translator.py`: Focused diet-asset schema, translation formula, array contract, reduced-orchestrator injection, parity, rejection, and smoke coverage.
 * `bacteria/test_metabolic_integration.py` and `bacteria/test_integration_stress.py`: Live-FBA coordinate, bolus, batch, lifecycle, conservation, full-transaction rollback, scale, ownership, and conditional Python/native parity coverage.
-* `run_comparative_sweeps.py` and `bacteria/test_comparative_sweeps.py`: Paired-seed legacy-pg benchmark harness and its spatial-control, censoring, schema, affinity-audit, RNG-isolation, and non-overwrite tests.
+* `run_comparative_sweeps.py` and `bacteria/test_comparative_sweeps.py`: Paired-seed legacy-pg benchmark harness, additive run manifest, and spatial-control, censoring, configuration, schema, affinity-audit, RNG-isolation, and non-overwrite tests.
+* `audit_species_parameters.py` and `bacteria/test_parameter_audit.py`: Read-only raw/default/alias parameter inventory and constructor/temperature diagnostics; no empirical parameter inference.
 * `bacteria/test_bacteria.py`: Legacy production-simulation regression suite, including core biology, categorical pg diet drops, lumen/mucus mechanics, serialization, and contact behavior.
 * `plot_baselines.py`: Standalone parser and plotting utility for exported `simulation_stats.csv`, producing abundance, extinction/survival, zone-occupancy, and substrate-consumption figures when the corresponding data are present.
 * `.github/workflows/kernel.yml`: `actions/checkout@v7.0.1` and `actions/setup-python@v7.0.0` read the shared Python version from `.python-version` and define OpenMP Windows/Linux/macOS and serial Linux build/test jobs. A separate requirements-only Linux job verifies `pygame-ce`, absence of the native extension, and the full suite with native-only skips. Both build paths assert that the unified extension exposes `MetabolicKernel` and invoke the ECM, physics, reduced-metabolism, translator, live-integration, integration-stress, comparative-sweep, and legacy suites; the serial job also invokes the required metabolic and physics scale fixtures. The file separately defines a serial Linux Valgrind job. These are workflow contracts, not evidence that a hosted workflow or Valgrind run passed.
@@ -2580,6 +2621,30 @@ The `backend` column records the requested selection. `physics_backend_used` and
 `not_exercised` when that subsystem never selected a backend, rather than repeating the requested
 value.<sup>[50](#ref-50)</sup>
 
+**Additive run manifest.** Every new sweep also writes `run_manifest.json` (schema 1)
+beside the four unchanged CSVs. It records the species-file SHA-256, realized initial
+counts, configured versus inoculated profile counts, initial harness environment,
+actual backend selections, nominal and observed modeled-second horizons, and CSV
+row counts. The harness constructs its own environment and does not load
+`env_config.json`; pH, oxygen and carbon dioxide subsequently evolve under the
+legacy rules. Initial values must not be described as clamped throughout the run.
+Seeds and diets must be unique; integer-typed configuration values must be valid
+integers and the modeled horizon must be finite.<sup>[50](#ref-50)</sup>
+
+Supported NumPy real-valued configuration inputs are converted to built-in numbers
+only in the manifest; simulation inputs retain their original numerical types.
+The manifest is serialized before any output directory or CSV is created, so a
+JSON serialization failure cannot leave an apparently complete CSV-only run.
+Filesystem write failures can still leave incomplete outputs.<sup>[50](#ref-50)</sup>
+
+The manifest explicitly records the harness's interpretive boundaries: no selected
+anatomical region, effective physical depth/volume, empirical comparison,
+experimental detection threshold, Kaplan–Meier curve calculation, or compartment
+count export. Its event/censoring rows are inputs to possible later analysis.
+Simulation seed variation is distinct from biological or measurement variation.
+These fields describe new harness outputs; they are not retroactively present in
+historical run packages.<sup>[50](#ref-50)</sup>
+
 `bacteria.test_comparative_sweeps` verifies the 1,000-step and scratch-directory defaults, paired
 RNG restoration and founder equivalence, distinct controls, Jaccard bounds, observed and censored
 events, exact schemas, unexercised-backend metadata, non-overwriting writes, and the checked-in
@@ -2703,4 +2768,6 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-49"></a>**[49]** Real & Vargas (1996). *The Probabilistic Basis of Jaccard's Index of Similarity*. Systematic Biology, 45(3):380–385. [https://doi.org/10.1093/sysbio/45.3.380](https://doi.org/10.1093/sysbio/45.3.380)
 
-<a id="ref-50"></a>**[50]** **Own (BacSandbox model).** Paired-seed legacy-pg comparative harness; RNG isolation and founder-state checks; homogeneous/spatial control construction; low-abundance definition; empty-community distance convention; CSV schemas; actual-versus-unexercised backend metadata; metadata provenance; and non-overwriting output policy, §10.5.
+<a id="ref-50"></a>**[50]** **Own (BacSandbox model).** Paired-seed legacy-pg comparative harness; RNG isolation and founder-state checks; homogeneous/spatial control construction; low-abundance definition; empty-community distance convention; CSV schemas and additive run manifest; actual-versus-unexercised backend metadata; configuration validation; metadata provenance; and non-overwriting output policy, §10.5.
+
+<a id="ref-51"></a>**[51]** **Own (BacSandbox model).** Read-only species-parameter audit, §5.1: loader schema and compatibility-default/alias inventory, constructor normalization diagnostics, explicit-value gate, fixed-temperature evaluation, and non-overwriting JSON output. Configuration origin does not establish empirical provenance or biological validity.

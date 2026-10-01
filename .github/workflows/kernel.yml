@@ -88,7 +88,7 @@ jobs:
       - name: Run FBA integration stress suite
         run: python -m unittest bacteria.test_integration_stress
       - name: Run comparative sweep suite
-        run: python -m unittest bacteria.test_comparative_sweeps
+        run: python -m unittest bacteria.test_comparative_sweeps bacteria.test_parameter_audit
       - name: Run existing full suite
         run: python -m unittest bacteria.test_bacteria
 
@@ -126,7 +126,7 @@ jobs:
       - name: Run FBA integration stress suite
         run: python -m unittest bacteria.test_integration_stress
       - name: Run comparative sweep suite
-        run: python -m unittest bacteria.test_comparative_sweeps
+        run: python -m unittest bacteria.test_comparative_sweeps bacteria.test_parameter_audit
       - name: Run required metabolic scale parity
         env:
           BACSANDBOX_RUN_METABOLIC_SCALE: '1'

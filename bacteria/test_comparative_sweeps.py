@@ -1,7 +1,9 @@
 import csv
+import json
 import random
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -145,6 +147,24 @@ class TestSpatialControlDefinitions(unittest.TestCase):
         self.assertEqual(core_sim.MUCUS_LAYER_RADIUS_FRACTION, original)
 
 
+class TestSweepConfiguration(unittest.TestCase):
+    def test_duplicate_pairs_are_rejected_before_execution(self):
+        for overrides in ({"seeds": (0, 0)}, {"diets": ("standard", "standard")}):
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, "unique"):
+                SweepConfig(**overrides)
+
+    def test_integer_configuration_and_finite_horizon_are_required(self):
+        invalid = (
+            {"seeds": (0.5,)}, {"seeds": (True,)}, {"steps": 1.5}, {"steps": True},
+            {"world_width_um": float("inf")}, {"world_height_um": 10.5},
+            {"carrying_capacity_cells": 3.5}, {"low_abundance_max_initial_count": False},
+            {"steps": 10, "dt_seconds": 1e308}, {"dt_seconds": True},
+        )
+        for overrides in invalid:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                SweepConfig(**overrides)
+
+
 class TestComparativeSweep(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -262,6 +282,27 @@ class TestComparativeSweep(unittest.TestCase):
             self.assertAlmostEqual(row["time_to_event_seconds"], 0.02)
             self.assertAlmostEqual(row["censor_time_seconds"], 0.02)
 
+    def test_manifest_distinguishes_profiles_founders_and_analysis_boundaries(self):
+        manifest = self.result.run_manifest
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["time"]["unit"], "modeled_seconds")
+        self.assertAlmostEqual(manifest["time"]["nominal_horizon_seconds"], 0.02)
+        self.assertFalse(manifest["time"]["biological_time_rescaling_applied"])
+        self.assertIsNone(manifest["geometry"]["represented_volume_liters"])
+        self.assertIsNone(manifest["geometry"]["anatomical_region_selected"])
+        self.assertFalse(manifest["interpretation"]["empirical_comparison_performed"])
+        self.assertFalse(manifest["interpretation"]["kaplan_meier_curves_computed"])
+        self.assertFalse(manifest["interpretation"]["compartment_counts_exported"])
+        self.assertIsNone(manifest["interpretation"]["experimental_detection_limit"])
+        self.assertEqual(len(manifest["runs"]), 2)
+        for run in manifest["runs"]:
+            self.assertEqual(run["configured_profile_count"], 2)
+            self.assertEqual(run["inoculated_profile_count"], 1)
+            self.assertEqual(run["initial_total_count"], 2)
+            self.assertEqual(run["initial_counts"], {"Rare survivor": 2, "Not inoculated": 0})
+            self.assertEqual(run["initial_environment"]["temperature"], core_sim.DEFAULT_ENV_TEMPERATURE_C)
+            self.assertEqual(run["ecm_backend_used"], "not_exercised")
+
     def test_observed_extinction_uses_first_crossing_time(self):
         run = ConditionRun(
             condition=CONDITION_HOMOGENEOUS,
@@ -310,6 +351,41 @@ class TestComparativeSweep(unittest.TestCase):
             self.assertEqual(header, fields)
             self.assertEqual(first_paths[filename].read_bytes(), first_bytes[filename])
             self.assertTrue(second_paths[filename].exists())
+        self.assertEqual(set(first_paths), set(CSV_SCHEMAS) | {"run_manifest.json"})
+        manifest = json.loads(first_paths["run_manifest.json"].read_text(encoding="utf-8"))
+        self.assertEqual(manifest["sweep_id"], self.result.sweep_id)
+        for filename, row_count in manifest["csv_row_counts"].items():
+            with first_paths[filename].open(newline="", encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), row_count)
+        self.assertEqual(
+            first_paths["run_manifest.json"].read_bytes(),
+            second_paths["run_manifest.json"].read_bytes(),
+        )
+
+    def test_numpy_real_inputs_export_a_json_manifest(self):
+        config = replace(
+            self.config,
+            dt_seconds=np.float32(0.01),
+            drop_frequency_s_inv=np.float32(0.0),
+            drop_range_pg=(np.float32(0.0), np.float32(1.0)),
+        )
+        result = run_comparative_sweep(config)
+        paths = write_sweep_outputs(result, self.config.output_directory, "numpy_inputs")
+        manifest = json.loads(paths["run_manifest.json"].read_text(encoding="utf-8"))
+        self.assertEqual(manifest["time"]["dt_seconds"], float(config.dt_seconds))
+        self.assertEqual(manifest["time"]["nominal_horizon_seconds"], float(config.steps * config.dt_seconds))
+        self.assertEqual(manifest["runs"][0]["initial_environment"]["drop_range"], [0.0, 1.0])
+        self.assertEqual(set(paths), set(CSV_SCHEMAS) | {"run_manifest.json"})
+        # Reporting normalization must not mutate the numerical configuration.
+        self.assertIsInstance(config.dt_seconds, np.float32)
+
+    def test_unserializable_manifest_fails_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "outputs"
+            result = replace(self.result, run_manifest={"unsupported": object()})
+            with self.assertRaises(TypeError):
+                write_sweep_outputs(result, output)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
