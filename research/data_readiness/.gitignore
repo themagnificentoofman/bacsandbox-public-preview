@@ -1,0 +1,6 @@
+# Local originals, author code, correspondence and derived data are not PR content.
+raw/
+results/
+proposal/
+private/
+*.zip

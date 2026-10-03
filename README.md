@@ -110,6 +110,11 @@ not infer measured traits. Comparative sweeps export four stable CSVs plus
 See [parameter auditing](DOCUMENTATION.md#51-parameter-inventory-and-missing-values)
 and [comparative sweeps](DOCUMENTATION.md#105-comparative-spatial-control-sweep-harness).
 
+For source-preserving Zhou benchmark preparation, see the
+[data-readiness tools](research/data_readiness/README.md) and
+[documented evidence limits](DOCUMENTATION.md#106-empirical-table-readiness).
+The CSV audit and optional supplement extractors do not fit or validate the model.
+
 ## Project Files
 
 * `species_data.csv`: species configuration loaded at startup and edited by the Species tab.

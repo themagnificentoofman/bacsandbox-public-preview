@@ -1,0 +1,40 @@
+{
+  "source": "NIH NLM PubMed Central Article Datasets on AWS",
+  "files": [
+    {
+      "key": "PMC12704710.1/pnas.2521522122.sapp.pdf",
+      "size": 1030338,
+      "md5": "4cb46ea605d05aa5b9e7faf4bc25abbf",
+      "sha256": "cc6a3cf3ba101bcb1e9723a405bd9247d47ed94283c5d9395d285c3ec658b3bc",
+      "url": "https://pmc-oa-opendata.s3.amazonaws.com/PMC12704710.1/pnas.2521522122.sapp.pdf"
+    },
+    {
+      "key": "PMC12704710.1/pnas.2521522122.sd01.xlsx",
+      "size": 19590,
+      "md5": "f8e59a167b458f542f5d209400dc96c6",
+      "sha256": "5e4ed47aae951dec2d13c4866790b50733bcef41da90b91fef4c4c9bd2b70ad8",
+      "url": "https://pmc-oa-opendata.s3.amazonaws.com/PMC12704710.1/pnas.2521522122.sd01.xlsx"
+    },
+    {
+      "key": "PMC12704710.1/pnas.2521522122.sd07.xlsx",
+      "size": 10736,
+      "md5": "8aadfeba870c74b2eb6504903d849c1d",
+      "sha256": "d9ab236a69999fa535380517b1e9df445df223fc8f31a0d1a741d98bf8661a8e",
+      "url": "https://pmc-oa-opendata.s3.amazonaws.com/PMC12704710.1/pnas.2521522122.sd07.xlsx"
+    },
+    {
+      "key": "PMC12704710.1/pnas.2521522122.sd08.xlsx",
+      "size": 15313,
+      "md5": "af49385ab22e71f3bb2fea436c0d4079",
+      "sha256": "36714cb62acd14056811035f62de0509871dcfa8d155f6284a146b5c2acdd003",
+      "url": "https://pmc-oa-opendata.s3.amazonaws.com/PMC12704710.1/pnas.2521522122.sd08.xlsx"
+    },
+    {
+      "key": "PMC12704710.1/pnas.2521522122.sd09.xlsx",
+      "size": 110040,
+      "md5": "b6482af07c73fe93d54320e240dce805",
+      "sha256": "2fc1b3b8e68874214a906d2ab579d0ecc4ff6562d070983c85a01a9b809b4d43",
+      "url": "https://pmc-oa-opendata.s3.amazonaws.com/PMC12704710.1/pnas.2521522122.sd09.xlsx"
+    }
+  ]
+}

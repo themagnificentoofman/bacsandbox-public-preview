@@ -38,6 +38,8 @@ jobs:
         run: python -c "import importlib.util, pygame; assert pygame.IS_CE; assert importlib.util.find_spec('bacteria_c_kernel') is None"
       - name: Run full suite with Python fallbacks
         run: python -m unittest discover
+      - name: Run table-readiness parser and source-transfer checks
+        run: python -m unittest bacteria.test_benchmark_table research.data_readiness.test_fetch_sources
 
   openmp:
     name: OpenMP (${{ matrix.os }})

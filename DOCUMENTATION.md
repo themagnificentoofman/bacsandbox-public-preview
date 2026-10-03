@@ -2662,6 +2662,38 @@ paired outputs, not a refuge result. A mucus-associated refuge remains a proposa
 predefined multi-seed analyses demonstrate a robust difference against the homogeneous control.
 <sup>[48](#ref-48), [50](#ref-50)</sup>
 
+### 10.6 Empirical Table Readiness
+
+`audit_benchmark_table.py` and `research/data_readiness/` provide read-only source preparation for a proposed retrospective benchmark using the Zhou study and its supporting datasets. This work does not modify biological equations, configured parameters, model mechanisms, time scaling or the legacy/molar boundary. Endpoint, observation mapping, calibration and acceptance decisions remain open. Published outcomes are already known, so this is preparation for retrospective comparison, not a prospective validation claim.<sup>[45](#ref-45), [52](#ref-52)</sup>
+
+**Integrity and publication boundary.** The two `research/data_readiness/provenance/` manifests pin seven publisher/archive originals by URL, byte size, SHA256 and MD5. The repository contains authored tools, tests and public provenance. Raw papers, original workbooks, copied third-party code, private correspondence and generated data exports are not committed. An explicit fetch command installs only verified bytes into ignored source directories; differing existing files are preserved and rejected. Extraction never edits an original. Derived output directories can be rebuilt. Commands and required dependency/source setup are in the [readiness README](research/data_readiness/README.md).<sup>[52](#ref-52)</sup>
+
+**Source scope.** The inspected supplements provide the following records; counts are from the checksum-pinned source tables, not simulator outcomes.<sup>[45](#ref-45)</sup>
+
+| Table | Inspected material | Readiness evidence |
+|---|---|---|
+| S1C, B53:H66 | Two strains, two substrate conditions, three replicate labels and four times (12/24/36/48 hours) | 48 finite normalized-OD observations, including four zeros and four negatives |
+| S7/S8 | Consortium roster and animal weights/arm labels | 18 strain entries; 77 animal keys using experiment, community, diet, sex and mouse label |
+| S9A–E | Copri fecal and community fecal/cecal abundance | 5,392 slots: 5,349 finite, 35 blank, eight stored Excel errors; 512 numeric log-table zeros |
+| S2, B5:V2632 | Genome identities and annotations | 2,628 literal records; six collision groups if edge whitespace were removed |
+| S13, D14:Q22/D35:Q43/D56:AU64 | Total/free monosaccharides and linkages in three food inputs | 648 finite positive measurements; three replicate labels per food/analyte |
+
+The S1C header describes normalization to starting OD, while SI lines 92–93 describe normalization against unsupplemented-medium wells. Negative values remain literal and no correction is selected. The culture conditions use different glucose and glucomannan concentrations. Four published points do not supply complete raw growth curves or quantitative whole-cell kinetic parameters.<sup>[45](#ref-45)</sup>
+
+S9 animal joins require the full compound key; mouse labels are reused across arms. Phase/specimen/organism identify observations, but actual-day discrepancies, dam/litter/cage grouping and sequencing-run crosswalks remain unresolved. The tables contain 308 specimen/time slots, 306 populated, versus 287 sequenced samples reported in SI lines 381–384. Numeric zeros, source blanks and stored `#NUM!` values are distinct states; no detection/extinction convention or pseudocount is inferred.<sup>[45](#ref-45), [52](#ref-52)</sup>
+
+**Descriptive diagnostics.** The preparation layer retains source file/hash/sheet/cell and metadata anchors. It emits 5,440 culture/animal observation slots without imputation, plus available-value group summaries and treatment-minus-control mean differences with counts and source cells. These are descriptive quantities, not selected endpoints, fitted predictions, significance tests or accepted inclusion policies. S9A uses its supplied log values and retains its separately supplied linear cells.<sup>[52](#ref-52)</sup>
+
+A reconstruction check tests published S9B–E summaries only in complete groups with no ambiguous numeric zeros. All 133 eligible fecal groups match a log of the linear mean and the upper log displacement of one linear-scale sample SD. All 53 eligible cecal groups instead match mean and sample SD of the logged values. Eighty-eight flagged groups are untested. Matching is checked against the printed rounding precision, with a small arithmetic allowance; this is not a biological threshold. The result supports an aggregation difference but does not establish the authors' intent or resolve zero handling. Printed fecal and cecal spreads must not be treated as one uniform response definition.<sup>[45](#ref-45), [52](#ref-52)</sup>
+
+**F5 identity limits.** S2 row 544 is `Prevotella_copri_P01C7771108_F5_2_JG_bc1003`, an isolate with first/second-pass enzyme-presence annotations 1/1 and reported enzyme identity to Bg0019 of 92.884%. The separate row 2455, `Segatella_copri_BgF5_2 ` (trailing space retained), reports first-pass 0 and lacks second-pass data. S1B D31 displays 93% homologous-protein identity, and the published in-vitro RNA script uses row 544's internal name as its index; SI107–115 describes mapping BgF5_2 reads. These support the study RNA-reference label. The two-pass methods description does not explain opposite annotations within the same first-pass field. Exact sequence equivalence, reference-file checksums and the reason for the alternate entry remain unknown. The discrepancy blocks automatic entry merging or genomic-feature import, not descriptive inspection of the named phenotype.<sup>[45](#ref-45)</sup>
+
+The main article reports 98% overall nucleotide identity between BgF5_2 and Bg0019; that does not establish identity to Bg0018 or a model-parameter mapping. S2's enzyme percentages are not whole-genome identity or kinetic coefficients. DSM18205 has two reference-source entries; S1B's partial-module homology footnote must not be mistaken for a full bimodular enzyme. No configured affinity, uptake, maintenance, growth or turnover value becomes measured through these annotations.<sup>[45](#ref-45)</sup>
+
+**Diet chemistry limits.** S13's literal unit headers are mg/mL of dry food for monosaccharides and AU for linkages. All 216 printed means/spreads reproduce the triplicate mean and sample SD; 72 published adjusted P-value cells are retained without classification or adoption as model criteria. Food/replicate labels lack experiment, batch, manufacturing-route and intake fields. SI130–163 describes analytical stock preparation and processing, but reported concentration basis, experiment-specific exposure and model substrate-dose mapping are still required for quantitative use. No mass conversion, polymer subtraction or rate inference is performed.<sup>[45](#ref-45), [52](#ref-52)</sup>
+
+Before evaluation, select a claim and endpoint/comparison, biological representation and observation assumptions, and descriptive-only versus scored evaluation. A scored protocol needs justified baselines, independent grouping, a calibration/evaluation split, metric and meaningful-error rule before fitting. Resolve only the source questions used by that chosen scope. Bulk response is a candidate first comparison; spatial-refuge claims require the separate controlled evidence described elsewhere in this document.
+
 ## Appendix A: Scientific References
 
 Every biological or mathematical model, formula, named equation, scaling law, or empirically-derived
@@ -2771,3 +2803,5 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 <a id="ref-50"></a>**[50]** **Own (BacSandbox model).** Paired-seed legacy-pg comparative harness; RNG isolation and founder-state checks; homogeneous/spatial control construction; low-abundance definition; empty-community distance convention; CSV schemas and additive run manifest; actual-versus-unexercised backend metadata; configuration validation; metadata provenance; and non-overwriting output policy, §10.5.
 
 <a id="ref-51"></a>**[51]** **Own (BacSandbox model).** Read-only species-parameter audit, §5.1: loader schema and compatibility-default/alias inventory, constructor normalization diagnostics, explicit-value gate, fixed-temperature evaluation, and non-overwriting JSON output. Configuration origin does not establish empirical provenance or biological validity.
+
+<a id="ref-52"></a>**[52]** **Own (BacSandbox model).** Read-only empirical-table readiness tooling, §10.6: explicit CSV structural contracts; source checksum verification; section-bounded metadata anchors; compound observation keys; literal error/missing/zero preservation; available-value descriptive summaries; and printed-precision reconstruction diagnostics. These engineering transformations are not calibrated biological equations or validation criteria.
