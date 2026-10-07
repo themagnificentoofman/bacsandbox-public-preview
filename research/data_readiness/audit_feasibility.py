@@ -17,6 +17,8 @@ import platform
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
+import pygame
+
 from bacteria import constants
 from bacteria.diet_translator import DietTranslationEngine
 from bacteria.metabolic_integration import FbaAgentState, GrowthOnlyFbaLifecyclePolicy
@@ -35,6 +37,32 @@ CODE_INPUTS = (
     "research/data_readiness/extract_zhou.py", "research/data_readiness/provenance/supplements.json",
     "research/data_readiness/audit_feasibility.py",
 )
+
+
+def runtime_dependencies():
+    """Name the imported Pygame provider, not another installed distribution.
+
+    Both distributions expose ``pygame``. IS_CE identifies the loaded
+    implementation; metadata availability alone cannot resolve co-installation.
+    See DOCUMENTATION.md 10.6 for the audit provenance boundary.
+    """
+    provider = "pygame-ce" if getattr(pygame, "IS_CE", False) else "pygame"
+    dependencies = {name: importlib.metadata.version(name)
+                    for name in ("numpy", provider, "openpyxl")}
+    installed = {provider: dependencies[provider]}
+    other = "pygame" if provider == "pygame-ce" else "pygame-ce"
+    try:
+        installed[other] = importlib.metadata.version(other)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    return dependencies, {
+        "import_name": "pygame", "distribution": provider,
+        "distribution_version": dependencies[provider],
+        "module_version": pygame.version.ver,
+        "module_matches_distribution_version": pygame.version.ver == dependencies[provider],
+        "installed_distributions": installed,
+        "coinstalled_distributions": len(installed) > 1,
+    }
 
 
 def founder_resolution(baselines, budgets):
@@ -185,10 +213,11 @@ def build(source_dir, budgets=DEFAULT_BUDGETS):
     after = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in CODE_INPUTS}
     if before != after:
         raise ValueError("code or asset changed during feasibility audit")
+    dependencies, pygame_provenance = runtime_dependencies()
     audit = {"schema_version": 1, "benchmark_id": "ZHOU_BM001", "evidence_class": "configuration_and_arithmetic_feasibility",
              "code_sha256": before, "source_hashes": mapping["mapping_audit.json"]["source_hashes"],
-             "python": platform.python_version(), "dependencies": {name: importlib.metadata.version(name)
-                                                                   for name in ("numpy", "pygame", "openpyxl")},
+             "python": platform.python_version(), "dependencies": dependencies,
+             "pygame_provenance": pygame_provenance,
              "complete_baseline_animals": len({r["animal_id"] for r in resolution}),
              "complete_baseline_iterations": dict(Counter(r["experiment"] for r in mapping["animal_mapping.csv"]
                                                     if r["composition_values_complete"])),

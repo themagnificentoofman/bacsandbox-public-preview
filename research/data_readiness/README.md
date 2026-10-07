@@ -94,6 +94,32 @@ Time arithmetic is neither a selected biological clock nor a wall-time estimate.
 The emitted `benchmark_execution_ready` flag remains false. Scientific interpretation,
 minimal-model proposals and implementation boundaries are in §10.6.
 
+The audit resolves distribution metadata from the imported pygame implementation:
+`pygame-ce` for the supported environment, or `pygame` for a legacy installation.
+It records module and distribution versions and discloses co-installation or
+version disagreement instead of attributing a run to the other provider. Missing
+metadata for the actual imported provider remains an error. The combined optional
+source/mapping/feasibility suite (40 tests) and the read-only audit command were
+verified with CPython 3.14.7, pygame-ce 2.5.8, NumPy 2.5.3 and openpyxl 3.1.5.
+This is source and engineering verification; ordinary hosted CI does not execute
+the optional workbook suites.
+
 ## Decisions before evaluation
 
-Select the intended claim and one endpoint/comparison; agree on biological representation and observation mappings; then choose descriptive-only or scored evaluation. A scored design requires justified baselines, calibration/evaluation grouping, metric and meaningful-error rules before fitting. Sequence identity, OD normalization, dose, sample grouping and detection conventions are source questions only to the extent the selected scope uses them. Recommendations remain proposals; no mentor approval or empirical validation is implied by these tools.
+ZHOU_BM001 preparation now selects a deterministic, continuous 18-label,
+well-mixed reference and error-reporting-only evaluation. This reference is not
+implemented by the audit. Only iteration-1 unsupplemented control follow-ups may
+fit baseline target behavior; glucomannan parameters require independent evidence
+or predeclared uncertainty sets. Treated iteration-1 and all iteration-2 follow-up
+values are evaluation-only, including for indirect choices of exposure, loss,
+yield, zero handling or scenario selection. The iteration-1 between-diet contrast
+has a calibrated control component and is not wholly independent validation.
+
+The primary continuous reference has no agent founder rounding or ecological seed
+sweep. Keep both source-derived timing scenarios and the exact 39/38 endpoint
+masks. Report separate endpoint/iteration errors and comparator differences without
+a biological pass/fail threshold. Resource/biomass scales, independent response
+constraints, zero handling, finite parameter bounds, and executable numerical
+checks remain prerequisites to freezing the quantitative protocol. Unknown cage
+grouping limits inference but need not block a descriptive comparison. No fitting,
+model prediction, mentor approval or empirical validation is implied by these tools.
