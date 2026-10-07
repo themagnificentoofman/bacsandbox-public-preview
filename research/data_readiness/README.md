@@ -73,6 +73,27 @@ logged zeros remain unconverted; the missing fecal endpoint remains unavailable.
 Every animal retains `simulation_ready=false`. No simulator or parameter fitting
 is invoked. Scientific scope and inclusion rules are documented in §10.6.
 
+## Minimal model feasibility
+
+```sh
+python -m research.data_readiness.audit_feasibility --output research/data_readiness/results/zhou_bm001_feasibility
+python -m unittest research.data_readiness.test_feasibility -v
+```
+
+This optional audit uses the project's runtime dependencies plus the pinned
+S7/S8/S9 originals. It invokes actual configuration interfaces and a lifecycle
+policy in isolation; it never advances the ecological simulator or fits parameters.
+It writes diet-interface probes, configured-profile provenance, complete-baseline
+agent-resolution diagnostics, literal-day tick arithmetic, and input hashes to a
+new directory using the mapping writer's non-overwrite/checksum contract.
+
+Ambiguous baseline vectors are excluded only from the resolution diagnostic;
+they remain in the benchmark cohort. Expected agent quotas are not founder counts.
+The example budgets are diagnostic values, not selected simulation settings.
+Time arithmetic is neither a selected biological clock nor a wall-time estimate.
+The emitted `benchmark_execution_ready` flag remains false. Scientific interpretation,
+minimal-model proposals and implementation boundaries are in §10.6.
+
 ## Decisions before evaluation
 
 Select the intended claim and one endpoint/comparison; agree on biological representation and observation mappings; then choose descriptive-only or scored evaluation. A scored design requires justified baselines, calibration/evaluation grouping, metric and meaningful-error rules before fitting. Sequence identity, OD normalization, dose, sample grouping and detection conventions are source questions only to the extent the selected scope uses them. Recommendations remain proposals; no mentor approval or empirical validation is implied by these tools.
