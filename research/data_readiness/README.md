@@ -49,6 +49,30 @@ python audit_benchmark_table.py table.csv --contract contract.json --metadata sa
 
 Required contract fields are `required_columns`, `key_columns`, `value_columns`, `missing_tokens`, `units`, `time_mapping` and `source_locator`. Include `join_columns` when supplying metadata. Existing audit outputs are refused. Exit 0 means structural checks passed; exit 2 reports structural/contract failure. Neither status establishes scientific readiness. S9B's stored Excel errors intentionally produce a failed structural audit while the source-preservation tests pass.
 
+## Selected benchmark mapping
+
+To generate the source-preserving ZHOU_BM001 mapping in a new directory:
+
+```sh
+python -m research.data_readiness.map_benchmark --output research/data_readiness/results/zhou_bm001_mapping
+python -m unittest research.data_readiness.test_benchmark_mapping research.data_readiness.test_zhou_tables research.data_readiness.test_prepared_observations -v
+```
+
+This optional step requires the pinned S7/S8/S9 originals and `species_data.csv`.
+The combined test command also requires the SI/S1 originals. Run from the repository root.
+An existing output directory is refused. CSV and JSON outputs retain source cells,
+metadata anchors, hashes, units, and distinct measurement states. `checksums.json`
+covers the generated mapping files. A failed filesystem write may leave an
+incomplete directory; verify its checksums and rerun to a new destination.
+
+The exports contain the strain crosswalk, per-animal baseline observations,
+selected target observations, endpoint eligibility, animal readiness, and a
+categorical time crosswalk. A model label candidate is not a calibrated strain
+profile. Inverse-log values are arithmetic quantities, not agent counts. Unresolved
+logged zeros remain unconverted; the missing fecal endpoint remains unavailable.
+Every animal retains `simulation_ready=false`. No simulator or parameter fitting
+is invoked. Scientific scope and inclusion rules are documented in §10.6.
+
 ## Decisions before evaluation
 
 Select the intended claim and one endpoint/comparison; agree on biological representation and observation mappings; then choose descriptive-only or scored evaluation. A scored design requires justified baselines, calibration/evaluation grouping, metric and meaningful-error rules before fitting. Sequence identity, OD normalization, dose, sample grouping and detection conventions are source questions only to the extent the selected scope uses them. Recommendations remain proposals; no mentor approval or empirical validation is implied by these tools.
