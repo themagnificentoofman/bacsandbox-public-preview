@@ -63,7 +63,12 @@ def validate_protocol(protocol):
     expected = {"method":"DOP853","rtol":1e-8,"atol":1e-10,"max_step":1.0,
                 "tight_rtol":1e-10,"tight_atol":1e-12,"tight_max_step":0.5,
                 "max_log10_change":LOG_CONVERGENCE_TOLERANCE,
-                "mass_balance_relative_tolerance":ACCOUNTING_TOLERANCE}
+                "mass_balance_relative_tolerance":ACCOUNTING_TOLERANCE,
+                "stage_domain_retry_max_steps":[1.0,0.5,0.25],
+                "tight_stage_domain_retry_max_steps":[0.5,0.25,0.125],
+                "stage_domain_retry_trigger":"finite_nonpositive_monod_denominator_in_internal_stage"}
+    if protocol.get("protocol_version") != "0.5.1":
+        raise ValueError("This executable requires the v0.5.1 numerical amendment; use historical code for v0.5")
     if protocol["numerical"] != expected:
         raise ValueError("Protocol numerical settings differ from implemented solver contract")
     c = protocol["calibration"]
@@ -210,6 +215,8 @@ def fit_control(rows, baseline_predictions, predictor, settings, tolerance):
                 entry["control_residuals"] = (predictions(z)-observed).tolist()
         except Exception as exc:
             entry.update(success=False, failure_type=type(exc).__name__, failure=str(exc))
+            if getattr(exc,"integration_attempts",None):
+                entry["integration_attempts"]=exc.integration_attempts
         starts.append(entry)
     successful = [s for s in starts if s["success"]]
     persistence = float(np.sum(((baseline-observed)*weights)**2))
@@ -255,7 +262,7 @@ def _control_key(scenario):
         "abundance_scale": scenario["abundance_scale"]})
 
 
-def _model_predictions(baselines, scenario, loss, animals, tighter=False, no_increment=False):
+def _model_predictions(baselines, scenario, loss, animals, tighter=False, no_increment=False,integration_audit=None):
     from .data import get_times, initialize
     from .model import simulate
     result = {}
@@ -263,12 +270,42 @@ def _model_predictions(baselines, scenario, loss, animals, tighter=False, no_inc
     for a in animals:
         times = get_times(a["experiment"], scenario["chronology"])
         supplemented = a["diet"] != "Mirpur-18" and not no_increment
-        simulation = simulate(initialize(a, scenario), baselines["target_index"], times,
-                              parameters, supplemented=supplemented, tighter=tighter)
+        context={"animal_id":a["animal_id"],"scenario_id":scenario["scenario_id"],
+                 "loss":loss,"tighter":tighter,"no_increment":no_increment}
+        try:
+            simulation = simulate(initialize(a, scenario), baselines["target_index"], times,
+                                  parameters, supplemented=supplemented, tighter=tighter)
+        except Exception as exc:
+            # A failed full-cohort prediction must remain attributable even
+            # outside calibration, where no shared integration audit is passed.
+            exc.integration_context=context
+            if integration_audit is not None:
+                attempts=getattr(exc,"integration_attempts",[])
+                _audit_integration(integration_audit,context,attempts,False,
+                                   {"failure_type":type(exc).__name__,"failure":str(exc)})
+            raise
+        if integration_audit is not None:
+            _audit_integration(integration_audit,context,simulation.diagnostics.get("integration_attempts",[]),True)
         result[a["animal_id"]] = {
             "predictions": (a["target_log10"] + simulation.target_log_change).tolist(),
             "times": list(times), "diagnostics": simulation.diagnostics}
     return result
+
+
+def _audit_integration(audit,context,attempts,success,failure=None):
+    """Count every solve and retain all failed/retried stages, including recoveries."""
+    audit["simulation_calls"]=audit.get("simulation_calls",0)+1
+    audit["solver_attempts"]=audit.get("solver_attempts",0)+len(attempts)
+    failed_attempts=sum(not attempt["success"] for attempt in attempts)
+    audit["failed_solver_attempts"]=audit.get("failed_solver_attempts",0)+failed_attempts
+    if success:
+        category="recovered_retry_simulations" if failed_attempts else "successful_without_retry_simulations"
+    else:
+        category="failed_simulations"
+    audit[category]=audit.get(category,0)+1
+    if failed_attempts or not success:
+        audit.setdefault("retried_or_failed_simulations",[]).append(
+            dict(context,success=success,integration_attempts=attempts,**(failure or {})))
 
 
 def _row_predictions(rows, predictions):
@@ -281,13 +318,18 @@ def _fit_control_work(payload):
     lookup = {a["animal_id"]:a for a in baselines["animals"]}
     controls = [a for a in baselines["animals"] if a["animal_id"] in {r["animal_id"] for r in rows}]
     y0 = [lookup[r["animal_id"]]["target_log10"] for r in rows]
+    integration_audit={"retried_or_failed_simulations":[]}
     def predict(loss,tighter):
-        return _row_predictions(rows,_model_predictions(baselines,scenario,loss,controls,tighter))
+        return _row_predictions(rows,_model_predictions(baselines,scenario,loss,controls,tighter,
+                                                       integration_audit=integration_audit))
     try:
         report=fit_control(rows,y0,predict,settings,tolerance)
     except Exception as exc:
         report={"passed":False,"starts":[],"successful_starts":0,"evaluation_opened":False,
             "failures":["control_worker_failure"],"failure_type":type(exc).__name__,"failure":str(exc)}
+        if getattr(exc,"integration_attempts",None):
+            report["integration_attempts"]=exc.integration_attempts
+    report["integration_audit"]=integration_audit
     return key,report
 
 
@@ -331,9 +373,14 @@ def _verify_scenario_work(payload):
     try:
         return verify_prediction_set(baselines,dict(protocol,scenarios=[scenario]),calibration_report)
     except Exception as exc:
+        failure={"scenario_id":scenario["scenario_id"],"passed":False,
+                 "failure_type":type(exc).__name__,"failure":str(exc)}
+        if getattr(exc,"integration_attempts",None):
+            failure["integration_attempts"]=exc.integration_attempts
+        if getattr(exc,"integration_context",None):
+            failure["integration_context"]=exc.integration_context
         return {"passed":False,"runs":[],"evaluation_opened":False,
-            "failures":[{"scenario_id":scenario["scenario_id"],"passed":False,
-                         "failure_type":type(exc).__name__,"failure":str(exc)}]}
+            "failures":[failure]}
 
 
 def verify_prediction_set(baselines, protocol, calibration_report, progress=None, workers=1):
@@ -385,7 +432,12 @@ def verify_prediction_set(baselines, protocol, calibration_report, progress=None
                     exact_no_effect_check=True,passed=True)
                 runs.append(run)
             except Exception as exc:
-                failures.append(dict(run,passed=False,failure_type=type(exc).__name__,failure=str(exc)))
+                failure=dict(run,passed=False,failure_type=type(exc).__name__,failure=str(exc))
+                if getattr(exc,"integration_attempts",None):
+                    failure["integration_attempts"]=exc.integration_attempts
+                if getattr(exc,"integration_context",None):
+                    failure["integration_context"]=exc.integration_context
+                failures.append(failure)
         if progress:
             progress({"prediction_scenario":s["scenario_id"],"numerical_failures":len(failures)})
     return {"passed":not failures,"runs":runs,"failures":failures,"evaluation_opened":False,"workers":workers}

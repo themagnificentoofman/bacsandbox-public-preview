@@ -87,6 +87,41 @@ class FitTests(unittest.TestCase):
 
 
 class FreezeAndRoleTests(unittest.TestCase):
+    def test_recovered_and_exhausted_stage_attempts_stay_in_calibration_audit(self):
+        audit={}
+        context={"animal_id":"control","scenario_id":"case","loss":.02,"tighter":False}
+        failed={"success":False,"max_step_days":1.0,"stage":{"resources":[-1.65,0.0]}}
+        successful={"success":True,"max_step_days":.5}
+        runner._audit_integration(audit,context,[failed,successful],True)
+        runner._audit_integration(audit,context,[failed],False,{"failure":"exhausted"})
+        runner._audit_integration(audit,context,[successful],True)
+        self.assertEqual(audit["simulation_calls"],3)
+        self.assertEqual(audit["solver_attempts"],4)
+        self.assertEqual(audit["failed_solver_attempts"],2)
+        self.assertEqual(audit["recovered_retry_simulations"],1)
+        self.assertEqual(audit["successful_without_retry_simulations"],1)
+        self.assertEqual(audit["failed_simulations"],1)
+        retained=audit["retried_or_failed_simulations"]
+        self.assertEqual(len(retained),2)
+        self.assertEqual(retained[0]["integration_attempts"][0]["stage"]["resources"],[-1.65,0.0])
+        self.assertEqual(retained[1]["failure"],"exhausted")
+        # Full-cohort prediction failures retain identity without the fit audit.
+        from research.zhou_reference import data,model
+        animal={"animal_id":"control","experiment":"Iteration 1","diet":"Mirpur-18","target_log10":8.0}
+        scenario={"scenario_id":"case","chronology":"phase_labels","params":{}}
+        baselines={"animals":[animal],"target_index":0}
+        protocol={"scenarios":[scenario],"numerical":{"max_log10_change":1e-6}}
+        calibration={"passed":True,"scenarios":[{"scenario_id":"case","control_fit_key":"key"}],
+                     "fits":{"key":{"equivalent_losses":[.02]}}}
+        error=model.ModelNumericalError("exhausted",integration_attempts=[failed])
+        with patch.object(data,"initialize",return_value=np.ones(18)), \
+                patch.object(model,"simulate",side_effect=error):
+            result=runner.verify_prediction_set(baselines,protocol,calibration)
+        self.assertFalse(result["passed"])
+        failure=result["failures"][0]
+        self.assertEqual(failure["integration_context"],dict(context,no_increment=False))
+        self.assertEqual(failure["integration_attempts"],[failed])
+
     def test_parallel_actual_ode_jobs_match_sequential_and_preserve_order(self):
         inputs=[1.8,0.2,1.0]
         sequential=list(runner._ordered_work(_small_ode_task,inputs,1))
@@ -185,11 +220,14 @@ class ContrastTests(unittest.TestCase):
         self.assertAlmostEqual(runner._outcome_free_contrast_change({"animals":animals},first,second),.5)
 
     def test_protocol_numerical_config_cannot_silently_disagree_with_solver(self):
-        protocol=json.loads((Path(runner.__file__).parent/"protocol_v05.json").read_text())
+        protocol=json.loads((Path(runner.__file__).parent/"protocol_v051.json").read_text())
         self.assertTrue(runner.validate_protocol(protocol))
         protocol["numerical"]["rtol"]=1e-3
         with self.assertRaisesRegex(ValueError,"implemented solver"):
             runner.validate_protocol(protocol)
+        historical=json.loads((Path(runner.__file__).parent/"protocol_v05.json").read_text())
+        with self.assertRaisesRegex(ValueError,"historical code"):
+            runner.validate_protocol(historical)
 
     def test_masks_and_calibration_assisted_labels(self):
         individual=[]

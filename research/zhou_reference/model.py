@@ -19,10 +19,27 @@ from scipy.integrate import solve_ivp
 N_LABELS = 18
 ACCOUNTING_TOLERANCE = 1.0e-7
 LOG_CONVERGENCE_TOLERANCE = 1.0e-6
+STAGE_DOMAIN_RETRY_MAX_STEPS = (1.0, 0.5, 0.25)
+TIGHT_STAGE_DOMAIN_RETRY_MAX_STEPS = (0.5, 0.25, 0.125)
 
 
 class ModelNumericalError(RuntimeError):
     """A retained, reportable numerical failure, never a clipped trajectory."""
+
+    def __init__(self, message: str, integration_attempts=None):
+        super().__init__(message)
+        self.integration_attempts = list(integration_attempts or [])
+
+
+class StageDomainError(ModelNumericalError):
+    """A finite internal trial crossed a Monod pole; no accepted state is implied."""
+
+    def __init__(self, time: float, state: np.ndarray, half: np.ndarray):
+        super().__init__("Finite internal solver stage has a nonpositive Monod denominator")
+        self.stage = {"time_day": float(time), "state": np.asarray(state).tolist(),
+                      "resources": np.asarray(state[2:4]).tolist(),
+                      "half_saturation": np.asarray(half).tolist(),
+                      "denominators": (half + state[2:4]).tolist()}
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,8 @@ def simulate(
     Accepted solver states AND requested dense-output states must be finite and
     nonnegative. All retained positive biomass must remain representable. State
     failures are raised, with no clipping, implicit floor or alternate solver.
+    Only finite internal Monod-pole trials may restart the same segment, with
+    the bounded step-limit sequence declared in DOCUMENTATION.md section 10.7.
     A discontinuous supplement start is an exact integration boundary.
     """
     p = _parameters(parameters)
@@ -151,6 +170,8 @@ def simulate(
     accepted = [state.reshape(1, -1).copy()]
     evaluations = 0
     messages: list[str] = []
+    integration_attempts: list[dict[str, object]] = []
+    step_limits = TIGHT_STAGE_DOMAIN_RETRY_MAX_STEPS if tighter else STAGE_DOMAIN_RETRY_MAX_STEPS
 
     def group_biomass(factors: np.ndarray) -> np.ndarray:
         shape = factors.shape
@@ -159,12 +180,14 @@ def simulate(
             group_log_initial[positive_groups], factors[..., positive_groups])
         return values
 
-    def rhs(_time: float, current: np.ndarray, inputs: np.ndarray) -> np.ndarray:
+    def rhs(time: float, current: np.ndarray, inputs: np.ndarray) -> np.ndarray:
+        if not np.all(np.isfinite(current)):
+            raise ModelNumericalError("Nonfinite solver stage")
         x = group_biomass(current[:2])
         resource = current[2:4]
         denominator = half + resource
-        if np.any(denominator <= 0) or not np.all(np.isfinite(current)):
-            raise ModelNumericalError("Nonfinite state or invalid Monod denominator in solver stage")
+        if np.any(denominator <= 0):
+            raise StageDomainError(time, current, half)
         q = qmax * (resource / denominator)
         uptake = (q * x[:, None]).sum(axis=0)
         growth_rates = (yields * q).sum(axis=1)
@@ -189,15 +212,44 @@ def simulate(
         if stop == start:
             continue
         inputs = np.array([p.input_R, p.input_G if supplemented and start >= p.glucomannan_start_day else 0.0])
-        solution = solve_ivp(
-            lambda t, y: rhs(t, y, inputs), (start, stop), state,
-            method="DOP853", rtol=rtol, atol=atol, max_step=max_step,
-            dense_output=True,
-        )
-        evaluations += solution.nfev
+        for attempt_number, step_limit in enumerate(step_limits, start=1):
+            attempt = {"segment_start_day": float(start), "segment_stop_day": float(stop),
+                       "attempt": attempt_number, "max_step_days": step_limit,
+                       "rhs_calls": 0, "success": False}
+
+            def counted_rhs(t, y):
+                attempt["rhs_calls"] += 1
+                return rhs(t, y, inputs)
+
+            try:
+                # A retry starts from the identical segment boundary, never from
+                # the failed trial. Equations and error tolerances are unchanged.
+                solution = solve_ivp(
+                    counted_rhs, (start, stop), state.copy(),
+                    method="DOP853", rtol=rtol, atol=atol, max_step=step_limit,
+                    dense_output=True,
+                )
+            except StageDomainError as exc:
+                attempt.update(failure_type=type(exc).__name__, failure=str(exc), stage=exc.stage)
+                integration_attempts.append(attempt)
+                evaluations += attempt["rhs_calls"]
+                if attempt_number == len(step_limits):
+                    raise ModelNumericalError(
+                        "Bounded internal-stage domain retries exhausted", integration_attempts) from exc
+                continue
+            except Exception as exc:
+                attempt.update(failure_type=type(exc).__name__, failure=str(exc))
+                integration_attempts.append(attempt)
+                if isinstance(exc, ModelNumericalError):
+                    exc.integration_attempts = list(integration_attempts)
+                raise
+            attempt.update(success=bool(solution.success), message=solution.message)
+            integration_attempts.append(attempt)
+            evaluations += attempt["rhs_calls"]
+            break
         messages.append(solution.message)
         if not solution.success:
-            raise ModelNumericalError(f"DOP853 failed: {solution.message}")
+            raise ModelNumericalError(f"DOP853 failed: {solution.message}", integration_attempts)
         accepted.append(solution.y.T)
         mask = (requested >= start) & (requested <= stop)
         if np.any(mask):
@@ -206,12 +258,16 @@ def simulate(
 
     checked = np.concatenate([*accepted, outputs], axis=0)
     if not np.all(np.isfinite(checked)):
-        raise ModelNumericalError("Nonfinite accepted or requested state")
+        raise ModelNumericalError("Nonfinite accepted or requested state", integration_attempts)
     if np.any(checked[:, 2:] < 0):
-        raise ModelNumericalError("Negative accepted or requested resource/accounting state; not clipped")
-    checked_groups = group_biomass(checked[:, :2])
-    # Check rare label representability at every accepted or requested state.
-    _positive_values(label_log_initial, checked[:, label_groups[positive_labels]])
+        raise ModelNumericalError("Negative accepted or requested resource/accounting state; not clipped", integration_attempts)
+    try:
+        checked_groups = group_biomass(checked[:, :2])
+        # Check rare label representability at every accepted or requested state.
+        _positive_values(label_log_initial, checked[:, label_groups[positive_labels]])
+    except ModelNumericalError as exc:
+        exc.integration_attempts = list(integration_attempts)
+        raise
     resource_residual = checked[:, 2:4] - initial_resources - checked[:, 4:6] + checked[:, 6:8] + checked[:, 8:10]
     biomass_residual = checked_groups - group_initial - checked[:, 10:12] + checked[:, 12:14]
     resource_scale = np.maximum(1.0, initial_resources + checked[:, 4:6])
@@ -221,7 +277,7 @@ def simulate(
     if max(max_resource_error, max_biomass_error) > ACCOUNTING_TOLERANCE:
         raise ModelNumericalError(
             f"Accounting residual exceeds {ACCOUNTING_TOLERANCE}: "
-            f"resource={max_resource_error}, biomass={max_biomass_error}")
+            f"resource={max_resource_error}, biomass={max_biomass_error}", integration_attempts)
 
     biomass = np.zeros((len(requested), N_LABELS))
     biomass[:, positive_labels] = _positive_values(label_log_initial, outputs[:, label_groups[positive_labels]])
@@ -236,6 +292,8 @@ def simulate(
         "max_scaled_biomass_accounting_residual": max_biomass_error,
         "accounting_tolerance": ACCOUNTING_TOLERANCE,
         "exact_zero_labels": int(np.sum(~positive_labels)), "messages": messages,
+        "integration_attempts": integration_attempts,
+        "stage_domain_retries": sum("stage" in attempt for attempt in integration_attempts),
     }
     return SimulationResult(
         times=requested.copy(), biomass=biomass, resources=outputs[:, 2:4].copy(),

@@ -128,13 +128,17 @@ Install its optional dependencies from
 existing parent directory `OUTPUT`, replace these example paths as needed:
 
 ```bash
-python -m research.zhou_reference.runner lock --protocol research/zhou_reference/protocol_v05.json --engineering-report ENGINEERING_REPORT.json --output OUTPUT/specification_lock.json
-python -m research.zhou_reference.runner calibrate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v05.json --lock OUTPUT/specification_lock.json --output OUTPUT/calibration --workers 8
-python -m research.zhou_reference.runner evaluate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v05.json --lock OUTPUT/specification_lock.json --calibration OUTPUT/calibration --output OUTPUT/evaluation
+python -m research.zhou_reference.runner lock --protocol research/zhou_reference/protocol_v051.json --engineering-report ENGINEERING_REPORT.json --output OUTPUT/specification_lock.json
+python -m research.zhou_reference.runner calibrate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v051.json --lock OUTPUT/specification_lock.json --output OUTPUT/calibration --workers 8
+python -m research.zhou_reference.runner evaluate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v051.json --lock OUTPUT/specification_lock.json --calibration OUTPUT/calibration --output OUTPUT/evaluation
 ```
 
 Run the stages sequentially. A failed calibration or numerical gate leaves
 evaluation disabled; preserve that failure record rather than skipping scenarios.
+The v0.5.1 numerical amendment retains the v0.5 scientific design and adds bounded,
+recorded DOP853 segment retries for an invalid internal trial denominator. It does
+not relax accepted-state, accounting or control gates. The original v0.5 protocol
+and failed run remain historical evidence tied to their original executable.
 `--workers` accepts 1–8 processes (default 1); it changes execution parallelism,
 not the scenario design or numerical settings.
 

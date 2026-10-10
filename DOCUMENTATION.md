@@ -2830,7 +2830,8 @@ ODE or being fitted to evaluation data.<sup>[53](#ref-53)</sup>
 The v0.5 scenario configuration crosses two chronologies, three zero alternatives
 and 16 parameter panels, giving 96 mechanistic scenarios. Three observation maps
 are applied afterward. Exact values are enumerated in
-`research/zhou_reference/protocol_v05.json`. Panels include the center, low/high biomass scale,
+`research/zhou_reference/protocol_v05.json`; the numerical-only v0.5.1 amendment
+preserves these scientific values in `protocol_v051.json`. Panels include the center, low/high biomass scale,
 intervention input, target/background response scale, common-resource response
 and saturation; absent/stronger background intervention uptake; one-day onset;
 and two joint high-exposure/background-use cases. Every coefficient and panel is
@@ -2882,6 +2883,21 @@ requested dense-output states must be finite; resources and cumulative accounts
 must be nonnegative; every initially positive label must remain representable.
 The implementation raises a retained numerical failure rather than clipping a
 trajectory or silently changing solver.<sup>[53](#ref-53)</sup>
+
+The original v0.5 run retained a control-start failure caused by a finite internal
+DOP853 trial crossing a Monod denominator's domain; that run did not enable
+evaluation. The v0.5.1 numerical amendment permits only that internal trial-domain
+failure to restart the same segment from its unchanged initial state. Standard
+maximum-step attempts are `1, 0.5, 0.25` days; tighter attempts are `0.5, 0.25,
+0.125` days. Every failed attempt records its step cap, trial time, resource state,
+denominator and RHS-call count. A successful retry records its actual step cap.
+Nonfinite states, failed accepted/requested-state checks, accounting failures and
+exhausted retries remain failures. There is no clipping, solver substitution or
+change to equations, control starts, scenarios or acceptance thresholds. Control
+fit reports retain retry events with the animal, loss and tolerance context; full
+prediction records retain all integration attempts. This amendment was motivated
+only by the control-stage numerical failure, with evaluation still disabled.
+<sup>[53](#ref-53)</sup>
 
 The resource and biomass accounts are checked in their own units:
 <sup>[53](#ref-53)</sup>

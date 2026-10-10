@@ -3,12 +3,14 @@
 from dataclasses import replace
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from research.zhou_reference.model import (
-    ModelNumericalError, ModelParameters, check_convergence, simulate,
+    ModelNumericalError, ModelParameters, StageDomainError, check_convergence, simulate,
 )
+from research.zhou_reference import model
 
 
 class ReferenceModelTests(unittest.TestCase):
@@ -125,6 +127,72 @@ class ReferenceModelTests(unittest.TestCase):
                     qmax_G_target=0, qmax_G_background=0, loss=100)
         with self.assertRaisesRegex(ModelNumericalError, "underflow"):
             simulate(self.initial, 0, [0, 30], p, False)
+
+    def test_reproduced_control_stage_overshoot_restarts_and_converges(self):
+        # Published baseline fixture; the failure was found in control-only
+        # calibration. No observed follow-up abundance enters this regression.
+        initial = [23.224617781999974, 0.40414732296326944, 1.579523102444941,
+                   4.733712236125903, 0.21973815586002415, 5.3743847457332725,
+                   0.2576906721311042, 4.158946992046722, 0.0004963430432462628,
+                   0.00031907767065831184, 0.19835995192591682, 0.002162637545573002,
+                   0.0015599352787739695, 0.11245715236979617, 0.23289124650605042,
+                   3.5090035034530036, 4.464853845521766, 0.1]
+        p = replace(self.p, loss=0.022505466356404744)
+        standard = simulate(initial, 0, [10, 28], p, False)
+        tight = simulate(initial, 0, [10, 28], p, False, tighter=True)
+        self.assertTrue(check_convergence(standard, tight)["passed"])
+        attempts = standard.diagnostics["integration_attempts"]
+        self.assertEqual([a["max_step_days"] for a in attempts], [1.0, 0.5])
+        self.assertEqual([a["success"] for a in attempts], [False, True])
+        self.assertEqual(attempts[0]["failure_type"], "StageDomainError")
+        self.assertLess(attempts[0]["stage"]["denominators"][0], 0)
+        self.assertEqual(standard.diagnostics["nfev"], sum(a["rhs_calls"] for a in attempts))
+        self.assertGreater(standard.diagnostics["nfev"], attempts[1]["rhs_calls"])
+
+    def test_stage_retries_are_bounded_and_restart_identical_segment_state(self):
+        bad_stage = np.zeros(14)
+        bad_stage[2] = -2
+        for tighter, limits in [(False, [1, 0.5, 0.25]), (True, [0.5, 0.25, 0.125])]:
+            with self.subTest(tighter=tighter):
+                with patch.object(model, "solve_ivp", side_effect=lambda *a, **k:
+                                  (_ for _ in ()).throw(StageDomainError(0.5, bad_stage, np.ones(2)))) as solver:
+                    with self.assertRaisesRegex(ModelNumericalError, "retries exhausted") as caught:
+                        simulate(self.initial, 0, [0, 1], self.p, False, tighter=tighter)
+                self.assertEqual(solver.call_count, 3)
+                self.assertIsInstance(caught.exception.__cause__, StageDomainError)
+                attempts = caught.exception.integration_attempts
+                self.assertEqual([a["max_step_days"] for a in attempts], limits)
+                self.assertTrue(all(not a["success"] and "stage" in a for a in attempts))
+                for call in solver.call_args_list:
+                    np.testing.assert_array_equal(call.args[2], solver.call_args_list[0].args[2])
+                    self.assertEqual(call.kwargs["method"], "DOP853")
+                    self.assertEqual(call.kwargs["rtol"], 1e-10 if tighter else 1e-8)
+
+    def test_nonfinite_stage_is_not_retried(self):
+        def nonfinite_trial(fun, interval, initial, **kwargs):
+            bad = initial.copy()
+            bad[2] = float("nan")
+            fun(interval[0], bad)
+        with patch.object(model, "solve_ivp", side_effect=nonfinite_trial) as solver:
+            with self.assertRaisesRegex(ModelNumericalError, "Nonfinite solver stage") as caught:
+                simulate(self.initial, 0, [0, 1], self.p, False)
+        self.assertEqual(solver.call_count, 1)
+        self.assertEqual(len(caught.exception.integration_attempts), 1)
+        self.assertEqual(caught.exception.integration_attempts[0]["rhs_calls"], 1)
+
+    def test_accepted_state_and_accounting_failures_are_not_retried(self):
+        actual_solver = model.solve_ivp
+        for index, value, message in [(2, -1, "Negative accepted"), (8, 10, "Accounting residual")]:
+            def corrupted_accepted(*args, **kwargs):
+                solution = actual_solver(*args, **kwargs)
+                solution.y[index, -1] = value
+                return solution
+            with self.subTest(index=index):
+                with patch.object(model, "solve_ivp", side_effect=corrupted_accepted) as solver:
+                    with self.assertRaisesRegex(ModelNumericalError, message) as caught:
+                        simulate(self.initial, 0, [0, 1], self.p, False)
+                self.assertEqual(solver.call_count, 1)
+                self.assertEqual(len(caught.exception.integration_attempts), 1)
 
     def test_invalid_inputs_fail_before_integration(self):
         for name, value in [("K_R", 0), ("input_G", -1), ("loss", float("nan")),
