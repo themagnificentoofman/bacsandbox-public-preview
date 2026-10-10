@@ -17,7 +17,10 @@ sys.path.insert(0, str(ROOT))
 OUT = ROOT / 'research/data_readiness/results'
 FOCUSED = ['bacteria.test_benchmark_table', 'bacteria.test_parameter_audit',
            'bacteria.test_comparative_sweeps', 'research.data_readiness.test_zhou_tables',
-           'research.data_readiness.test_prepared_observations', 'research.data_readiness.test_s2_s13', 'research.data_readiness.test_fetch_sources']
+           'research.data_readiness.test_prepared_observations',
+           'research.data_readiness.test_s2_s13', 'research.data_readiness.test_fetch_sources',
+           'research.data_readiness.test_benchmark_mapping',
+           'research.data_readiness.test_feasibility']
 
 
 def run_suite(name, suite):
@@ -37,6 +40,7 @@ def run_suite(name, suite):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     report = {'python': platform.python_version(), 'executable': sys.executable,
+              'focused_modules': FOCUSED,
               'baseline_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
               'native_extension_available': importlib.util.find_spec('bacteria_c_kernel') is not None}
     import openpyxl, et_xmlfile

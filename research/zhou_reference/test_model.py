@@ -1,0 +1,147 @@
+"""Analytical and numerical invariants for the scaled research reference."""
+
+from dataclasses import replace
+import math
+import unittest
+
+import numpy as np
+
+from research.zhou_reference.model import (
+    ModelNumericalError, ModelParameters, check_convergence, simulate,
+)
+
+
+class ReferenceModelTests(unittest.TestCase):
+    def setUp(self):
+        self.initial = np.linspace(0.01, 0.18, 18)
+        self.times = [0.0, 1.0, 10.0, 28.0]
+        self.p = ModelParameters()
+
+    def test_pure_shared_loss_matches_analytical_solution(self):
+        p = replace(self.p, qmax_R_target=0, qmax_R_background=0,
+                    qmax_G_target=0, qmax_G_background=0, loss=0.3)
+        result = simulate(self.initial, 5, self.times, p, True)
+        expected = self.initial[None, :] * np.exp(-0.3 * np.array(self.times)[:, None])
+        np.testing.assert_allclose(result.biomass, expected, rtol=2e-13, atol=0)
+        np.testing.assert_allclose(result.target_log_change,
+                                   -0.3 * np.array(self.times) / math.log(10), atol=2e-14)
+
+    def test_resource_input_and_washout_match_analytical_solution(self):
+        p = replace(self.p, qmax_R_target=0, qmax_R_background=0,
+                    qmax_G_target=0, qmax_G_background=0,
+                    initial_R=0.3, initial_G=0.2, input_R=0.8, input_G=0.4,
+                    washout_R=0.2, washout_G=0.7)
+        result = simulate(self.initial, 0, self.times, p, True)
+        for col, resource, flow, decay in [(0, 0.3, 0.8, 0.2), (1, 0.2, 0.4, 0.7)]:
+            expected = flow / decay + (resource - flow / decay) * np.exp(-decay * np.array(self.times))
+            np.testing.assert_allclose(result.resources[:, col], expected, rtol=1e-9, atol=1e-11)
+
+    def test_closed_unit_yield_system_conserves_resource_plus_biomass(self):
+        p = replace(self.p, loss=0, input_R=0, input_G=0,
+                    initial_R=2, initial_G=1, washout_R=0, washout_G=0)
+        result = simulate(self.initial, 7, [0, 0.25, 1, 2], p, True)
+        totals = result.biomass.sum(axis=1) + result.resources.sum(axis=1)
+        np.testing.assert_allclose(totals, self.initial.sum() + 3, rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(result.accounting["growth"].sum(axis=1),
+                                   result.accounting["uptake"].sum(axis=1), atol=1e-12)
+
+    def test_resource_and_biomass_accounts_close_with_unequal_yields(self):
+        p = replace(self.p, Y_R_target=0.4, Y_G_target=0.7,
+                    Y_R_background=0.6, Y_G_background=0.2)
+        result = simulate(self.initial, 4, self.times, p, True)
+        expected_resource = (np.array([p.initial_R, p.initial_G])
+                             + result.accounting["input"] - result.accounting["outflow"]
+                             - result.accounting["uptake"])
+        np.testing.assert_allclose(result.resources, expected_resource, atol=1e-12)
+        expected_total_biomass = (self.initial.sum() + result.accounting["growth"].sum(axis=1)
+                                  - result.accounting["loss"].sum(axis=1))
+        np.testing.assert_allclose(result.biomass.sum(axis=1), expected_total_biomass, atol=2e-8)
+
+    def test_identical_inputs_are_exact_under_both_diet_labels(self):
+        p = replace(self.p, input_G=0, initial_G=0.4)
+        control = simulate(self.initial, 2, self.times, p, False)
+        treated = simulate(self.initial, 2, self.times, p, True)
+        np.testing.assert_array_equal(control.biomass, treated.biomass)
+        np.testing.assert_array_equal(control.resources, treated.resources)
+
+    def test_no_glucomannan_ignores_glucomannan_capability(self):
+        control = simulate(self.initial, 2, self.times, self.p, False)
+        changed = simulate(self.initial, 2, self.times,
+                           replace(self.p, qmax_G_target=4, qmax_G_background=8), False)
+        np.testing.assert_array_equal(control.target_log_change, changed.target_log_change)
+        np.testing.assert_array_equal(control.resources[:, 1], 0)
+
+    def test_tied_background_ratios_stay_constant(self):
+        result = simulate(self.initial, 3, self.times, self.p, True)
+        background = np.arange(18) != 3
+        ratios = result.biomass[:, background] / result.biomass[:, [0]]
+        expected = self.initial[background] / self.initial[0]
+        np.testing.assert_allclose(ratios, np.broadcast_to(expected, ratios.shape), rtol=3e-14)
+
+    def test_zero_labels_and_rare_positive_labels_are_preserved(self):
+        initial = self.initial.copy()
+        initial[1] = 0
+        initial[2] = 1e-250
+        result = simulate(initial, 0, self.times, self.p, True)
+        np.testing.assert_array_equal(result.biomass[:, 1], 0)
+        self.assertTrue(np.all(result.biomass[:, 2] > 0))
+        ratio = result.biomass[:, 2] / result.biomass[:, 3]
+        np.testing.assert_allclose(ratio, initial[2] / initial[3], rtol=8e-14, atol=0)
+
+    def test_empty_background_remains_empty(self):
+        initial = np.zeros(18)
+        initial[9] = 0.3
+        result = simulate(initial, 9, self.times, self.p, True)
+        np.testing.assert_array_equal(result.biomass[:, np.arange(18) != 9], 0)
+        self.assertTrue(np.all(result.biomass[:, 9] > 0))
+
+    def test_baseline_and_optional_times_do_not_change_integration_origin(self):
+        full = simulate(self.initial, 0, self.times, self.p, True)
+        later = simulate(self.initial, 0, self.times[1:], self.p, True)
+        np.testing.assert_array_equal(full.biomass[1:], later.biomass)
+        only_zero = simulate(self.initial, 0, [0], self.p, True)
+        np.testing.assert_array_equal(only_zero.biomass[0], self.initial)
+        np.testing.assert_array_equal(only_zero.target_log_change, 0)
+
+    def test_delayed_input_start_is_an_exact_boundary(self):
+        p = replace(self.p, qmax_R_target=0, qmax_R_background=0,
+                    qmax_G_target=0, qmax_G_background=0,
+                    input_G=0.4, washout_G=0.7, glucomannan_start_day=2)
+        times = np.array([0, 1, 2, 2.5, 4])
+        result = simulate(self.initial, 0, times, p, True)
+        expected = 0.4 / 0.7 * (1 - np.exp(-0.7 * np.maximum(0, times - 2)))
+        np.testing.assert_allclose(result.resources[:, 1], expected, rtol=1e-9, atol=1e-11)
+        np.testing.assert_allclose(result.accounting["input"][:, 1],
+                                   0.4 * np.maximum(0, times - 2), atol=1e-14)
+
+    def test_prespecified_tighter_solver_converges(self):
+        standard = simulate(self.initial, 5, self.times, self.p, True)
+        tighter = simulate(self.initial, 5, self.times, self.p, True, tighter=True)
+        self.assertTrue(check_convergence(standard, tighter)["passed"])
+        np.testing.assert_allclose(standard.resources, tighter.resources, atol=2e-8)
+
+    def test_positive_biomass_underflow_is_failure_not_extinction(self):
+        p = replace(self.p, qmax_R_target=0, qmax_R_background=0,
+                    qmax_G_target=0, qmax_G_background=0, loss=100)
+        with self.assertRaisesRegex(ModelNumericalError, "underflow"):
+            simulate(self.initial, 0, [0, 30], p, False)
+
+    def test_invalid_inputs_fail_before_integration(self):
+        for name, value in [("K_R", 0), ("input_G", -1), ("loss", float("nan")),
+                            ("qmax_G_target", float("inf")), ("input_R", True)]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                replace(self.p, **{name: value})
+        for times in [[], [1, 0], [0, 0], [-1], [float("inf")]]:
+            with self.subTest(times=times), self.assertRaises(ValueError):
+                simulate(self.initial, 0, times, self.p, False)
+        for initial in [np.ones(17), -self.initial, np.full(18, np.nan), np.zeros(18)]:
+            with self.subTest(initial=str(initial)), self.assertRaises(ValueError):
+                simulate(initial, 0, [0, 1], self.p, False)
+        with self.assertRaises(ValueError):
+            simulate(self.initial, True, [0, 1], self.p, False)
+        with self.assertRaises(ValueError):
+            simulate(self.initial, 0, [0, 1], self.p, "treated")
+
+
+if __name__ == "__main__":
+    unittest.main()

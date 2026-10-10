@@ -115,6 +115,29 @@ For source-preserving Zhou benchmark preparation, see the
 [documented evidence limits](DOCUMENTATION.md#106-empirical-table-readiness).
 The CSV audit and optional supplement extractors do not fit or validate the model.
 
+The separate [Zhou continuous reference](DOCUMENTATION.md#107-zhou-continuous-reference-and-exploratory-scenario-contract)
+implements a scaled, well-mixed exploratory model with source-role checks,
+control-only calibration and gated retrospective evaluation. Its finite parameter
+and observation scenarios are analyst assumptions, not measured mouse kinetics.
+It does not alter the Pygame simulation. Inspect the workflow with
+`python -m research.zhou_reference.runner --help`; execution requires a frozen
+scenario specification, pinned source inputs and passing engineering gates.
+Install its optional dependencies from
+`research/zhou_reference/requirements-reference.txt`. With a passing
+`ENGINEERING_REPORT.json`, verified supplement directory `SOURCE_DIR`, and an
+existing parent directory `OUTPUT`, replace these example paths as needed:
+
+```bash
+python -m research.zhou_reference.runner lock --protocol research/zhou_reference/protocol_v05.json --engineering-report ENGINEERING_REPORT.json --output OUTPUT/specification_lock.json
+python -m research.zhou_reference.runner calibrate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v05.json --lock OUTPUT/specification_lock.json --output OUTPUT/calibration --workers 8
+python -m research.zhou_reference.runner evaluate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v05.json --lock OUTPUT/specification_lock.json --calibration OUTPUT/calibration --output OUTPUT/evaluation
+```
+
+Run the stages sequentially. A failed calibration or numerical gate leaves
+evaluation disabled; preserve that failure record rather than skipping scenarios.
+`--workers` accepts 1–8 processes (default 1); it changes execution parallelism,
+not the scenario design or numerical settings.
+
 ## Project Files
 
 * `species_data.csv`: species configuration loaded at startup and edited by the Species tab.

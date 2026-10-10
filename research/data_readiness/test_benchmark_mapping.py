@@ -67,6 +67,13 @@ class PublishedMappingTests(unittest.TestCase):
         audit = self.outputs["mapping_audit.json"]
         self.assertEqual(audit["animals_with_unresolved_baseline_values"], 31)
         self.assertFalse(audit["simulation_ready"])
+        self.assertEqual(audit["schema_version"], 2)
+        self.assertEqual(audit["readiness_scope"],
+                         "source_mapping_artifact_only; executable readiness assessed separately")
+        self.assertNotIn("remaining_requirements", audit)
+        self.assertTrue(audit["external_execution_requirements"])
+        self.assertTrue(audit["inference_limitations"])
+        self.assertTrue(audit["abm_followup_only"])
         self.assertTrue(all(not r["agent_counts_available"] for r in self.outputs["animal_mapping.csv"]))
 
     def test_missing_endpoint_does_not_delete_earlier_or_control_arm(self):

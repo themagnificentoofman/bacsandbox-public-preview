@@ -1,0 +1,27 @@
+name: Zhou Reference QA
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reference:
+    name: Continuous reference contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: research/zhou_reference/requirements-reference.txt
+      - name: Install optional reference dependencies
+        run: |
+          python -m pip install -r research/zhou_reference/requirements-reference.txt
+          python -m pip check
+      - name: Run source-independent model and runner contracts
+        run: python -m unittest research.zhou_reference.test_model research.zhou_reference.test_runner -v
