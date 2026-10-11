@@ -247,7 +247,7 @@ def build(source_dir, species_path):
                               "model_elapsed_seconds": None,
                               "mapping_status": "baseline_origin" if nominal == 0 else
                                   "reported_age_and_phase_discrepancy_unresolved"})
-    summary = {"schema_version": 1, "benchmark_id": "ZHOU_BM001",
+    summary = {"schema_version": 2, "benchmark_id": "ZHOU_BM001",
                "evidence_class": "source_mapping_only; no simulation or calibration",
                "source_hashes": hashes,
                "mapping_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -260,9 +260,19 @@ def build(source_dir, species_path):
                "primary_eligible_by_phase": {p: sum(r["endpoint_eligible"] for r in masks
                                                         if r["phase_label"] == p) for p in PHASES},
                "simulation_ready": False,
-               "remaining_requirements": ["baseline zero semantics", "strain parameter provenance",
-                    "diet exposure", "agent scale", "observation operator", "model time mapping",
-                    "experimental grouping", "meaningful error and calibration protocol"]}
+               "readiness_scope": "source_mapping_artifact_only; executable readiness assessed separately",
+               "external_execution_requirements": [
+                   "frozen continuous-reference configuration with finite values and provenance",
+                   "explicit baseline-zero initialization scenarios without changing source values",
+                   "declared effective diet exposure and resource/biomass scales",
+                   "declared fecal observation operator and both retained timing scenarios",
+                   "enforced control-only calibration and evaluation data roles",
+                   "verified executable, numerical tolerances and immutable run provenance"],
+               "inference_limitations": [
+                   "unknown experimental grouping limits inference, not descriptive comparison",
+                   "source zero semantics remain unknown when initialization scenarios are assigned",
+                   "error reporting has no biological pass/fail threshold"],
+               "abm_followup_only": ["agent scale and founder rounding", "ecological seed sweeps"]}
     return {"strain_crosswalk.csv": roster, "baseline_observations.csv": founders,
             "target_observations.csv": targets, "endpoint_eligibility.csv": masks,
             "animal_mapping.csv": animal_rows, "time_crosswalk.csv": time_rows,

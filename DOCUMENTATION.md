@@ -2664,7 +2664,7 @@ predefined multi-seed analyses demonstrate a robust difference against the homog
 
 ### 10.6 Empirical Table Readiness
 
-`audit_benchmark_table.py` and `research/data_readiness/` provide read-only source preparation for a proposed retrospective benchmark using the Zhou study and its supporting datasets. This work does not modify biological equations, configured parameters, model mechanisms, time scaling or the legacy/molar boundary. ZHOU_BM001 selects fecal BgF5_2 abundance at the reported P35/P53 endpoints. Control-only calibration permissions and error-reporting-only interpretation are adopted below; runnable parameter, input and observation details remain unresolved. Published outcomes are already known, so this is preparation for retrospective comparison, not a prospective validation claim.<sup>[45](#ref-45), [52](#ref-52)</sup>
+`audit_benchmark_table.py` and `research/data_readiness/` provide read-only source preparation for a retrospective benchmark using the Zhou study and its supporting datasets. This preparation layer does not modify biological equations, configured parameters, model mechanisms, time scaling or the legacy/molar boundary. ZHOU_BM001 selects fecal BgF5_2 abundance at the reported P35/P53 endpoints. This section preserves the source findings and v0.4 preparation decisions; the separate reference implementation and its dimensionless, analyst-selected assumptions are documented in §10.7. Published outcomes are already known, so neither stage supports a prospective validation claim.<sup>[45](#ref-45), [52](#ref-52), [53](#ref-53)</sup>
 
 **Integrity and publication boundary.** The two `research/data_readiness/provenance/` manifests pin seven publisher/archive originals by URL, byte size, SHA256 and MD5. The repository contains authored tools, tests and public provenance. Raw papers, original workbooks, copied third-party code, private correspondence and generated data exports are not committed. An explicit fetch command installs only verified bytes into ignored source directories; differing existing files are preserved and rejected. Extraction never edits an original. Derived output directories can be rebuilt. Commands and required dependency/source setup are in the [readiness README](research/data_readiness/README.md).<sup>[52](#ref-52)</sup>
 
@@ -2704,9 +2704,9 @@ The main article reports 98% overall nucleotide identity between BgF5_2 and Bg00
 
 **Environment, time and turnover.** The current harness defaults to 100 seconds, 500-cell capacity, pH 7, oxygen fraction 0.21 and temperature 37 degrees C. Its homogeneous control removes radial parameter differences but retains local agents, nutrient patches and movement; it is not a well-mixed reactor. Literal 28-to-30-day execution at its 0.1-second step entails 24,192,000 to 25,920,000 ticks per trajectory, without implying any measured wall time. The legacy 180-second senescence timescale, uncalibrated turnover and ambient environment cannot be reinterpreted as gut days through display-speed changes. The optional growth-only lifecycle never declares starvation; the live molar path separately permits capacity culling, not measured gut efflux. Target observations include declines from each animal's baseline, so a turnover/observation rationale is required rather than assuming all count changes represent measured growth.<sup>[41](#ref-41), [48](#ref-48), [50](#ref-50), [52](#ref-52)</sup>
 
-**Decision boundary.** Existing defaults are not ready for a quantitative Zhou benchmark. A proposed minimum reference keeps 18 strain-labelled continuous abundance states in one well-mixed compartment, with tied background parameter groups, explicit common-food versus glucomannan input and a declared loss/observation term. This is an Own-model proposal, not implemented behavior, a genome-derived model or mentor approval. It would support a target-strain retrospective comparison, not independent predictions for all 18 strains. Background glucomannan use must remain a tested uncertainty rather than being fixed to force target enrichment. A local uptake counterexample in the audit shows that scaling concentration and its half-saturation constant together leaves the uptake bound unchanged; this is not a proof of whole-model invariance. It motivates fixing or independently constraining dose/scale/rates before fitting abundance endpoints.<sup>[52](#ref-52)</sup>
+**Decision boundary at v0.4 preparation.** Existing production defaults were not selected for the quantitative Zhou benchmark. The preparation proposed 18 strain-labelled continuous abundance states in one well-mixed compartment, with tied background parameter groups, explicit common-food versus glucomannan input and a declared loss/observation term. The proposal was not then implemented; §10.7 now describes its separate Own-model implementation. Neither stage supplies a genome-derived model, mentor approval of equations or independent predictions for all 18 strains. Background glucomannan use remains a tested uncertainty rather than being fixed to force target enrichment. A local uptake counterexample in the audit shows that scaling concentration and its half-saturation constant together leaves the uptake bound unchanged; this is not a proof of whole-model invariance. It motivates declaring scale/rate assumptions before fitting abundance endpoints.<sup>[52](#ref-52), [53](#ref-53)</sup>
 
-**Quantitative preparation decisions.** The primary development architecture is now the deterministic, continuous 18-label reference described above, with one target kinetic group and one tied background group. This is an adopted **Own (BacSandbox model)** design choice, not an implemented solver. The tied background group preserves labels but fixes their mutual abundance ratios under shared per-capita dynamics; it cannot claim independent background ecology. Primary agent rounding and ecological seed sweeps are retired. The new reference uses days and retains both age-derived and workbook-label timing scenarios for reporting, without selecting a scenario by treated agreement. Production ABM elapsed-time behavior is unchanged.<sup>[52](#ref-52)</sup>
+**Quantitative preparation decisions.** The v0.4 record adopted the deterministic, continuous 18-label reference, with one target kinetic group and one tied background group, before a solver existed. This is an **Own (BacSandbox model)** design choice, implemented separately in §10.7. The tied background group preserves labels but fixes their mutual abundance ratios under shared per-capita dynamics; it cannot claim independent background ecology. Primary agent rounding and ecological seed sweeps are retired. The reference uses days and retains both age-derived and workbook-label timing scenarios for reporting, without selecting a scenario by treated agreement. Production ABM elapsed-time behavior is unchanged.<sup>[52](#ref-52), [53](#ref-53)</sup>
 
 **Control-only calibration and evaluation boundary.** Only the ten iteration-1 unsupplemented controls, with twenty available target follow-up values, may calibrate baseline target behavior. All animal baselines remain initialization inputs. Glucomannan response and background-use constraints must come from independent evidence or a predeclared uncertainty set; the treated mouse response cannot select exposure, yields, loss, zero handling, chronology or other indirect tuning choices. Iteration-1 treated follow-up and all iteration-2 follow-up are evaluation-only. The iteration-1 contrast contains calibrated controls and must be labelled calibration-assisted; iteration 2 supplies the distinct frozen retrospective transfer comparison. Published outcomes are already known. These are **Own (BacSandbox model)** analysis permissions, not randomized or blinded validation.<sup>[45](#ref-45), [52](#ref-52)</sup>
 
@@ -2714,7 +2714,261 @@ The main article reports 98% overall nucleotide identity between BgF5_2 and Bg00
 
 **Runtime provenance correction.** The feasibility audit identifies the distribution behind the imported pygame module rather than unconditionally querying legacy `pygame` metadata. It records module/distribution versions and co-installation or disagreement; missing metadata for the loaded provider still fails. Forty focused source/mapping/feasibility tests and the read-only CLI passed with pinned CPython 3.14.7, pygame-ce 2.5.8, NumPy 2.5.3 and openpyxl 3.1.5. These optional workbook suites are separate from ordinary hosted CI, and the checks do not validate biological predictions.<sup>[52](#ref-52)</sup>
 
-The preparation decisions do not freeze an executable model. Baseline zero semantics or defensible bounds, chronology alignment, resource/biomass scales, independent glucomannan/background constraints, finite parameter bounds, identifiability and implemented numerical/observation checks remain unresolved. The missing final fecal value need not be recovered to apply its existing endpoint-specific mask. No ecological simulation or parameter fit occurred. Spatial-refuge claims require the separate controlled evidence described elsewhere in this document.
+The v0.4 preparation did not freeze an executable model, run an ecological simulation or fit parameters. Its open execution requirements motivated the finite scenario contract and implementation in §10.7. Analyst-selected scaled scenarios make an exploratory calculation operational without recovering zero semantics, mouse exposure or empirical kinetic bounds. The missing final fecal value need not be recovered to apply its existing endpoint-specific mask. Run completion, numerical failures and control-fit adequacy must be established from the corresponding locked run artifacts, not inferred from the existence of the implementation. Spatial-refuge claims require the separate controlled evidence described elsewhere in this document.<sup>[52](#ref-52), [53](#ref-53)</sup>
+
+### 10.7 Zhou Continuous Reference and Exploratory Scenario Contract
+
+#### 10.7.1 Scope, evidence and interfaces
+
+`research/zhou_reference/` implements a deterministic, well-mixed research reference
+for ZHOU_BM001. It retains the 18 source strain labels and uses one target kinetic
+group plus one tied background group. It is separate from the production pg path,
+the reduced molar API and the spatial sweep harness. Its equations, scales,
+parameter values, zero alternatives, observation alternatives and numerical gates
+are **Own (BacSandbox model)** choices. They are not measured mouse physiology or
+a mechanistic model inferred from the strain genomes.<sup>[53](#ref-53)</sup>
+
+The published S1 culture evidence supports BgF5_2 glucomannan utilization, while
+the S9 measurements supply the selected baseline and fecal endpoint observations.
+S1 does not identify in-vivo uptake, yield, half-saturation or loss coefficients.
+The source normalization, chronology and baseline-zero ambiguities in §10.6 remain
+unresolved. This reference represents them through explicit alternatives and keeps
+the original source values unchanged.<sup>[45](#ref-45), [52](#ref-52), [53](#ref-53)</sup>
+
+| Module | Interface and responsibility |
+|---|---|
+| `model.py` | `ModelParameters`; `simulate(initial_biomass, target_index, times, parameters, supplemented, tighter=False)`; `check_convergence(standard, tighter)` |
+| `data.py` | Pinned source mapping, baseline initialization, exact control-calibration role checks and separate evaluation loader |
+| `runner.py` | Specification/code lock, control-only fitting, numerical and utility gates, executable freeze and retrospective evaluation |
+
+`SimulationResult` returns requested times, an abundance array with 18 columns,
+two resource columns, target base-10 log changes, the two group log factors,
+cumulative resource/biomass accounting and numerical diagnostics. The solver does
+not import Pygame, choose a diet by its display name, or read outcomes. The data
+layer supplies source identities and the runner maps the verified diet field to
+the intervention input.<sup>[53](#ref-53)</sup>
+
+#### 10.7.2 Scaled equations and unit boundary
+
+Time is measured in days. `X` is a dimensionless biomass-equivalent coordinate;
+`R` and `G` are distinct dimensionless resource-equivalent coordinates for common
+food and the intervention resource. Resource equivalents and biomass equivalents
+are not interchangeable: explicit yields convert uptake to growth. No conversion
+to food grams, luminal volume, molarity or cell dry mass is asserted. The following
+equations are the implemented **Own (BacSandbox model)** contract. Groups `g` are
+target/background and resources `k` are R/G.<sup>[53](#ref-53)</sup>
+
+```text
+q[g,k]     = qmax[g,k] * S[k] / (K[k] + S[k])
+dX[g]/dt   = (sum_k Y[g,k] * q[g,k] - loss) * X[g]
+dS[k]/dt   = input[k](t) - washout[k] * S[k] - sum_g q[g,k] * X[g]
+```
+
+`qmax` has resource-equivalent/(biomass-equivalent day) units, `K` has
+resource-equivalent units, `Y` has biomass-equivalent/resource-equivalent units,
+`input` has resource-equivalent/day units, and `loss`/`washout` have inverse-day
+units in these declared coordinates. Saturation constants must be positive;
+other model parameters must be finite and nonnegative. `initial_G` is common to
+both diet labels. Only the supplemented arm receives the additional `input_G`
+after `glucomannan_start_day`; common input and baseline state do not change
+merely because the diet label changes.<sup>[53](#ref-53)</sup>
+
+The implementation integrates two natural-log growth factors, two resources and
+cumulative accounts. Every positive background label shares exactly the same log
+factor, so its ratio to any other positive background label remains constant.
+Reconstructing all 18 labels preserves source identities without pretending to
+estimate 17 separate background responses. Labels initialized to zero remain
+zero in that particular scenario. Positive labels must remain representable;
+underflow is a numerical failure, not an imposed extinction event.<sup>[53](#ref-53)</sup>
+
+#### 10.7.3 Initialization, chronology and observation
+
+All 39 animals and their full baseline vectors remain in the analysis. For a
+nonzero reported baseline log value `y[i,j,0]`, initialization is:
+<sup>[53](#ref-53)</sup>
+
+```text
+X[i,j,0] = biomass_scale * 10**y[i,j,0] / abundance_scale
+```
+
+The v0.5 coordinate divisor `abundance_scale=1e10` and biomass-scale alternatives
+`0.1, 1, 10` are analyst choices. The divisor does not supply a measured gut
+biomass conversion, and animal totals are not independently normalized to one.
+The 49 source-zero slots use one of three declared counterfactuals before the
+global biomass multiplier: `absent=0`, `low=1e-4`, or `high=1e-2`. These are neither
+recovered abundances nor assay detection limits nor an empirical uncertainty
+interval. The absent case is a structural alternative; it is not a conclusion
+that a numeric source zero means organism absence. Original values and zero masks
+remain available through the source mapping.<sup>[52](#ref-52), [53](#ref-53)</sup>
+
+The two chronological alternatives preserve the preparation contract:
+`age_derived` uses days 11/29 in iteration 1 and 12/30 in iteration 2;
+`phase_labels` uses days 10/28 in both iterations. Day zero is the measured
+weaning baseline. Intervention onset at day zero versus day one is an additional
+Own scenario, not recovered feeding-clock precision. Neither chronology is
+selected by comparison with the treated results.<sup>[45](#ref-45), [53](#ref-53)</sup>
+
+The target observation is anchored to each animal's measured baseline. The
+constant-transfer case and two intervention-arm transfer alternatives implement:
+<sup>[53](#ref-53)</sup>
+
+```text
+yhat[i,t] = y[i,0] + log10(Xtarget[i,t] / Xtarget[i,0]) + log10(H[i,t])
+H[control,t] = 1
+log10(H[treated,t]) = log10(endpoint_factor) * min(t / ramp_days, 1)
+```
+
+The v0.5 transfer factors `0.5, 1, 2` and one-day ramp are explicit assumptions
+about mapping the represented state to fecal abundance. They are not measured
+fecal recovery factors. They preserve the baseline anchor and are applied to
+both the assigned-arm prediction and its mechanistic no-increment comparator;
+controls remain unchanged. They test observation dependence without changing the
+ODE or being fitted to evaluation data.<sup>[53](#ref-53)</sup>
+
+#### 10.7.4 Finite sensitivity design and calibration permissions
+
+The v0.5 scenario configuration crosses two chronologies, three zero alternatives
+and 16 parameter panels, giving 96 mechanistic scenarios. Three observation maps
+are applied afterward. Exact values are enumerated in
+`research/zhou_reference/protocol_v05.json`; the numerical-only v0.5.1 amendment
+preserves these scientific values in `protocol_v051.json`. Panels include the center, low/high biomass scale,
+intervention input, target/background response scale, common-resource response
+and saturation; absent/stronger background intervention uptake; one-day onset;
+and two joint high-exposure/background-use cases. Every coefficient and panel is
+an analyst-selected exploration of the scaled model. The center is a reporting
+reference, not an estimated true mouse condition. The finite panel set is not a
+probability distribution, confidence region, exhaustive joint sensitivity or
+proof of global robustness.<sup>[53](#ref-53)</sup>
+
+Only the exact 20 iteration-1 unsupplemented target follow-ups from ten animals
+may enter fitting. Source metadata and compound animal identities determine
+eligibility, rather than trusting a caller-supplied role label. The other 57
+finite follow-ups are returned separately for evaluation. All baselines can
+initialize states. The missing treated iteration-2 final endpoint is excluded
+only at that endpoint; no cecal substitution or whole-animal exclusion occurs.
+Role separation is a software contract, not a claim that the published outcomes
+were unknown to the analyst.<sup>[45](#ref-45), [52](#ref-52), [53](#ref-53)</sup>
+
+The implemented v0.5 calibration fits only shared effective `loss` in `[0, 2]`
+per day; the three starts are `0.2, 1.0, 1.8`. This bound is an Own exploration
+range, not an estimated gut turnover interval. Target uptake, resource scales,
+yields and observation transfer remain scenario settings. The objective gives
+equal weight to animals and then to their available follow-ups:
+<sup>[53](#ref-53)</sup>
+
+```text
+L = mean_i(mean_t((yhat[i,t] - y[i,t])**2))
+solver_residual[i,t] = (yhat[i,t] - y[i,t]) / sqrt(Nanimals * Nfollowups[i])
+```
+
+The runner reports full MSE separately from SciPy's half-sum-of-squares cost.
+It optimizes a linearly normalized loss coordinate with bounded trust-region
+least squares, linear loss, a three-point numerical Jacobian, exact trust-region
+solver, unit coordinate scale, `ftol=xtol=gtol=1e-8` and `max_nfev=2000` per start.
+Actual residual calls are also recorded. Failed starts and bound hits remain in
+the report. All three starts must succeed, the control objective must improve on
+baseline persistence beyond twice the numerical ambiguity margin, and local
+finite-difference rank must remain stable at steps `1e-4` and `5e-5`. The relative
+singular-value threshold `1e-6` and equivalent-objective floor `1e-12` are Own
+numerical bookkeeping. Rank and successful optimization do not establish global
+or biological identifiability. Numerically equivalent retained fits are carried
+forward without choosing by evaluation agreement.<sup>[53](#ref-53)</sup>
+
+#### 10.7.5 Numerical acceptance and unit-specific accounting
+
+The standard integration uses `DOP853`, `rtol=1e-8`, `atol=1e-10` and maximum
+step one day. The tighter repeat uses `1e-10`, `1e-12` and half a day. A delayed
+intervention onset is an exact segment boundary. Accepted adaptive states and
+requested dense-output states must be finite; resources and cumulative accounts
+must be nonnegative; every initially positive label must remain representable.
+The implementation raises a retained numerical failure rather than clipping a
+trajectory or silently changing solver.<sup>[53](#ref-53)</sup>
+
+The original v0.5 run retained a control-start failure caused by a finite internal
+DOP853 trial crossing a Monod denominator's domain; that run did not enable
+evaluation. The v0.5.1 numerical amendment permits only that internal trial-domain
+failure to restart the same segment from its unchanged initial state. Standard
+maximum-step attempts are `1, 0.5, 0.25` days; tighter attempts are `0.5, 0.25,
+0.125` days. Every failed attempt records its step cap, trial time, resource state,
+denominator and RHS-call count. A successful retry records its actual step cap.
+Nonfinite states, failed accepted/requested-state checks, accounting failures and
+exhausted retries remain failures. There is no clipping, solver substitution or
+change to equations, control starts, scenarios or acceptance thresholds. Control
+fit reports retain retry events with the animal, loss and tolerance context; full
+prediction records retain all integration attempts. This amendment was motivated
+only by the control-stage numerical failure, with evaluation still disabled.
+<sup>[53](#ref-53)</sup>
+
+The resource and biomass accounts are checked in their own units:
+<sup>[53](#ref-53)</sup>
+
+```text
+resource_residual = S - S0 - cumulative_input + cumulative_outflow + cumulative_uptake
+biomass_residual  = X - X0 - cumulative_growth + cumulative_loss
+```
+
+Each resource residual is divided by `max(1, S0+cumulative_input)` and each
+group-biomass residual by `max(1, X0+cumulative_growth)`; the maximum absolute
+scaled residual must not exceed `1e-7`. This checks the represented resource and
+biomass balances with explicit yield conversion; it does not assert molecular
+or elemental conservation. Standard/tighter target log predictions and endpoint
+contrasts must differ by at most `1e-6` log10 unit. These are numerical acceptance
+criteria, not a biological match tolerance.<sup>[53](#ref-53)</sup>
+
+#### 10.7.6 Locked workflow, outputs and interpretation
+
+The runner exposes `lock`, `calibrate` and `evaluate` subcommands. A specification
+must be explicitly marked frozen, paired with passing engineering evidence and
+locked with its exact configuration, source-code hashes and runtime before
+calibration. The calibration stage records input identities and all scenario
+gates. Evaluation requires the resulting executable freeze and unchanged locks;
+a failed control or numerical gate leaves evaluation disabled. Output locations
+must be new. Frozen artifacts describe the actual code/configuration/runtime
+used; adding this documentation alone does not establish a completed run.
+<sup>[53](#ref-53)</sup>
+
+Calibration accepts `--workers` from 1 through 8, defaulting to 1. An ordered
+process pool can execute the independent control fits and outcome-free prediction
+sets; it preserves the scenario order, parameters and numerical rules. The worker
+count is execution provenance, not a model parameter. Control-fit reuse across
+G-only panels requires exactly identical control-relevant inputs, not similar
+fitted predictions.<sup>[53](#ref-53)</sup>
+
+```bash
+python -m research.zhou_reference.runner --help
+python -m research.zhou_reference.runner lock --help
+python -m research.zhou_reference.runner calibrate --help
+python -m research.zhou_reference.runner evaluate --help
+```
+
+`source_input_lock.json` records source and derived-role identities before fitting.
+`calibration.json` retains objectives, optimizer diagnostics, equivalent-fit
+members, failures and gate decisions. After all control gates pass, the runner
+computes and numerically verifies all animals' trajectories without using their
+evaluation follow-ups, saving `frozen_predictions.json`. Only a passing complete
+prediction set produces `executable_freeze.json`. Evaluation verifies these
+identities and consumes the frozen predictions, writing `individual_predictions.csv`,
+`endpoint_contrasts.csv`, `sensitivity_summary.json` and `evaluation.json`, including scenario identity,
+numerical diagnostics and retained failures. The endpoint comparisons use
+identical source masks for the model, baseline persistence, mechanistic
+no-glucomannan-increment and forced zero between-diet contrast. Iteration-1
+contrasts are labelled calibration-assisted; iteration-2 contrasts are labelled
+retrospective transfer.<sup>[53](#ref-53)</sup>
+
+The sensitivity summary reports finite conditional ranges, evaluation-only
+individual errors, matched changes from the corresponding central panel and the
+two prespecified input-by-background-use interaction contrasts. It retains
+numerically equivalent fit members. These sparse designed comparisons are not
+global sensitivity indices or sampling confidence intervals.<sup>[53](#ref-53)</sup>
+
+Report signed/absolute log-contrast errors, fold ratios, within-animal changes,
+scenario dependence and failures. Do not promote the scenario with the smallest
+evaluation error to a new primary model. Directional stability across these
+finite alternatives is descriptive, and no biological pass/fail cutoff is
+defined. A successful software gate establishes readiness for this retrospective
+comparison; it does not validate the production spatial model, identify mouse
+kinetics, resolve source ambiguities or demonstrate therapeutic efficacy.
+<sup>[53](#ref-53)</sup>
 
 ## Appendix A: Scientific References
 
@@ -2826,4 +3080,6 @@ resolve; works without a registered DOI are marked *(no DOI)*.
 
 <a id="ref-51"></a>**[51]** **Own (BacSandbox model).** Read-only species-parameter audit, §5.1: loader schema and compatibility-default/alias inventory, constructor normalization diagnostics, explicit-value gate, fixed-temperature evaluation, and non-overwriting JSON output. Configuration origin does not establish empirical provenance or biological validity.
 
-<a id="ref-52"></a>**[52]** **Own (BacSandbox model).** Read-only empirical-table readiness tooling, §10.6: explicit CSV structural contracts; source checksum verification; section-bounded metadata anchors; compound observation keys; literal error/missing/zero preservation; available-value descriptive summaries; printed-precision reconstruction diagnostics; the ZHOU_BM001 strain/baseline/time crosswalk, inverse-log bookkeeping, and endpoint-specific availability masks; configuration/lifecycle probes, complete-baseline expected-quota diagnostics, literal-time tick arithmetic, runtime-provider provenance, and the local uptake scale counterexample; and the unimplemented continuous-reference architecture, control-only calibration permissions and error-reporting-only preparation decisions. These engineering transformations and analysis choices are not calibrated biological equations or biological-validation criteria.
+<a id="ref-52"></a>**[52]** **Own (BacSandbox model).** Read-only empirical-table readiness tooling, §10.6: explicit CSV structural contracts; source checksum verification; section-bounded metadata anchors; compound observation keys; literal error/missing/zero preservation; available-value descriptive summaries; printed-precision reconstruction diagnostics; the ZHOU_BM001 strain/baseline/time crosswalk, inverse-log bookkeeping, and endpoint-specific availability masks; configuration/lifecycle probes, complete-baseline expected-quota diagnostics, literal-time tick arithmetic, runtime-provider provenance, and the local uptake scale counterexample; and the continuous-reference architecture as proposed at v0.4 preparation, control-only calibration permissions and error-reporting-only preparation decisions. These engineering transformations and analysis choices are not calibrated biological equations or biological-validation criteria.
+
+<a id="ref-53"></a>**[53]** **Own (BacSandbox model).** ZHOU_BM001 scaled continuous reference and v0.5 exploratory scenario contract, §10.7; implemented in `research/zhou_reference/`. Two kinetic groups preserve 18 source labels through shared log factors, with explicit saturation uptake, yield conversion, resources, loss, intervention timing, source-role enforcement, counterfactual zero initialization, baseline-anchored observation alternatives, control-only single-parameter calibration, finite scenario panels, unit-specific numerical accounting, convergence/utility gates and locked retrospective reporting. All numerical scales, coefficients, ranges, transfer factors, optimizer settings and acceptance tolerances are analyst/model choices; published qualitative capability and source observations retain [45]. Neither the equations nor their successful software verification establish measured mouse parameters, biological validation or mentor approval.

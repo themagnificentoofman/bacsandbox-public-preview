@@ -29,7 +29,7 @@ Originals and generated outputs are ignored by Git. Publisher papers, original X
 - `prepare_observations.py` rebuilds those inputs, then writes typed observations and descriptive diagnostics under `results/prepared/`. Observation keys preserve experimental context. S9A uses its provided log cells and retains the alternative linear values. It does not select an endpoint or success rule.
 - `extract_s2_s13.py` writes genome annotations, target-identity records, identifier-collision diagnostics and diet chemistry under `results/s2_s13/`. It does not merge ambiguous genome entries, infer rates, convert food concentrations to dose, or join replicate labels across assays.
 - `reproduce.py` inventories shipped configuration values in `results/parameter_ledger.csv`, retaining unknown empirical provenance.
-- `run_final_checks.py` runs the generic parser, parameter/sweep and source-readiness suites together, followed by ordinary repository discovery, dependency checks and whitespace checks. It records counts and every skip reason under `results/`. Supply the pinned originals before running it. Standard project discovery covers the generic parser; source-specific tests are explicitly selected by this runner.
+- `run_final_checks.py` runs the generic parser, parameter/sweep and source-readiness suites, including `test_benchmark_mapping` and `test_feasibility`, together, followed by ordinary repository discovery, dependency checks and whitespace checks. It records the selected module list, counts and every skip reason under `results/`. Supply the pinned originals before running it. Standard project discovery covers the generic parser; source-specific tests are explicitly selected by this runner.
 
 Extraction and preparation rebuild derived files. Original source bytes are read-only. The source-specific suites require openpyxl and verified originals; they are not silently replaced with synthetic measurements when originals are absent. Synthetic cases in parser/transfer tests exercise error handling only.
 
@@ -73,6 +73,16 @@ logged zeros remain unconverted; the missing fecal endpoint remains unavailable.
 Every animal retains `simulation_ready=false`. No simulator or parameter fitting
 is invoked. Scientific scope and inclusion rules are documented in §10.6.
 
+`mapping_audit.json` schema 2 scopes `simulation_ready=false` to the source-mapping
+artifact: it does not assess a separately implemented executable or current project
+completion. The former `remaining_requirements` field is replaced by
+`external_execution_requirements`, which names contracts to verify outside this
+mapping, plus `inference_limitations` and `abm_followup_only`. Agent rounding and
+ecological seed sweeps are not continuous-reference prerequisites. Unknown grouping
+limits inference rather than descriptive reporting, which has no biological
+pass/fail threshold. Consumers of schema 1 must migrate these status fields; source
+observations, units, identities and endpoint masks are unchanged.
+
 ## Minimal model feasibility
 
 ```sh
@@ -108,8 +118,9 @@ the optional workbook suites.
 
 ZHOU_BM001 preparation now selects a deterministic, continuous 18-label,
 well-mixed reference and error-reporting-only evaluation. This reference is not
-implemented by the audit. Only iteration-1 unsupplemented control follow-ups may
-fit baseline target behavior; glucomannan parameters require independent evidence
+implemented or assessed by these source-preparation tools. Only iteration-1
+unsupplemented control follow-ups may fit baseline target behavior; glucomannan
+parameters require independent evidence
 or predeclared uncertainty sets. Treated iteration-1 and all iteration-2 follow-up
 values are evaluation-only, including for indirect choices of exposure, loss,
 yield, zero handling or scenario selection. The iteration-1 between-diet contrast
@@ -118,8 +129,9 @@ has a calibrated control component and is not wholly independent validation.
 The primary continuous reference has no agent founder rounding or ecological seed
 sweep. Keep both source-derived timing scenarios and the exact 39/38 endpoint
 masks. Report separate endpoint/iteration errors and comparator differences without
-a biological pass/fail threshold. Resource/biomass scales, independent response
-constraints, zero handling, finite parameter bounds, and executable numerical
-checks remain prerequisites to freezing the quantitative protocol. Unknown cage
+a biological pass/fail threshold. The executable protocol must separately specify
+resource/biomass scales, independent response constraints or predeclared uncertainty
+sets, zero handling, finite parameter bounds, and executable numerical checks.
+These source-preparation outputs do not certify that freeze. Unknown cage
 grouping limits inference but need not block a descriptive comparison. No fitting,
 model prediction, mentor approval or empirical validation is implied by these tools.
