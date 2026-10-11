@@ -128,7 +128,7 @@ class ReferenceModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelNumericalError, "underflow"):
             simulate(self.initial, 0, [0, 30], p, False)
 
-    def test_reproduced_control_stage_overshoot_restarts_and_converges(self):
+    def test_historical_control_stage_fixture_converges_with_valid_attempts(self):
         # Published baseline fixture; the failure was found in control-only
         # calibration. No observed follow-up abundance enters this regression.
         initial = [23.224617781999974, 0.40414732296326944, 1.579523102444941,
@@ -141,13 +141,47 @@ class ReferenceModelTests(unittest.TestCase):
         standard = simulate(initial, 0, [10, 28], p, False)
         tight = simulate(initial, 0, [10, 28], p, False, tighter=True)
         self.assertTrue(check_convergence(standard, tight)["passed"])
-        attempts = standard.diagnostics["integration_attempts"]
+        # Adaptive trial steps can differ across supported numerical runtimes.
+        # Require convergence and valid diagnostics, not a particular overshoot.
+        for result, limits in [(standard, [1.0, 0.5, 0.25]),
+                               (tight, [0.5, 0.25, 0.125])]:
+            with self.subTest(limits=limits):
+                attempts = result.diagnostics["integration_attempts"]
+                self.assertGreaterEqual(len(attempts), 1)
+                self.assertLessEqual(len(attempts), len(limits))
+                self.assertEqual([a["max_step_days"] for a in attempts],
+                                 limits[:len(attempts)])
+                self.assertEqual([a["success"] for a in attempts],
+                                 [False] * (len(attempts) - 1) + [True])
+                for failed in attempts[:-1]:
+                    self.assertEqual(failed["failure_type"], "StageDomainError")
+                    self.assertLessEqual(min(failed["stage"]["denominators"]), 0)
+                self.assertEqual(result.diagnostics["nfev"],
+                                 sum(a["rhs_calls"] for a in attempts))
+
+    def test_injected_stage_failure_recovers_on_identical_segment(self):
+        actual_solver = model.solve_ivp
+        calls = []
+
+        def fail_first(fun, interval, initial, **kwargs):
+            calls.append((interval, initial.copy()))
+            if len(calls) == 1:
+                bad = initial.copy()
+                bad[2] = -2
+                fun(interval[0], bad)
+            return actual_solver(fun, interval, initial, **kwargs)
+
+        with patch.object(model, "solve_ivp", side_effect=fail_first):
+            result = simulate(self.initial, 0, [0, 1], self.p, False)
+        attempts = result.diagnostics["integration_attempts"]
         self.assertEqual([a["max_step_days"] for a in attempts], [1.0, 0.5])
         self.assertEqual([a["success"] for a in attempts], [False, True])
         self.assertEqual(attempts[0]["failure_type"], "StageDomainError")
-        self.assertLess(attempts[0]["stage"]["denominators"][0], 0)
-        self.assertEqual(standard.diagnostics["nfev"], sum(a["rhs_calls"] for a in attempts))
-        self.assertGreater(standard.diagnostics["nfev"], attempts[1]["rhs_calls"])
+        self.assertEqual(calls[0][0], calls[1][0])
+        np.testing.assert_array_equal(calls[0][1], calls[1][1])
+        self.assertEqual(result.diagnostics["nfev"], sum(a["rhs_calls"] for a in attempts))
+        tight = simulate(self.initial, 0, [0, 1], self.p, False, tighter=True)
+        self.assertTrue(check_convergence(result, tight)["passed"])
 
     def test_stage_retries_are_bounded_and_restart_identical_segment_state(self):
         bad_stage = np.zeros(14)
