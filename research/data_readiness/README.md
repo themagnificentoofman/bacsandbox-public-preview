@@ -49,6 +49,77 @@ python audit_benchmark_table.py table.csv --contract contract.json --metadata sa
 
 Required contract fields are `required_columns`, `key_columns`, `value_columns`, `missing_tokens`, `units`, `time_mapping` and `source_locator`. Include `join_columns` when supplying metadata. Existing audit outputs are refused. Exit 0 means structural checks passed; exit 2 reports structural/contract failure. Neither status establishes scientific readiness. S9B's stored Excel errors intentionally produce a failed structural audit while the source-preservation tests pass.
 
+## Selected benchmark mapping
+
+To generate the source-preserving ZHOU_BM001 mapping in a new directory:
+
+```sh
+python -m research.data_readiness.map_benchmark --output research/data_readiness/results/zhou_bm001_mapping
+python -m unittest research.data_readiness.test_benchmark_mapping research.data_readiness.test_zhou_tables research.data_readiness.test_prepared_observations -v
+```
+
+This optional step requires the pinned S7/S8/S9 originals and `species_data.csv`.
+The combined test command also requires the SI/S1 originals. Run from the repository root.
+An existing output directory is refused. CSV and JSON outputs retain source cells,
+metadata anchors, hashes, units, and distinct measurement states. `checksums.json`
+covers the generated mapping files. A failed filesystem write may leave an
+incomplete directory; verify its checksums and rerun to a new destination.
+
+The exports contain the strain crosswalk, per-animal baseline observations,
+selected target observations, endpoint eligibility, animal readiness, and a
+categorical time crosswalk. A model label candidate is not a calibrated strain
+profile. Inverse-log values are arithmetic quantities, not agent counts. Unresolved
+logged zeros remain unconverted; the missing fecal endpoint remains unavailable.
+Every animal retains `simulation_ready=false`. No simulator or parameter fitting
+is invoked. Scientific scope and inclusion rules are documented in §10.6.
+
+## Minimal model feasibility
+
+```sh
+python -m research.data_readiness.audit_feasibility --output research/data_readiness/results/zhou_bm001_feasibility
+python -m unittest research.data_readiness.test_feasibility -v
+```
+
+This optional audit uses the project's runtime dependencies plus the pinned
+S7/S8/S9 originals. It invokes actual configuration interfaces and a lifecycle
+policy in isolation; it never advances the ecological simulator or fits parameters.
+It writes diet-interface probes, configured-profile provenance, complete-baseline
+agent-resolution diagnostics, literal-day tick arithmetic, and input hashes to a
+new directory using the mapping writer's non-overwrite/checksum contract.
+
+Ambiguous baseline vectors are excluded only from the resolution diagnostic;
+they remain in the benchmark cohort. Expected agent quotas are not founder counts.
+The example budgets are diagnostic values, not selected simulation settings.
+Time arithmetic is neither a selected biological clock nor a wall-time estimate.
+The emitted `benchmark_execution_ready` flag remains false. Scientific interpretation,
+minimal-model proposals and implementation boundaries are in §10.6.
+
+The audit resolves distribution metadata from the imported pygame implementation:
+`pygame-ce` for the supported environment, or `pygame` for a legacy installation.
+It records module and distribution versions and discloses co-installation or
+version disagreement instead of attributing a run to the other provider. Missing
+metadata for the actual imported provider remains an error. The combined optional
+source/mapping/feasibility suite (40 tests) and the read-only audit command were
+verified with CPython 3.14.7, pygame-ce 2.5.8, NumPy 2.5.3 and openpyxl 3.1.5.
+This is source and engineering verification; ordinary hosted CI does not execute
+the optional workbook suites.
+
 ## Decisions before evaluation
 
-Select the intended claim and one endpoint/comparison; agree on biological representation and observation mappings; then choose descriptive-only or scored evaluation. A scored design requires justified baselines, calibration/evaluation grouping, metric and meaningful-error rules before fitting. Sequence identity, OD normalization, dose, sample grouping and detection conventions are source questions only to the extent the selected scope uses them. Recommendations remain proposals; no mentor approval or empirical validation is implied by these tools.
+ZHOU_BM001 preparation now selects a deterministic, continuous 18-label,
+well-mixed reference and error-reporting-only evaluation. This reference is not
+implemented by the audit. Only iteration-1 unsupplemented control follow-ups may
+fit baseline target behavior; glucomannan parameters require independent evidence
+or predeclared uncertainty sets. Treated iteration-1 and all iteration-2 follow-up
+values are evaluation-only, including for indirect choices of exposure, loss,
+yield, zero handling or scenario selection. The iteration-1 between-diet contrast
+has a calibrated control component and is not wholly independent validation.
+
+The primary continuous reference has no agent founder rounding or ecological seed
+sweep. Keep both source-derived timing scenarios and the exact 39/38 endpoint
+masks. Report separate endpoint/iteration errors and comparator differences without
+a biological pass/fail threshold. Resource/biomass scales, independent response
+constraints, zero handling, finite parameter bounds, and executable numerical
+checks remain prerequisites to freezing the quantitative protocol. Unknown cage
+grouping limits inference but need not block a descriptive comparison. No fitting,
+model prediction, mentor approval or empirical validation is implied by these tools.
