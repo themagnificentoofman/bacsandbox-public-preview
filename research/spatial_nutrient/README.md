@@ -2,6 +2,12 @@
 
 This source-only research workflow implements the proposed nutrient-only legacy-pg comparison. Read [the governing scientific contract](../../DOCUMENTATION.md#108-spatial-nutrient-integrity-experiment) and [protocol_v02.json](protocol_v02.json). The code does not imply that qualification passed or that main outcomes exist. See `EXECUTION_REPORT.md` for retained status.
 
+## Current plan: v0.3, October 22, 2026
+
+PR #8 is squash-merged at `c98e8d283506e7ba33a6f22af9eb5438cc4a1058`. The completed v0.2 pilot had zero births in all 40 arms and remains inconclusive; no numerical qualification or main freeze exists. The prospective [v0.3 protocol](PROTOCOL_V03.md) and [machine-readable plan](study_plan_v03.json) prescribe uniform-baseline feasibility selection, fresh pilot seeds and a U-only reproduction gate. [Companion diagnostics](feasibility_v03/README.md) use supported v0.2-schema settings. The plan itself is not an executable runner protocol; its new qualification gates still require implementation. Nothing in this revision executes a new experiment.
+
+The commands below document the historical v0.2 workflow, not v0.3 authorization to freeze or run main.
+
 ## Setup and stages
 
 From the repository root, using the standard Python 3.14.7 environment:
