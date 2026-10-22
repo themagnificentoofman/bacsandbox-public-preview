@@ -3,3 +3,5 @@ include DOCUMENTATION.md
 include requirements.txt
 recursive-include bacteria/models *.json
 recursive-include bacteria/src *.cpp *.h
+
+recursive-include research/spatial_nutrient *.py *.json *.md *.txt

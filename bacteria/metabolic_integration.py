@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import logging
 import math
@@ -18,6 +18,15 @@ from .metabolism import MetabolicOrchestrator, SUBSTRATE_ORDER
 
 GridCoordinate = Tuple[int, int]
 BIOMASS_CONSERVATION_ATOL_GDW = 1.0e-18
+FBA_LIFECYCLE_STAT_FIELDS = (
+    "fba_gross_growth_gdw", "fba_maintenance_loss_gdw", "fba_net_biomass_delta_gdw",
+    "fba_starvation_deaths", "fba_capacity_deaths",
+    "fba_starvation_removed_gdw", "fba_capacity_removed_gdw",
+    "fba_biomass_balance_error_gdw",
+)
+FBA_LIFECYCLE_EVENT_FIELDS = (
+    "event", "tick", "time_s", "species_index", "species", "x", "y", "biomass_gdw",
+)
 
 
 class FbaConservationError(RuntimeError):
@@ -99,6 +108,12 @@ class FbaAgentState:
     biomass_delta_gdw: float = 0.0
     substrate_consumed_mol: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     acetate_secreted_mol: float = 0.0
+    # Per-tick gDW sink, separate from gross LP growth and substrate moles.
+    maintenance_loss_gdw: float = 0.0
+
+    @property
+    def net_biomass_delta_gdw(self) -> float:
+        return self.biomass_delta_gdw - self.maintenance_loss_gdw
 
 
 @dataclass(frozen=True)
@@ -187,8 +202,73 @@ class GrowthOnlyFbaLifecyclePolicy:
                 value * 0.5 for value in state.substrate_consumed_mol
             ),
             acetate_secreted_mol=state.acetate_secreted_mol * 0.5,
+            maintenance_loss_gdw=state.maintenance_loss_gdw * 0.5,
         )
         return partitioned, partitioned
+
+
+@dataclass(frozen=True, kw_only=True)
+class BiomassMaintenanceFbaLifecyclePolicy(GrowthOnlyFbaLifecyclePolicy):
+    """Opt-in Own-model biomass turnover and threshold-starvation policy.
+
+    The LP remains a gross-growth model. After each successful LP step, biomass
+    is multiplied by exp(-maintenance_rate_s * dt); the lost gDW is a declared
+    sink, not a substrate conversion or ATP-maintenance reaction. Starvation is
+    observed at the first completed tick at/below the supplied viable fraction.
+    See DOCUMENTATION.md, "Live FBA biomass-maintenance lifecycle".
+
+    All three scientific parameters must be supplied explicitly. They are
+    synthetic assumptions requiring sensitivity analysis, not fitted constants.
+    """
+
+    maintenance_rate_s: float
+    starvation_biomass_fraction: float
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name, value in (
+            ("maintenance_rate_s", self.maintenance_rate_s),
+            ("starvation_biomass_fraction", self.starvation_biomass_fraction),
+        ):
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise TypeError(f"{name} must be explicitly supplied as a real number")
+            if not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.starvation_biomass_fraction >= 1.0:
+            raise ValueError("starvation_biomass_fraction must be less than one")
+        if not math.isfinite(self.division_biomass_gdw) or self.starvation_biomass_gdw == 0.0:
+            raise ValueError("lifecycle biomass thresholds must be finite and positive")
+
+    @property
+    def starvation_biomass_gdw(self) -> float:
+        return float(self.initial_biomass_gdw * self.starvation_biomass_fraction)
+
+    def advance_metabolic_state(
+        self, state: FbaAgentState, *, dt_seconds: float
+    ) -> FbaAgentState:
+        if isinstance(dt_seconds, bool) or not isinstance(dt_seconds, Real):
+            raise TypeError("dt_seconds must be a real number")
+        if not math.isfinite(float(dt_seconds)) or dt_seconds < 0.0:
+            raise ValueError("dt_seconds must be finite and nonnegative")
+        FbaAgentStateStore._validate_state(state)
+        # expm1 avoids cancellation when the explicit loss per step is small.
+        lost = state.biomass_gdw * -math.expm1(-self.maintenance_rate_s * dt_seconds)
+        retained = state.biomass_gdw * math.exp(-self.maintenance_rate_s * dt_seconds)
+        return replace(state, biomass_gdw=retained,
+                       maintenance_loss_gdw=lost)
+
+    def evaluate(
+        self, bacterium: Any, state: FbaAgentState, *, dt_seconds: float,
+        environmental_fitness: float, carrying_capacity_factor: float,
+    ) -> FbaPhysiology:
+        physiology = super().evaluate(
+            bacterium, state, dt_seconds=dt_seconds,
+            environmental_fitness=environmental_fitness,
+            carrying_capacity_factor=carrying_capacity_factor,
+        )
+        starved = state.biomass_gdw <= self.starvation_biomass_gdw
+        return replace(physiology, starved=starved,
+                       division_probability=0.0 if starved else physiology.division_probability)
 
 
 class FbaAgentStateStore:
@@ -269,6 +349,36 @@ class FbaAgentStateStore:
             candidate[agent] = self._validate_state(state)
         self._states = candidate
 
+    def advance_lifecycle(
+        self, agents: Sequence[Any], policy: FbaLifecyclePolicy, *, dt_seconds: float
+    ) -> None:
+        """Apply an optional biomass sink atomically after gross LP validation.
+
+        Policies without this hook keep their existing growth-only contract.
+        A hook cannot silently alter gross growth, uptake, or acetate reports.
+        """
+        advance = getattr(policy, "advance_metabolic_state", None)
+        if advance is None:
+            return
+        if not callable(advance):
+            raise TypeError("advance_metabolic_state must be callable")
+        candidate = dict(self._states)
+        for agent in agents:
+            gross = self.state_for(agent)
+            state = self._validate_state(advance(gross, dt_seconds=dt_seconds))
+            for field in ("growth_rate_s", "biomass_delta_gdw",
+                          "substrate_consumed_mol", "acetate_secreted_mol"):
+                if getattr(state, field) != getattr(gross, field):
+                    raise FbaConservationError(f"lifecycle changed gross LP field {field}")
+            error = abs(state.biomass_gdw + state.maintenance_loss_gdw - gross.biomass_gdw)
+            # A fixed gDW tolerance alone can hide complete loss of a small cell.
+            tolerance = min(BIOMASS_CONSERVATION_ATOL_GDW,
+                            8 * math.ulp(gross.biomass_gdw))
+            if error > tolerance:
+                raise FbaConservationError("lifecycle biomass sink does not reconcile")
+            candidate[agent] = state
+        self._states = candidate
+
     @staticmethod
     def _validate_state(state: FbaAgentState) -> FbaAgentState:
         if not isinstance(state, FbaAgentState):
@@ -279,6 +389,7 @@ class FbaAgentStateStore:
             state.biomass_delta_gdw,
             *state.substrate_consumed_mol,
             state.acetate_secreted_mol,
+            state.maintenance_loss_gdw,
         )
         if len(state.substrate_consumed_mol) != len(SUBSTRATE_ORDER):
             raise ValueError("substrate_consumed_mol must contain three values")
@@ -289,6 +400,7 @@ class FbaAgentStateStore:
             state.biomass_delta_gdw,
             *state.substrate_consumed_mol,
             state.acetate_secreted_mol,
+            state.maintenance_loss_gdw,
         )
         if any(float(value) < 0.0 for value in nonnegative):
             raise ValueError("FBA amount and biomass state must be nonnegative")
@@ -348,6 +460,8 @@ class FbaTickResult:
     biomass_delta_gdw: float
     acetate_secreted_mol: float
     max_conservation_error_mol: float
+    maintenance_loss_gdw: float = 0.0
+    net_biomass_delta_gdw: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -583,6 +697,10 @@ class FbaIntegrationAdapter:
             phase = "commit"
             ecm.replace_substrate_batch_m(batch.coordinates, batch.concentrations_m)
             self.state_store.commit_batch(batch)
+            phase = "lifecycle"
+            self.state_store.advance_lifecycle(
+                batch.agents, self.lifecycle_policy, dt_seconds=dt_seconds,
+            )
             result = self._result(
                 FbaTickDisposition.COMMITTED,
                 int(tick_index),
@@ -692,6 +810,11 @@ class FbaIntegrationAdapter:
             float(value)
             for value in np.sum(batch.substrate_consumed_mol, axis=0)
         )
+        maintenance_loss = math.fsum(
+            self.state_store.state_for(agent).maintenance_loss_gdw
+            for agent in batch.agents
+        )
+        gross_growth = float(np.sum(batch.biomass_delta_gdw))
         return FbaTickResult(
             disposition=disposition,
             tick_index=tick_index,
@@ -701,9 +824,11 @@ class FbaIntegrationAdapter:
             environment_count=len(batch.coordinates),
             kernel_summary=summary,
             substrate_consumed_mol=consumed,
-            biomass_delta_gdw=float(np.sum(batch.biomass_delta_gdw)),
+            biomass_delta_gdw=gross_growth,
             acetate_secreted_mol=float(np.sum(batch.acetate_secreted_mol)),
             max_conservation_error_mol=max_error,
+            maintenance_loss_gdw=maintenance_loss,
+            net_biomass_delta_gdw=gross_growth - maintenance_loss,
         )
 
     def _emit(self, event: FbaTransactionEvent) -> None:

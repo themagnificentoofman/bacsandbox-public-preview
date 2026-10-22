@@ -205,29 +205,22 @@ class TestBacteriumMath(unittest.TestCase):
         self.assertGreater(abs(b.heading), 0.5)
 
     def test_binary_fission_survival(self):
-        """
-        Verify that cells do not immediately die of starvation after binary fission ATP cost.
-        """
-        dt = TEST_DT_SEC
         sp = MockSpecies(rep_thresh=0.8, metabolic_rate=0.1)
-        b = Bacterium(sp, 0, 0, size=1.0)
-        
-        b.base_size = 1.0
-        # Give enough food to trigger fission but not much more
-        child_volume = 1.0 ** 3
-        atp_cost = FISSION_COST_PG_PER_UM3 * child_volume
-        b.food_capacity = 100.0
-        b.food_level = atp_cost + 0.5  # Just enough to trigger and have 0.5 leftover
-        
-        # Test attempt_fission
-        child = b.attempt_fission(1.0, 1.0, 0.8, dt)
-        
-        # If it had barely enough food, it should return None if survival is compromised,
-        # or it returns child and both must survive at least 1 tick
-        if child is not None:
-            min_survival = b.metabolic_rate * TEST_DT_SEC
-            self.assertGreater(b.food_level, min_survival)
-            self.assertGreater(child.food_level, min_survival)
+        sp.food_capacity = 100.0
+        sp.daughter_size_policy = 'fixed'
+        b = Bacterium(sp, 0, 0, size=1.0, initial_food=90.0)
+        child = b.attempt_fission(1.0, 1.0, 0.8, TEST_DT_SEC)
+        self.assertIsNotNone(child, 'Feasible fixture must actually divide')
+        self.assertAlmostEqual(b.food_level + child.food_level, 50.0)
+        self.assertGreater(b.food_level, b.metabolic_rate * TEST_DT_SEC)
+        self.assertGreater(child.food_level, child.metabolic_rate * TEST_DT_SEC)
+
+    def test_binary_fission_insufficient_reserve_is_unchanged(self):
+        sp = MockSpecies(rep_thresh=0.8, metabolic_rate=0.1)
+        sp.food_capacity = 100.0
+        b = Bacterium(sp, 0, 0, size=1.0, initial_food=40.5)
+        self.assertIsNone(b.attempt_fission(1.0, 1.0, 0.8, TEST_DT_SEC))
+        self.assertEqual(b.food_level, 40.5)
 
     def test_ecm_memory_bounds(self):
         """

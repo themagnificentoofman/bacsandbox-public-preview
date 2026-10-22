@@ -1,0 +1,4 @@
+# Install after the repository's requirements.txt. Python reference backend.
+scipy>=1.16,<2
+# Engineering qualification only; not required for normal simulation runtime.
+pytest>=8,<10

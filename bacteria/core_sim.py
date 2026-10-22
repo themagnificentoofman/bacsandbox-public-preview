@@ -11,8 +11,13 @@ if __package__ is None and not hasattr(sys, 'frozen'):
 
 from .constants import *
 from .ecm import ECM
-from .metabolic_integration import DietBolus, FbaPhysiology
+from .metabolic_integration import (
+    DietBolus, FbaPhysiology, FbaConservationError,
+    BIOMASS_CONSERVATION_ATOL_GDW, FBA_LIFECYCLE_STAT_FIELDS,
+    FBA_LIFECYCLE_EVENT_FIELDS,
+)
 from .physics import InteractionSummary, PhysicsOrchestrator
+from .experiment_support import ExperimentLedger, ExperimentIntegrityError
 
 def _spawn_sector(species_index, species_total):
     """Angular wedge [a0, a1) a species may occupy. Under the 'segregated' arrangement each species
@@ -271,7 +276,7 @@ class Bacterium:
         # As age increases, cellular damage increases metabolic maintenance overhead.
         # Free-radical theory of aging: models linear increase in basal energy. see DOCUMENTATION.md §4.11 (Senescence).
         # Average time to double metabolic cost (senescence base lifespan) approx 3 minutes (180s) in sim.
-        age_factor = 1.0 + (self.age / (SENESCENCE_BASE_LIFESPAN_SEC * self.lifespan_variance))
+        age_factor = 1.0 + (self.age / (SENESCENCE_BASE_LIFESPAN_SEC * self.lifespan_variance)) if getattr(self.species, 'maintenance_aging', True) else 1.0
         
         # Metabolism: lose nutrient over elapsed real time.
         # Temperature (Ratkowsky) scales enzymatic turnover: cold/hot extremes depress basal demand,
@@ -282,6 +287,10 @@ class Bacterium:
         metabolic_demand_pg = (self.metabolic_rate * dt) * age_factor * temp_factor * persister_metabolic_factor * self.metabolic_burden_factor
         self.last_metabolic_consumption_pg = min(max(0.0, self.food_level), metabolic_demand_pg)
         self.food_level = max(0, self.food_level - metabolic_demand_pg)
+        ledger = getattr(getattr(self.species, 'sim', None), 'experiment', None)
+        if ledger is not None:
+            ledger.record('maintenance', self, self.last_metabolic_consumption_pg,
+                          demand_pg=metabolic_demand_pg, age_multiplier=age_factor)
 
         # M3 Baranyi lag: advance the physiological state q. dq/dt = mu_max * q, with mu_max taken as
         # the species' temperature-scaled specific growth rate. Cold/hot extremes (temp_factor -> 0)
@@ -442,6 +451,10 @@ class Bacterium:
                     # Mass is conserved (node loses eat_amt); stored energy gains eat_amt * yield.
                     self.food_level += eat_amt * yield_f
                     node.amount -= eat_amt
+                    if ledger is not None:
+                        ledger.record('uptake', self, eat_amt, substrate_id=sid,
+                                      reserve_gain_pg=eat_amt * yield_f,
+                                      source_x=node.x, source_y=node.y)
                     amt_eaten_total += eat_amt
                     # Attribute the ingested mass to its substrate class for diet analytics.
                     if 0 <= sid < len(self.last_uptake_by_substrate):
@@ -480,7 +493,7 @@ class Bacterium:
         # carries the petri centre/radius also used for circular boundary reflection below.
         cx_b, cy_b, r_b = bounds
         if r_b > 0.0 and math.hypot(self.x - cx_b, self.y - cy_b) >= r_b * MUCUS_LAYER_RADIUS_FRACTION:
-            spd *= MUCUS_MOTILITY_FACTOR
+            spd *= (1.0 if ledger is not None else MUCUS_MOTILITY_FACTOR)
         
         # Forward translation
         self.x += math.cos(self.heading) * spd
@@ -656,10 +669,20 @@ class Bacterium:
                 # Ensure both cells have enough nutrient to survive the next elapsed-time update.
                 min_survival_food = self.metabolic_rate * dt
                 if parent_food > min_survival_food and child_food > min_survival_food:
+                    # Own-model partition rule: conserve post-cost reserves by moving any
+                    # daughter-capacity overflow back into the parent; no nutrient is deleted.
+                    # See DOCUMENTATION.md, spatial experiment lifecycle qualification.
+                    child_size = self.base_size if getattr(self.species, 'daughter_size_policy', 'variable') == 'fixed' else max(0.1, random.gauss(self.base_size, self.base_size * 0.2))
+                    child_capacity = self.species.food_capacity * child_size ** 3
+                    child_food = min(child_food, child_capacity)
+                    parent_food = remaining_food - child_food
+                    child_min_survival = self.species.metabolic_rate * child_size ** 2.25 * dt
+                    if parent_food > self.food_capacity or child_food <= child_min_survival:
+                        return None
                     self.food_level = parent_food
                     # Daughter inherits the parent's adapted physiological state q (no re-lag): an
                     # already-dividing cell's progeny are pre-adapted (see DOCUMENTATION.md §4.16 (Lag Phase)).
-                    child = Bacterium(self.species, self.x, self.y, size=max(0.1, random.gauss(self.base_size, self.base_size * 0.2)), initial_food=child_food, initial_q=self.q)
+                    child = Bacterium(self.species, self.x, self.y, size=child_size, initial_food=child_food, initial_q=self.q)
                     # M5: phage resistance is heritable. A susceptible lineage gains resistance by rare
                     # spontaneous mutation per division (see DOCUMENTATION.md §4.18 (Phage Predation and
                     # Horizontal Gene Transfer)), the seed of the post-crash rebound. The plasmid carriage
@@ -668,6 +691,16 @@ class Bacterium:
                     if not child.phage_resistant and random.random() < PHAGE_RESISTANCE_MUTATION_RATE:
                         child.phage_resistant = True
                     child.metabolic_burden_factor = self.metabolic_burden_factor
+                    ledger = getattr(getattr(self.species, 'sim', None), 'experiment', None)
+                    if ledger is not None:
+                        child.agent_id = ledger.next_agent_id
+                        ledger.next_agent_id += 1
+                        ledger.record('fission', self, atp_cost, daughter_id=child.agent_id,
+                                      overflow_returned_pg=max(0.0, remaining_food * .5 - child_food),
+                                      parent_reserve_pg=parent_food, daughter_reserve_pg=child_food)
+                        ledger.record('birth', child, parent_id=self.agent_id,
+                                      base_size=child.base_size, reserve_pg=child.food_level,
+                                      capacity_pg=child.food_capacity)
                     return child
         return None
 
@@ -692,7 +725,13 @@ class BacteriaSpecies:
                  phage_resistance=DEFAULT_PHAGE_RESISTANCE,
                  hgt_competence=DEFAULT_HGT_COMPETENCE,
                  aff_calorie=DEFAULT_AFF_CALORIE, aff_glycan=DEFAULT_AFF_GLYCAN,
-                 aff_mdcf=DEFAULT_AFF_MDCF):
+                 aff_mdcf=DEFAULT_AFF_MDCF, maintenance_aging=True, daughter_size_policy="variable"):
+        if not isinstance(maintenance_aging, bool):
+            raise ValueError("maintenance_aging must be boolean")
+        if daughter_size_policy not in ("variable", "fixed"):
+            raise ValueError("daughter_size_policy must be variable or fixed")
+        self.maintenance_aging = maintenance_aging
+        self.daughter_size_policy = daughter_size_policy
         # Store parameters
         self.name = name
         self.base_rep = rep       # base reproduction probability
@@ -796,7 +835,7 @@ class BacteriaSpecies:
         ratio = root / self._temp_sqrt_mu_peak
         return max(0.0, min(1.0, ratio * ratio))
 
-    def step(self, env, cap, w, h, food_nodes, dt, viewport_bounds=None, food_hash=None):
+    def step(self, env, cap, w, h, food_nodes, dt, viewport_bounds=None, food_hash=None, *, members=None, tick_start_total=None, record_history=True):
         """
         Process one simulation step for this species:
         - Move each bacterium
@@ -808,7 +847,7 @@ class BacteriaSpecies:
         # Ensure species_list is set
         if not hasattr(self, 'species_list') or not self.species_list:
             self.species_list = [self]
-        total = sum(len(sp.members) for sp in self.species_list)
+        total = sum(len(sp.members) for sp in self.species_list) if tick_start_total is None else tick_start_total
         safe_cap = cap if cap > 0 else 1
         capf = max(0, 1 - total / safe_cap) if safe_cap else 0
 
@@ -844,7 +883,8 @@ class BacteriaSpecies:
         # resolved here per cell so a single tick handles the full SIR transition (S->I->lysed).
         ecm = getattr(getattr(self, 'sim', None), 'ecm', None)
 
-        for b in list(self.members):
+        ledger = getattr(getattr(self, 'sim', None), 'experiment', None)
+        for b in list(self.members) if members is None else members:
             b.step(food_nodes, bounds=(ds_cx, ds_cy, ds_r), dt=dt, viewport_bounds=viewport_bounds, food_hash=food_hash, temp_factor=temp_factor)
 
             # --- M5 Phage predation (lytic SIR cycle) ---
@@ -907,19 +947,26 @@ class BacteriaSpecies:
             toxic_death_prob = (((1.0 - envf) * ENV_TOXIC_DEATH_RATE_PER_SEC) * dt + age_death_penalty) * persister_resistance
             if b.food_level <= 0 or random.random() < toxic_death_prob:
                 deaths.append(b)
+                if ledger is not None:
+                    cause = 'starvation' if b.food_level <= 0 else 'environment_or_age'
+                    ledger.record('death', b, cause=cause)
+                    ledger.record('death_reserve', b, max(0.0, b.food_level))
                 if b.food_level >= 0:
                     # Decomposition equation: reusable = cytosolic leak + labile dry necromass, measured as glucose-equivalent nutrient.
                     cell_volume_um3 = b.base_size ** 3
                     necromass_pg = cell_volume_um3 * CELL_WET_MASS_PG_PER_UM3 * CELL_DRY_MASS_FRACTION * LABILE_NECROMASS_FRACTION
                     food_value = max(0.0, b.food_level) * CYTOSOL_RECOVERY_FRACTION + necromass_pg
-                    if food_value > MIN_FOOD_NODE_AMOUNT_PG:
+                    if food_value > MIN_FOOD_NODE_AMOUNT_PG and (ledger is None or ledger.recycling):
                         food_nodes.append(FoodNode.acquire().init(b.x, b.y, food_value))
+                        if ledger is not None:
+                            ledger.record('recycling', b, food_value)
         # apply deaths and births
         for d in deaths:
             self.members.remove(d)
         self.members.extend(births)
         # record new population size
-        self.history.append(len(self.members))
+        if record_history:
+            self.history.append(len(self.members))
         # Track overall births/deaths
         self.total_births += len(births)
         self.total_deaths += len(deaths)
@@ -991,6 +1038,7 @@ class Simulation:
         ) # Inject Extracellular Matrix for molecular diffusion
         self.physics = PhysicsOrchestrator(backend=physics_backend)
         self.metabolic_adapter = metabolic_adapter
+        self.experiment = None
         self._pending_diet_boluses = []
         self.last_fba_result = None
         self._last_interaction_summary = InteractionSummary()
@@ -1008,6 +1056,34 @@ class Simulation:
         # Lazily-populated flag: the founder inoculum is placed by _seed_initial_population on the
         # first update (or reset), once the petri-dish geometry is established from the window size.
         self._populated = False
+
+    def enable_experiment(self, config, scheduler_seed, event_sink=None):
+        """Enable declared legacy-engine integrity policies after restoring founders.
+
+        This restricted mode disables interactions absent from the spatial nutrient
+        protocol and retains the legacy per-cell uptake, motion and lifecycle laws.
+        New daughters enter scheduling on the next tick; crowding uses tick start.
+        """
+        if self.metabolic_adapter is not None or not self._populated or self.step_idx:
+            raise ValueError('Enable legacy experiment after founder restore, before first tick')
+        if len({sp.name for sp in self.species}) != len(self.species):
+            raise ValueError('Experimental populations need unique names')
+        self.experiment = ExperimentLedger(self, config, scheduler_seed, event_sink)
+        return self.experiment
+
+    def add_external_food(self, x, y, mass, substrate_id=0, event_id=None):
+        """Deliver a preregistered bolus before washout and agent uptake."""
+        if self.experiment is None:
+            raise ValueError('Scheduled feeding requires enabled experiment')
+        if any(not math.isfinite(v) for v in (x, y, mass)) or mass < 0:
+            raise ValueError('Feed coordinates and mass must be finite; mass nonnegative')
+        if substrate_id not in SUBSTRATE_IDS:
+            raise ValueError('Unknown substrate id')
+        if math.hypot(x-self.petri_center[0], y-self.petri_center[1]) > self.petri_radius + 1e-9:
+            raise ValueError('Feed outside circular domain')
+        self.food_nodes.append(FoodNode(x, y, mass, substrate_id))
+        self.experiment.record('feed', amount_pg=mass, x=x, y=y,
+                               substrate_id=substrate_id, event_id=event_id)
 
     def _empty_stats(self):
         return {
@@ -1039,6 +1115,7 @@ class Simulation:
             'fba_consumed_calorie_mol': [],
             'fba_consumed_glycan_mol': [],
             'fba_consumed_mdcf_mol': [],
+            **{name: [] for name in FBA_LIFECYCLE_STAT_FIELDS},
         }
 
     def queue_diet_bolus(self, bolus):
@@ -1124,6 +1201,8 @@ class Simulation:
         """
         Reset populations to initial values and clear stats.
         """
+        if self.experiment is not None:
+            raise ValueError("Reconstruct experimental runs from their saved founder inputs")
         # Phase I reproducibility: re-seeding on reset makes repeated runs from the same seed
         # regenerate identical initial layouts and stochastic trajectories.
         if self.seed is not None:
@@ -1272,10 +1351,16 @@ class Simulation:
         if self.metabolic_adapter is not None:
             return self._update_fba(w, h, dt, viewport_bounds)
             
+        ledger = self.experiment
+        if ledger is not None:
+            if viewport_bounds is not None:
+                raise ValueError('Experimental runs require the full domain, no viewport shortcut')
+            ledger.begin_tick(dt)
+
         # Poisson-rate approximation: expected drops = lambda * dt, so spawning is real-time rather than FPS-bound.
         expected_drops = max(0.0, self.drop_frequency * dt)
         drop_count = int(expected_drops)
-        if random.random() < (expected_drops - drop_count):
+        if ledger is None and random.random() < (expected_drops - drop_count):
             drop_count += 1
         for _ in range(drop_count):
             r_f = self.petri_radius * math.sqrt(random.random())
@@ -1313,18 +1398,38 @@ class Simulation:
         # advect bacterial cells or update the separate live-FBA substrate maps.
         cx0, cy0 = self.petri_center
         inv_r = 1.0 / max(self.petri_radius, NUMERIC_DISTANCE_EPSILON_UM)
+        # Washout is one simultaneous deterministic tick transfer. Aggregate its
+        # exact per-node removals by substrate and half; retain individual uptake
+        # and lifecycle events. This avoids millions of redundant washout rows.
+        washout_groups = {}
         for node in self.food_nodes:
             frac = math.hypot(node.x - cx0, node.y - cy0) * inv_r
             rate = MUCUS_FOOD_WASHOUT_RATE_PER_SEC if frac >= MUCUS_LAYER_RADIUS_FRACTION else LUMEN_FOOD_WASHOUT_RATE_PER_SEC
-            node.amount -= node.amount * rate * dt
+            if ledger is not None:
+                rate = ledger.washout_rate
+            removed = node.amount * rate * dt
+            node.amount -= removed
+            if ledger is not None:
+                key = (node.substrate_id, ledger.region(node.x, node.y))
+                washout_groups.setdefault(key, []).append(removed)
+        if ledger is not None:
+            for (substrate_id, region), amounts in sorted(washout_groups.items()):
+                ledger.record('washout', amount_pg=math.fsum(amounts),
+                              substrate_id=substrate_id, region=region,
+                              node_count=len(amounts))
 
         to_remove = [n for n in self.food_nodes if n.amount < MIN_FOOD_NODE_AMOUNT_PG]
         for node in to_remove:
+            if ledger is not None:
+                ledger.record('prune', amount_pg=node.amount, x=node.x, y=node.y,
+                              substrate_id=node.substrate_id)
             self.food_nodes.remove(node)
             FoodNode.release(node)
             
         MAX_FOOD_NODES = 1000
-        if len(self.food_nodes) > MAX_FOOD_NODES:
+        if ledger is not None and ledger.max_food_nodes is not None and len(self.food_nodes) > ledger.max_food_nodes:
+            raise ExperimentIntegrityError('Explicit food-node resource limit exceeded')
+        if ledger is None and len(self.food_nodes) > MAX_FOOD_NODES:
             excess = self.food_nodes[:-MAX_FOOD_NODES]
             for node in excess:
                 FoodNode.release(node)
@@ -1336,19 +1441,37 @@ class Simulation:
             food_hash.insert(node)
         
         # Process Inter/Intra species interactions
-        interaction_summary = self._process_interactions(dt=dt)
+        interaction_summary = self._process_interactions(dt=dt) if ledger is None else InteractionSummary()
 
         # Tick ECM molecular diffusion mechanics
         self.ecm.tick(dt)
 
         bsum, dsum = 0, 0
         births_list, deaths_list = [], []
-        for sp in self.species:
-            b, d = sp.step(self.env, self.cap, w, h, self.food_nodes, dt, viewport_bounds, food_hash)
-            bsum += b
-            dsum += d
-            births_list.append(b)
-            deaths_list.append(d)
+        if ledger is None:
+            for sp in self.species:
+                b, d = sp.step(self.env, self.cap, w, h, self.food_nodes, dt, viewport_bounds, food_hash)
+                bsum += b
+                dsum += d
+                births_list.append(b)
+                deaths_list.append(d)
+        else:
+            agents = sorted((b for sp in self.species for b in sp.members), key=lambda b: b.agent_id)
+            tick_start_total = len(agents)
+            ledger.scheduler.shuffle(agents)
+            totals = {sp: [0, 0] for sp in self.species}
+            for agent in agents:
+                sp = agent.species
+                b, d = sp.step(self.env, self.cap, w, h, self.food_nodes, dt,
+                    None, food_hash, members=[agent], tick_start_total=tick_start_total,
+                    record_history=False)
+                totals[sp][0] += b
+                totals[sp][1] += d
+            births_list = [totals[sp][0] for sp in self.species]
+            deaths_list = [totals[sp][1] for sp in self.species]
+            bsum, dsum = sum(births_list), sum(deaths_list)
+            for sp in self.species:
+                sp.history.append(len(sp.members))
         # --- Enforce hard carrying capacity ---
         total_after = sum(len(sp.members) for sp in self.species)
         excess = total_after - self.cap
@@ -1358,6 +1481,8 @@ class Simulation:
             for sp in self.species:
                 for b in sp.members:
                     all_bacteria.append((sp, b))
+            if ledger is not None:
+                all_bacteria.sort(key=lambda pair: pair[1].agent_id)
             if len(all_bacteria) > 0:
                 n_kill = min(excess, len(all_bacteria))
                 # Own-model spatial cull weighting under carrying-capacity pressure; a protective
@@ -1371,11 +1496,14 @@ class Simulation:
                 keyed = []
                 for sp, b in all_bacteria:
                     frac = math.hypot(b.x - cx0, b.y - cy0) * inv_r
-                    w_comp = 1.0 if frac >= MUCUS_LAYER_RADIUS_FRACTION else LUMEN_COMPETITION_CULL_WEIGHT
+                    w_comp = 1.0 if ledger is not None or frac >= MUCUS_LAYER_RADIUS_FRACTION else LUMEN_COMPETITION_CULL_WEIGHT
                     keyed.append((random.random() ** (1.0 / w_comp), sp, b))
                 keyed.sort(key=lambda t: t[0], reverse=True)
                 to_kill = [(sp, b) for _, sp, b in keyed[:n_kill]]
                 for sp, b in to_kill:
+                    if ledger is not None:
+                        ledger.record('death', b, cause='capacity')
+                        ledger.record('death_reserve', b, max(0.0, b.food_level))
                     sp.members.remove(b)
                     sp.total_deaths += 1
                     forced_deaths_per_species[sp] += 1
@@ -1428,6 +1556,11 @@ class Simulation:
                 if ub:
                     for _si in range(min(len(ub), len(step_uptake))):
                         step_uptake[_si] += ub[_si]
+        if ledger is not None:
+            step_uptake = [0.0, 0.0, 0.0]
+            for event in ledger.events:
+                if event['kind'] == 'uptake':
+                    step_uptake[event['substrate_id']] += event['amount_pg']
         self.stats['mucus'].append(mucus_count)
         self.stats['lumen'].append(total_count - mucus_count)
         prev_cal = self.stats['consumed_calorie'][-1] if self.stats['consumed_calorie'] else 0.0
@@ -1519,6 +1652,8 @@ class Simulation:
         self.env['co2'] = max(0.0, min(1.0, self.env['co2']))
         self.env['ph'] = max(0.0, min(14.0, self.env['ph']))
 
+        if ledger is not None:
+            ledger.finish_tick(dt)
         self.step_idx += 1
 
     def _snapshot_fba_transaction(self):
@@ -1604,6 +1739,20 @@ class Simulation:
 
     def _advance_fba_transaction(self, w, h, dt, viewport_bounds=None):
         """Advance one opt-in molar FBA tick without invoking legacy pg nutrition."""
+        initial_agents = tuple(agent for species in self.species for agent in species.members)
+        self.metabolic_adapter.state_store.reconcile(initial_agents)
+        biomass_before = math.fsum(
+            self.metabolic_adapter.state_store.state_for(agent).biomass_gdw
+            for agent in initial_agents
+        )
+        elapsed_seconds = (
+            self.stats['elapsed_seconds'][-1] if self.stats['elapsed_seconds'] else 0.0
+        ) + dt
+        lifecycle_events = []
+        starvation_removed = 0.0
+        capacity_removed = 0.0
+        starvation_counts = [0] * len(self.species)
+        capacity_counts = [0] * len(self.species)
         self.ecm.tick(dt)
         result = self.metabolic_adapter.advance_tick(
             species=self.species,
@@ -1624,7 +1773,7 @@ class Simulation:
         )
         births_list = []
         deaths_list = []
-        for species in self.species:
+        for species_index, species in enumerate(self.species):
             current_ph = self.env.get('ph', NEUTRAL_PH)
             ph_difference = current_ph - species.preferred_ph
             ph_suitability = math.exp(
@@ -1670,6 +1819,13 @@ class Simulation:
                     temp_factor=temperature_factor,
                 )
                 if physiology.starved:
+                    starvation_removed += state.biomass_gdw
+                    starvation_counts[species_index] += 1
+                    lifecycle_events.append(dict(
+                        event='starvation', tick=self.step_idx, time_s=elapsed_seconds,
+                        species_index=species_index, species=species.name,
+                        x=bacterium.x, y=bacterium.y, biomass_gdw=state.biomass_gdw,
+                    ))
                     deaths.append(bacterium)
                     continue
                 if physiology.division_probability > 0.0 and random.random() < min(
@@ -1694,6 +1850,12 @@ class Simulation:
                         child,
                         self.metabolic_adapter.lifecycle_policy,
                     )
+                    lifecycle_events.append(dict(
+                        event='birth', tick=self.step_idx, time_s=elapsed_seconds,
+                        species_index=species_index, species=species.name,
+                        x=child.x, y=child.y,
+                        biomass_gdw=self.metabolic_adapter.state_store.state_for(child).biomass_gdw,
+                    ))
                     births.append(child)
             for bacterium in deaths:
                 species.members.remove(bacterium)
@@ -1713,6 +1875,15 @@ class Simulation:
                 for bacterium in species.members
             ]
             for species, bacterium in random.sample(candidates, min(excess, len(candidates))):
+                removed = self.metabolic_adapter.state_store.state_for(bacterium).biomass_gdw
+                capacity_removed += removed
+                species_index = self.species.index(species)
+                capacity_counts[species_index] += 1
+                lifecycle_events.append(dict(
+                    event='capacity', tick=self.step_idx, time_s=elapsed_seconds,
+                    species_index=species_index, species=species.name,
+                    x=bacterium.x, y=bacterium.y, biomass_gdw=removed,
+                ))
                 species.members.remove(bacterium)
                 species.total_deaths += 1
                 self.metabolic_adapter.state_store.remove(bacterium)
@@ -1771,18 +1942,35 @@ class Simulation:
         for name in ('consumed_calorie', 'consumed_glycan', 'consumed_mdcf'):
             self.stats[name].append(self.stats[name][-1] if self.stats[name] else 0.0)
 
-        self.stats['fba_biomass_gdw'].append(
-            sum(
+        biomass_after = math.fsum(
                 self.metabolic_adapter.state_store.state_for(bacterium).biomass_gdw
                 for species in self.species
                 for bacterium in species.members
-            )
         )
+        biomass_balance = (biomass_before + result.biomass_delta_gdw
+                           - result.maintenance_loss_gdw - starvation_removed
+                           - capacity_removed - biomass_after)
+        if abs(biomass_balance) > BIOMASS_CONSERVATION_ATOL_GDW:
+            raise FbaConservationError('live FBA lifecycle biomass balance failed')
+        if total_count != len(initial_agents) + step_births - step_deaths:
+            raise FbaConservationError('live FBA population event balance failed')
+        self.stats['fba_biomass_gdw'].append(biomass_after)
+        ledger_values = (
+            result.biomass_delta_gdw, result.maintenance_loss_gdw,
+            result.net_biomass_delta_gdw, sum(starvation_counts), sum(capacity_counts),
+            starvation_removed, capacity_removed, biomass_balance,
+        )
+        for name, value in zip(FBA_LIFECYCLE_STAT_FIELDS, ledger_values):
+            self.stats[name].append(value)
         self.stats['fba_acetate_mol'].append(result.acetate_secreted_mol)
         self.stats['fba_consumed_calorie_mol'].append(result.substrate_consumed_mol[0])
         self.stats['fba_consumed_glycan_mol'].append(result.substrate_consumed_mol[1])
         self.stats['fba_consumed_mdcf_mol'].append(result.substrate_consumed_mol[2])
-        self.species_step_stats.append({'births': births_list, 'deaths': deaths_list})
+        self.species_step_stats.append({
+            'births': births_list, 'deaths': deaths_list,
+            'starvation_deaths': starvation_counts, 'capacity_deaths': capacity_counts,
+            'fba_events': lifecycle_events,
+        })
 
         gas_diffusion = GAS_DIFFUSION_RATE_SEC * dt
         self.env['o2'] += (ATMOSPHERIC_O2_FRACTION - self.env['o2']) * gas_diffusion
@@ -1829,6 +2017,7 @@ class Simulation:
                 'consumed_mdcf', 'fba_biomass_gdw', 'fba_acetate_mol',
                 'fba_consumed_calorie_mol', 'fba_consumed_glycan_mol',
                 'fba_consumed_mdcf_mol',
+                *FBA_LIFECYCLE_STAT_FIELDS,
             ])
             # Zone and substrate-consumption columns may be absent on stats built by legacy imports
             # or manual construction; fall back to blank so the row width stays consistent without
@@ -1872,6 +2061,8 @@ class Simulation:
                     fba_calorie_series[i] if i < len(fba_calorie_series) else '',
                     fba_glycan_series[i] if i < len(fba_glycan_series) else '',
                     fba_mdcf_series[i] if i < len(fba_mdcf_series) else '',
+                    *(self.stats.get(name, [])[i] if i < len(self.stats.get(name, [])) else ''
+                      for name in FBA_LIFECYCLE_STAT_FIELDS),
                 ])
             # Write per-species stats
             writer.writerow([])
@@ -1907,6 +2098,12 @@ class Simulation:
                     int(extinct),
                     len(sp.members)
                 ])
+            writer.writerow([])
+            writer.writerow(['--- FBA Lifecycle Events ---'])
+            writer.writerow(FBA_LIFECYCLE_EVENT_FIELDS)
+            for step in self.species_step_stats:
+                for event in step.get('fba_events', ()):
+                    writer.writerow([event[name] for name in FBA_LIFECYCLE_EVENT_FIELDS])
         print(f"Exported data to {EXPORT_FILE}")
 
     def import_stats(self, filename=EXPORT_FILE):
@@ -1971,6 +2168,7 @@ class Simulation:
                     'fba_consumed_calorie_mol',
                     'fba_consumed_glycan_mol',
                     'fba_consumed_mdcf_mol',
+                    *FBA_LIFECYCLE_STAT_FIELDS,
                 ):
                     field_index = header_index.get(field_name)
                     value = (
@@ -1988,6 +2186,8 @@ class Simulation:
             sp.total_deaths = 0
 
         for row in lines[species_start:]:
+            if row == ['--- FBA Lifecycle Events ---']:
+                break
             if len(row) >= 8 and row[0].isdigit():
                 sp_idx, name, step, count, births, deaths, overall_births, overall_deaths = row
                 # Find species by index
@@ -2023,6 +2223,26 @@ class Simulation:
                         idx = self.species.index(sp)
                         self.species_step_stats[step_idx]['births'][idx] = int(births) if births else 0
                         self.species_step_stats[step_idx]['deaths'][idx] = int(deaths) if deaths else 0
+
+        # The lifecycle section is separate from species-history rows and is not
+        # a restorable live-agent checkpoint. Preserve event evidence on CSV import.
+        marker = ['--- FBA Lifecycle Events ---']
+        if marker in lines:
+            event_start = lines.index(marker) + 2
+            for row in lines[event_start:]:
+                if not row:
+                    break
+                if len(row) != len(FBA_LIFECYCLE_EVENT_FIELDS):
+                    raise ValueError('Invalid FBA lifecycle event row')
+                event = dict(zip(FBA_LIFECYCLE_EVENT_FIELDS, row))
+                for name in ('tick', 'species_index'):
+                    event[name] = int(event[name])
+                for name in ('time_s', 'x', 'y', 'biomass_gdw'):
+                    event[name] = float(event[name])
+                tick = event['tick']
+                if tick < 0 or tick >= len(self.species_step_stats):
+                    raise ValueError('FBA event tick is outside imported history')
+                self.species_step_stats[tick].setdefault('fba_events', []).append(event)
 
         if self.stats['time']:
             self.step_idx = self.stats['time'][-1] + 1

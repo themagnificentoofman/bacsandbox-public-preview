@@ -50,7 +50,7 @@ Select Interpreter**; an existing explicit selection overrides the workspace def
 
 ### Optional Compiled Kernel
 
-The normal requirements-only setup above needs no compiler and retains Python fallbacks for both ECM and contact physics. The optional unified extension accelerates ECM diffusion/decay and contact-pair processing and also exposes the reduced metabolic kernel through an opt-in direct API. The app's existing pg-based metabolism remains the default; the reduced API is not a UI mode or automatic `Simulation` integration and is not a genome-scale model. To build the extension in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
+The normal requirements-only setup above needs no compiler and retains Python fallbacks for both ECM and contact physics. The optional unified extension accelerates ECM diffusion/decay and contact-pair processing and also exposes the reduced metabolic kernel through an opt-in direct API. The app's existing pg-based metabolism remains the default; the reduced API supports explicitly attached `Simulation` adapters and has no automatic UI mode. It is not a genome-scale model. To build the extension in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
 
 PowerShell:
 
@@ -141,6 +141,12 @@ not relax accepted-state, accounting or control gates. The original v0.5 protoco
 and failed run remain historical evidence tied to their original executable.
 `--workers` accepts 1–8 processes (default 1); it changes execution parallelism,
 not the scenario design or numerical settings.
+
+## Spatial nutrient experiment
+
+The [spatial nutrient workflow](research/spatial_nutrient/README.md) implements a separately registered nutrient-only paired experiment with feasible lifecycle parameters, species-independent scheduling, event-time accounting, failure retention, and qualification gates. It requires Python plus `research/spatial_nutrient/requirements-spatial.txt`. Its main cohort remains blocked until pilot and numerical qualification pass. See the execution report for what has actually run.
+
+An explicit `BiomassMaintenanceFbaLifecyclePolicy` now adds starvation to the opt-in reduced live-FBA API. This is an Own-model biomass-loss policy with required user-supplied parameters, separate from the primary legacy spatial experiment and the Zhou reference. See [the lifecycle contract](DOCUMENTATION.md#live-fba-biomass-maintenance-lifecycle).
 
 ## Project Files
 
