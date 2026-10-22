@@ -103,6 +103,59 @@ class ExperimentalAccountingTests(unittest.TestCase):
         self.assertEqual(sim.experiment.last_tick['populations']['focal']['deaths'], {'capacity': 1})
         self.assertAlmostEqual(sim.experiment.last_tick['mass_residual_pg'], 0)
 
+    def test_extinct_recipient_uptake_and_cell_time_remain_in_exposure(self):
+        sim = simulation([species()], cap=0)
+        sim.add_external_food(*sim.petri_center, 10)
+        sim.update(800, 600, .1)
+        summary = sim.experiment.last_tick['population_exposure']['focal']
+        self.assertEqual(summary['living_count'], 0)
+        self.assertEqual(summary['cell_seconds'], {'rich': .1, 'poor': 0.0, 'total': .1})
+        self.assertGreater(summary['uptake_pg']['rich'], 0)
+        self.assertEqual(summary['uptake_pg']['total'], sim.experiment.cumulative['uptake_pg'])
+        self.assertEqual(summary['uptake_pg_per_cell_second']['total'],
+                         summary['uptake_pg']['total'] / .1)
+        self.assertIsNone(summary['uptake_pg_per_cell_second']['poor'])
+        self.assertEqual(summary['rich_cell_time_fraction'], 1.0)
+        self.assertEqual(summary['time_support']['first_occupied_tick_start_seconds'], 0.0)
+        self.assertEqual(summary['time_support']['last_occupied_tick_end_seconds'], .1)
+        self.assertEqual(summary['time_support']['first_extinction_time_seconds'], .1)
+        self.assertFalse(summary['time_support']['right_censored_at_observation_end'])
+        sim.update(800, 600, .1)
+        later = sim.experiment.last_tick['population_exposure']['focal']
+        self.assertEqual(later['cell_seconds'], summary['cell_seconds'])
+        self.assertEqual(later['uptake_pg'], summary['uptake_pg'])
+        self.assertEqual(later['time_support']['observed_through_seconds'], .2)
+        self.assertEqual(later['time_support']['last_occupied_tick_end_seconds'], .1)
+
+    def test_zero_cell_time_normalizations_are_undefined(self):
+        sim = simulation([species()])
+        summary = sim.experiment.population_exposure()['focal']
+        self.assertEqual(summary['cell_seconds']['total'], 0.0)
+        self.assertEqual(summary['uptake_pg']['total'], 0.0)
+        self.assertEqual(summary['uptake_pg_per_cell_second'],
+                         {'rich': None, 'poor': None, 'total': None})
+        self.assertIsNone(summary['rich_cell_time_fraction'])
+        self.assertIsNone(summary['cell_time_weighted_field_contrast'])
+
+    def test_fixed_early_field_window_clips_straddling_tick(self):
+        sim = simulation([species(consumption_speed=0, metabolic_rate=0)])
+        # An independent piecewise field: +1 through20 s, then -1. The
+        # prespecified 25-second mean is (20-5)/25, irrespective of later time.
+        fields = [{'food_half_pg': {'rich': 1.0, 'poor': 0.0}}] * 2 + [
+            {'food_half_pg': {'rich': 0.0, 'poor': 1.0}}] * 2
+        with patch.object(sim.experiment, 'exposure', side_effect=fields):
+            for _ in range(3):
+                sim.update(800, 600, 10.0)
+            tick = sim.experiment.last_tick
+            self.assertEqual(tick['early_exposure_time_seconds'], 25.0)
+            self.assertAlmostEqual(tick['early_exposure_contrast'], .6)
+            self.assertAlmostEqual(tick['exposure_contrast'], 1 / 3)
+            summary = tick['population_exposure']['focal']
+            self.assertAlmostEqual(summary['cell_time_weighted_field_contrast'], 1 / 3)
+            sim.update(800, 600, 10.0)
+        self.assertEqual(sim.experiment.last_tick['early_exposure_time_seconds'], 25.0)
+        self.assertAlmostEqual(sim.experiment.last_tick['early_exposure_contrast'], .6)
+
     def test_node_limit_never_silently_deletes_food(self):
         sim = simulation([species()])
         for _ in range(1001):

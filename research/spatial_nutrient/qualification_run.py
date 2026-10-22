@@ -120,7 +120,7 @@ def _source(sources, key, path):
 
 def _audit_pilot(output, manifest, records, sources):
     """Reconcile retained event streams against final counts and external mass."""
-    from .runner import digest
+    from .runner import artifact_path, digest, input_path, open_jsonl, read_inputs
     from .inputs import assert_matched_arms
     output = Path(output)
     protocol = manifest["protocol"]
@@ -130,25 +130,25 @@ def _audit_pilot(output, manifest, records, sources):
     results = {"food_ledger": [], "population_ledger": [], "disabled_mechanisms": [],
                "matched_inputs": [], "pruning": [], "births_by_arm": {"U": 0, "H": 0}}
     for pair in manifest["pairs"]:
-        u = json.loads((output / "inputs" / str(pair["seed"]) / "U.json").read_text())
-        h = json.loads((output / "inputs" / str(pair["seed"]) / "H.json").read_text())
+        u = read_inputs(output, pair["seed"], "U")
+        h = read_inputs(output, pair["seed"], "H")
         assert_matched_arms(u, h)
         for arm, inputs in (("U", u), ("H", h)):
             if digest(inputs) != pair["inputs"][arm]:
                 raise ValueError("pilot input no longer matches registration")
             _source(sources, f"pilot:{pair['seed']}:{arm}:inputs",
-                    output / "inputs" / str(pair["seed"]) / f"{arm}.json")
+                    input_path(output, pair["seed"], arm))
     for record in records:
         prefix = f"pilot:{record['seed']}:{record['arm']}"
         arm_dir = output / "runs" / str(record["seed"]) / record["arm"]
         attempt = arm_dir / f"attempt-{record['attempt']:03d}"
-        for name, path in (("result", attempt / "result.json"), ("events", attempt / "events.jsonl"),
-                           ("trajectory", attempt / "trajectory.jsonl"),
+        for name, path in (("result", attempt / "result.json"), ("events", artifact_path(attempt, "events.jsonl")),
+                           ("trajectory", artifact_path(attempt, "trajectory.jsonl")),
                            ("completion", arm_dir / "completed.json")):
             _source(sources, prefix + ":" + name, path)
         births, deaths, transfer = Counter(), Counter(), Counter()
         forbidden = []
-        with (attempt / "events.jsonl").open() as handle:
+        with open_jsonl(artifact_path(attempt, "events.jsonl")) as handle:
             for line in handle:
                 event = json.loads(line)
                 kind = event["kind"]
@@ -162,7 +162,7 @@ def _audit_pilot(output, manifest, records, sources):
                         raise ValueError("invalid retained transfer")
                     transfer[kind] += amount
         last = None
-        with (attempt / "trajectory.jsonl").open() as handle:
+        with open_jsonl(artifact_path(attempt, "trajectory.jsonl")) as handle:
             for line in handle:
                 last = json.loads(line)
         if last is None or abs(last["time_s"] - protocol["clock"]["horizon_model_seconds"]) > 1e-9:
@@ -192,8 +192,8 @@ def _audit_pilot(output, manifest, records, sources):
 
 
 def qualify(pilot, tests, output, *, coarse=None, fine=None):
-    from .runner import (atomic_json, code_identity, collect, digest,
-                         runtime_identity)
+    from .runner import (atomic_json, code_identity, collect, digest, input_path,
+                         read_inputs, runtime_identity)
     if (coarse is None) != (fine is None):
         raise ValueError("provide both coarse and fine cohorts, or neither")
     output = Path(output)
@@ -294,8 +294,8 @@ def qualify(pilot, tests, output, *, coarse=None, fine=None):
             for arm in ("U", "H"):
                 pair_inputs = []
                 for label, folder, m in (("coarse", coarse, cm), ("fine", fine, fm)):
-                    path = Path(folder) / "inputs" / str(seed) / f"{arm}.json"
-                    item = json.loads(path.read_text())
+                    path = input_path(folder, seed, arm)
+                    item = read_inputs(folder, seed, arm)
                     registered = next(pair for pair in m["pairs"] if pair["seed"] == seed)
                     if digest(item) != registered["inputs"][arm]:
                         raise ValueError("numerical input no longer matches its registration")
@@ -356,7 +356,7 @@ def freeze(evidence, output):
 
 def verify_freeze(path, *, protocol_sha256, code_sha256, runtime):
     """Runner entry point: recheck retained evidence before admitting main seeds."""
-    frozen = json.loads(Path(path).read_text())
+    frozen = copy.deepcopy(path) if isinstance(path, dict) else json.loads(Path(path).read_text())
     expected = frozen.pop("freeze_sha256", None)
     if canonical_sha256(frozen) != expected:
         raise ValueError("freeze hash mismatch")
