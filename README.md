@@ -97,6 +97,10 @@ The Pygame interface includes:
 
 ## Research Audits
 
+For ongoing work, follow the [checkpoint-first operating policy](operations/workflow/README.md)
+and [C01–C08 resume note](operations/workflow/RESUME.md). These coordinate existing
+tools and preserve progress across pauses without changing registered experiments.
+
 Inspect species inputs before interpreting a run:
 
 ```bash

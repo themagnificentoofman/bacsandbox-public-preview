@@ -25,6 +25,8 @@
 
     "README.md",
     "DOCUMENTATION.md",
+    "AGENTS.md",
+    "operations/workflow/**",
 
     "env_config.json",
     "species_data.csv"
