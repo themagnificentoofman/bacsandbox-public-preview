@@ -104,6 +104,10 @@ checks bound files and prior small receipts; the native adapters recheck relevan
 current evidence. Plan authors must avoid expensive redundant full scans in each
 adapter. This optimization never removes a required final gate.
 
+For bounded arm-level status, quiet event monitoring, and failure packets, use
+the independent [reporting helper](REPORTING.md). It can observe an admitted
+controller from a separate checkout without changing its pinned implementation.
+
 ### Tests and adoption
 
 ```bash
