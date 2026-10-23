@@ -115,9 +115,9 @@ effects, concurrent ownership, changed bindings, verification failure, capacity
 holds, bounded batches and stop boundaries. They do not run a scientific arm or
 release production evidence.
 
-The generic coordinator is implemented. Live C01–C08 command adapters are **not
-activated**: step 1 must finish with the current procedure, then its native
-commands/verifiers and original receipts must be bound into an admitted plan.
-No existing upload/readback/cleanup format has been replaced mid-transaction.
-The transition checkpoint and operational-source bundle make this pending work
-explicit. See [RESUME.md](RESUME.md).
+The generic coordinator and the [Step 2 handoff adapters](STEP2.md) are implemented.
+The original transition plan remains blocked and unchanged. A successor plan can
+import completed native retention, consolidation and snapshot receipts after
+source verification, tested adapter admission and an explicit shared-owner claim.
+Its C08 gate remains closed. See the latest dated checkpoint for actual activation
+status; implementation alone does not establish production admission.
