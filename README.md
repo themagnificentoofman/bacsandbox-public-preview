@@ -1,160 +1,97 @@
-# Bacteria Sandbox
+# BacSandbox — public portfolio preview
 
-Bacteria Sandbox is an interactive 2D bacterial simulation built with Python and Pygame.
+BacSandbox is a Python/Pygame sandbox for exploring how individual simulated bacteria move, find nutrients, interact, and change population abundance over time. Optional C++ kernels accelerate selected calculations. This repository lets a reviewer run the software, inspect its architecture, and follow its development history.
 
-For the full technical model, equations, constants, CSV schemas, and implementation details, see [DOCUMENTATION.md](DOCUMENTATION.md).
+**Start here:** [reviewer guide and architecture](PORTFOLIO.md) · [technical documentation](DOCUMENTATION.md) · [history and disclosure notes](HISTORY.md) · [verification](VERIFICATION.md)
 
-## Setup
+This is a privacy-reviewed copy of the development repository. Historical commits retain their chronological development and ancestry, with the documented sanitization described in `HISTORY.md`. The runnable demo uses synthetic inputs; biological predictive accuracy has not been established.
 
-Use standard CPython 3.14. Development and CI use **3.14.7**, pinned in
-[.python-version](.python-version); the package range is `>=3.14,<3.15`.
-Free-threaded Python (`3.14t`) is outside this validation target.
+## Run the demonstration
 
-1. Install Python 3.14.7 and create one project environment named `.venv`:
+Use standard **CPython 3.14.7**, the source repository's pinned runtime. The package supports `>=3.14,<3.15`; free-threaded Python is outside the stated target. Run the following from the repository root:
 
-   macOS/Linux:
+```sh
+python3.14 -m venv .venv
+source .venv/bin/activate
+python --version
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+python examples/portfolio_demo.py
+```
 
-   ```bash
-   python3.14 -m venv .venv
-   source .venv/bin/activate
-   ```
+On Windows PowerShell, create and activate the environment with:
 
-   Windows PowerShell:
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-   ```powershell
-   py -3.14 -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   ```
+Then use the same `python -m pip ...` and demo commands above. The requirements-only installation needs no C++ compiler. It installs `pygame-ce`, which is imported as `pygame`; do not also install the separate `pygame` distribution.
 
-2. Verify `python --version` reports `3.14.7`, then install dependencies:
+The demo runs the existing simulation engine for 20 simulated seconds, with two invented populations and illustrative inputs. It shows movement, nutrient patches, population counts, births, and deaths. Space pauses/resumes it; Escape exits. Cells are enlarged for visibility. It uses a fixed seed, fixed time steps, and explicit Python backends. Its populations are not measured biological species, and this presentation wrapper is separate from the registered research experiments.
 
-   ```bash
-   python -m pip install --upgrade pip
-   python -m pip install -r requirements.txt
-   python -m pip check
-   ```
+For a bounded run without a display, optionally saving a new population timeline:
 
-3. Run the app:
+```sh
+python examples/portfolio_demo.py --headless --seconds 5 --output demo-populations.csv
+```
 
-   ```bash
-   python -m bacteria
-   ```
+The script refuses to overwrite an existing output file. A matching seed reproduces the example within the same code/runtime; it is not a promise of bitwise parity across platforms, dependency versions, or backends.
 
-Both install routes use `pygame-ce` (still imported as `pygame`) and the same
-runtime dependencies from `requirements.txt`. Do not install the separate `pygame`
-distribution alongside it. Native build dependencies are isolated by pip from
-`pyproject.toml`. For an existing Python 3.12 installation, follow the
-[migration and verification notes](DOCUMENTATION.md#21-python-314-migration-and-verification)
-before rebuilding `.venv`. In VS Code, select this environment with **Python:
-Select Interpreter**; an existing explicit selection overrides the workspace default.
+## Explore the full application
 
-### Optional Compiled Kernel
+```sh
+python -m bacteria
+```
 
-The normal requirements-only setup above needs no compiler and retains Python fallbacks for both ECM and contact physics. The optional unified extension accelerates ECM diffusion/decay and contact-pair processing and also exposes the reduced metabolic kernel through an opt-in direct API. The app's existing pg-based metabolism remains the default; the reduced API supports explicitly attached `Simulation` adapters and has no automatic UI mode. It is not a genome-scale model. To build the extension in editable mode with automatic OpenMP detection, run the command for your shell from the repository root.
+Click **Play** to start. Use **Grid** to view agents and nutrients, **Graph** to inspect population trajectories, **Stats** for births/deaths and elapsed time, **Species** to inspect/edit model parameters, and **Globals** to change environment settings. The application reads and can save `species_data.csv` and `env_config.json` in the working directory. Its export action produces a simulation timeline; use a disposable checkout if you want to keep the shipped settings untouched.
 
-PowerShell:
+The desktop app requires a graphical display. This repository is an executable source demonstration, not a hosted browser app. A short recording of it can accompany the Maker Portfolio; the reviewer should not have to infer motion from a still screenshot.
+
+## Inspect the implementation
+
+| Component | Entry point |
+| --- | --- |
+| Individual agents, lifecycle, spatial simulation | [`bacteria/core_sim.py`](bacteria/core_sim.py) |
+| Desktop interface and editing controls | [`bacteria/app.py`](bacteria/app.py), [`bacteria/ui_components.py`](bacteria/ui_components.py) |
+| Extracellular fields and contact physics | [`bacteria/ecm.py`](bacteria/ecm.py), [`bacteria/physics.py`](bacteria/physics.py) |
+| Optional reduced metabolic model and live adapter | [`bacteria/metabolism.py`](bacteria/metabolism.py), [`bacteria/metabolic_integration.py`](bacteria/metabolic_integration.py) |
+| Dietary input translation and model assets | [`bacteria/diet_translator.py`](bacteria/diet_translator.py), [`bacteria/models/`](bacteria/models/) |
+| Optional C++17 kernels | [`bacteria/src/`](bacteria/src/) |
+| Parameter audit and comparative runs | [`audit_species_parameters.py`](audit_species_parameters.py), [`run_comparative_sweeps.py`](run_comparative_sweeps.py) |
+| Research preparation and separate workflows | [`research/`](research/) |
+
+The default desktop model uses discrete nutrient nodes and glucose-equivalent reserve bookkeeping. The opt-in reduced metabolic API is a separate path; it does **not** become active merely because the C++ extension is installed, and it is **not** a genome-scale reconstruction.
+
+## Optional native build and checks
+
+A C++17 toolchain is required for the editable native build. From the repository root on macOS/Linux:
+
+```sh
+BACSANDBOX_OPENMP=auto python -m pip install -e .
+python -c "import bacteria_c_kernel as k; print('OpenMP:', k.openmp_enabled()); assert hasattr(k, 'MetabolicKernel')"
+```
+
+On PowerShell:
 
 ```powershell
 $env:BACSANDBOX_OPENMP = "auto"
 python -m pip install -e .
 ```
 
-POSIX shells:
+`auto` probes OpenMP and falls back to a serial native build if unavailable. Use `on` to require it or `off` to disable it. See [the technical documentation](DOCUMENTATION.md#101-hybrid-c-computational-kernel) for toolchain details.
 
-```bash
-BACSANDBOX_OPENMP=auto python -m pip install -e .
+Run the simulator's test modules with:
+
+```sh
+python -m unittest discover -s bacteria -p 'test_*.py'
 ```
 
-Use `BACSANDBOX_OPENMP=on` to require OpenMP or `BACSANDBOX_OPENMP=off` to build deliberately without it. OpenMP builds on macOS require `libomp`. Backend and build details are documented in [DOCUMENTATION.md §10.1](DOCUMENTATION.md#101-hybrid-c-computational-kernel), [§10.2](DOCUMENTATION.md#102-vectorized-physics-and-spatial-hash-kernel), and [§10.3](DOCUMENTATION.md#103-constraint-based-metabolic-caching-kernel).
+Native-only checks may skip when the extension is absent. Separate source-dependent research tests require optional analysis dependencies and the exact publisher supplement workbooks; those originals are not distributed here. See [the data-readiness instructions](research/data_readiness/README.md). Do not interpret skipped tests or successful software checks as completed biological validation.
 
-For a macOS OpenMP build:
+## Scope, history, and credit
 
-```bash
-brew install libomp
-CPPFLAGS="-I$(brew --prefix libomp)/include" \
-LDFLAGS="-L$(brew --prefix libomp)/lib" \
-ARCHFLAGS="-arch $(uname -m)" \
-BACSANDBOX_OPENMP=on python -m pip install -e .
-```
+Zachary Zheng's project development, including AI-assisted work, is represented by the retained history. [The reviewer guide](PORTFOLIO.md#contributions-and-assistance) explains the contribution boundary; [the history notes](HISTORY.md) explain the public-copy changes. Publication of this source does not assign a new open-source license to the project or change third-party licenses.
 
-After building, verify the native extension and run the full suite:
-
-```bash
-python -m pip check
-python -c "import bacteria_c_kernel as k; print('OpenMP:', k.openmp_enabled()); assert hasattr(k, 'MetabolicKernel')"
-python -m unittest discover
-```
-
-## Using The App
-
-The Pygame interface includes:
-
-* Grid: pan/zoom simulation view with minimap, scale indicator, food nodes, bacteria, and hover inspection.
-* Graph: population history charts with import/export controls.
-* Stats: live population, elapsed time, tickrate, births, deaths, and per-species summaries.
-* Species: editable species parameter table with duplicate/delete and undo/redo support.
-* Globals: editable environment settings for oxygen, carbon dioxide, pH, carrying capacity, and food drops.
-
-## Research Audits
-
-For ongoing work, follow the [checkpoint-first operating policy](operations/workflow/README.md)
-and [C01–C08 resume note](operations/workflow/RESUME.md). These coordinate existing
-tools and preserve progress across pauses without changing registered experiments.
-
-Inspect species inputs before interpreting a run:
-
-```bash
-python audit_species_parameters.py --output parameter_audit.json
-python -m unittest bacteria.test_parameter_audit bacteria.test_comparative_sweeps
-```
-
-The audit reports explicit/defaulted values and implementation diagnostics; it does
-not infer measured traits. Comparative sweeps export four stable CSVs plus
-`run_manifest.json`, recording realized founders, environment and analysis limits.
-See [parameter auditing](DOCUMENTATION.md#51-parameter-inventory-and-missing-values)
-and [comparative sweeps](DOCUMENTATION.md#105-comparative-spatial-control-sweep-harness).
-
-For source-preserving Zhou benchmark preparation, see the
-[data-readiness tools](research/data_readiness/README.md) and
-[documented evidence limits](DOCUMENTATION.md#106-empirical-table-readiness).
-The CSV audit and optional supplement extractors do not fit or validate the model.
-
-The separate [Zhou continuous reference](DOCUMENTATION.md#107-zhou-continuous-reference-and-exploratory-scenario-contract)
-implements a scaled, well-mixed exploratory model with source-role checks,
-control-only calibration and gated retrospective evaluation. Its finite parameter
-and observation scenarios are analyst assumptions, not measured mouse kinetics.
-It does not alter the Pygame simulation. Inspect the workflow with
-`python -m research.zhou_reference.runner --help`; execution requires a frozen
-scenario specification, pinned source inputs and passing engineering gates.
-Install its optional dependencies from
-`research/zhou_reference/requirements-reference.txt`. With a passing
-`ENGINEERING_REPORT.json`, verified supplement directory `SOURCE_DIR`, and an
-existing parent directory `OUTPUT`, replace these example paths as needed:
-
-```bash
-python -m research.zhou_reference.runner lock --protocol research/zhou_reference/protocol_v051.json --engineering-report ENGINEERING_REPORT.json --output OUTPUT/specification_lock.json
-python -m research.zhou_reference.runner calibrate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v051.json --lock OUTPUT/specification_lock.json --output OUTPUT/calibration --workers 8
-python -m research.zhou_reference.runner evaluate --sources SOURCE_DIR --protocol research/zhou_reference/protocol_v051.json --lock OUTPUT/specification_lock.json --calibration OUTPUT/calibration --output OUTPUT/evaluation
-```
-
-Run the stages sequentially. A failed calibration or numerical gate leaves
-evaluation disabled; preserve that failure record rather than skipping scenarios.
-The v0.5.1 numerical amendment retains the v0.5 scientific design and adds bounded,
-recorded DOP853 segment retries for an invalid internal trial denominator. It does
-not relax accepted-state, accounting or control gates. The original v0.5 protocol
-and failed run remain historical evidence tied to their original executable.
-`--workers` accepts 1–8 processes (default 1); it changes execution parallelism,
-not the scenario design or numerical settings.
-
-## Spatial nutrient experiment
-
-The [spatial nutrient workflow](research/spatial_nutrient/README.md) implements a separately registered nutrient-only paired experiment with feasible lifecycle parameters, species-independent scheduling, event-time accounting, failure retention, and qualification gates. It requires Python plus `research/spatial_nutrient/requirements-spatial.txt`. Its main cohort remains blocked until pilot and numerical qualification pass. See the execution report for what has actually run.
-
-An explicit `BiomassMaintenanceFbaLifecyclePolicy` now adds starvation to the opt-in reduced live-FBA API. This is an Own-model biomass-loss policy with required user-supplied parameters, separate from the primary legacy spatial experiment and the Zhou reference. See [the lifecycle contract](DOCUMENTATION.md#live-fba-biomass-maintenance-lifecycle).
-
-## Project Files
-
-* `species_data.csv`: species configuration loaded at startup and edited by the Species tab.
-* `env_config.json`: global environment defaults loaded at startup and edited by the Globals tab.
-* `simulation_stats.csv`: exported/imported simulation timeline, including elapsed seconds, tickrate, and cumulative global births/deaths.
-* `DOCUMENTATION.md`: single source of truth for formulas, biological rationale, constants, UI behavior, architecture, and CSV details.
+Private mentor correspondence, internal storage links, operational checkpoints, and retained execution evidence are excluded as documented. Research code and historical technical documentation remain useful for inspection, but references to excluded records do not make those records part of this preview or establish the current state of an experiment.

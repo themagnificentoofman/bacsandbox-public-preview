@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "source_head": "ce64ecd0fe8e206b5a4758ff61139a282056e22b",
+  "filtered_head": "a29431d5f05f420a44227874456499f26d7678b5",
+  "verified_commits": 83,
+  "verified_merges": 15,
+  "verified_source_blobs": 417,
+  "public_blobs_scanned": 306,
+  "checks": 19053,
+  "errors": [],
+  "scope": "Filtered history only; uncommitted/new public additions are outside this receipt."
+}
