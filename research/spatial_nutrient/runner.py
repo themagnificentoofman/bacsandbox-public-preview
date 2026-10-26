@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from fractions import Fraction
 import hashlib
+import gzip
+import io
 import importlib.metadata
 import json
 import multiprocessing
@@ -73,6 +75,21 @@ def registered_seeds(protocol, cohort):
     raise ValueError('diagnostic and sensitivity cohorts require explicit registered seeds')
 
 
+def _verify_main_freeze(freeze, protocol, code, runtime):
+    if freeze is None:
+        raise ValueError('main execution requires a successful qualification freeze')
+    frozen = json.loads(Path(freeze).read_text()) if isinstance(freeze, (str, Path)) else freeze
+    study_v03 = any(a['change'].startswith('study_v03:') for a in protocol.get('amendments', []))
+    if study_v03 and frozen.get('study_version') != '0.3':
+        raise ValueError('v0.3 main execution requires a v0.3 qualification freeze')
+    if frozen.get('study_version') == '0.3':
+        from .qualification_v03 import verify_freeze
+    else:
+        from .qualification_run import verify_freeze
+    return verify_freeze(frozen, protocol_sha256=digest(protocol),
+                         code_sha256=code['sha256'], runtime=runtime)
+
+
 def register(output, protocol, cohort, seeds=None, *, freeze=None):
     """Save the complete denominator, both arms and execution order before any run."""
     output = Path(output)
@@ -88,11 +105,7 @@ def register(output, protocol, cohort, seeds=None, *, freeze=None):
         raise ValueError('fresh main seeds cannot be used for qualification or sensitivity')
     code, runtime = code_identity(), runtime_identity()
     if cohort == 'main':
-        if freeze is None:
-            raise ValueError('main execution requires a successful qualification freeze')
-        from .qualification_run import verify_freeze
-        freeze = verify_freeze(freeze, protocol_sha256=digest(protocol),
-                               code_sha256=code['sha256'], runtime=runtime)
+        freeze = _verify_main_freeze(freeze, protocol, code, runtime)
     output.mkdir(parents=True, exist_ok=False)
     manifest = {'schema_version': 1, 'cohort': cohort, 'protocol': protocol,
                 'protocol_sha256': digest(protocol), 'code': code, 'runtime': runtime,
@@ -104,8 +117,10 @@ def register(output, protocol, cohort, seeds=None, *, freeze=None):
         u, h = arm_inputs(pair, 'U'), arm_inputs(pair, 'H')
         assert_matched_arms(u, h)
         pair_dir = output / 'inputs' / str(seed)
+        pair_dir.mkdir(parents=True)
         for arm, inputs in [('U', u), ('H', h)]:
-            atomic_json(pair_dir / f'{arm}.json', inputs)
+            with _compressed_jsonl(pair_dir / f'{arm}.json.gz') as handle:
+                handle.write(canonical(inputs) + '\n')
         # Execution order is not the ecological RNG stream or a treatment input.
         order = ['U', 'H']
         random.Random(pair['streams']['execution_order']['seed']).shuffle(order)
@@ -146,15 +161,56 @@ def _last_counts(sim):
     return {sp.name: len(sp.members) for sp in sim.species}
 
 
+def artifact_path(directory, logical_name):
+    """Resolve one retained format, rejecting ambiguous plain/compressed copies."""
+    directory = Path(directory)
+    paths = [directory / logical_name]
+    if logical_name.endswith(('.jsonl', '.json')):
+        paths.append(directory / (logical_name + '.gz'))
+    found = [p for p in paths if p.exists()]
+    if len(found) != 1:
+        raise ValueError(f'Expected one retained artifact for {logical_name}, found {len(found)}')
+    return found[0]
+
+
+def open_jsonl(path):
+    """Read lossless compressed evidence and historical plain JSONL alike."""
+    path = Path(path)
+    return gzip.open(path, 'rt', encoding='utf-8') if path.suffix == '.gz' else path.open(encoding='utf-8')
+
+
+def input_path(output, seed, arm):
+    return artifact_path(Path(output) / 'inputs' / str(seed), f'{arm}.json')
+
+
+def read_inputs(output, seed, arm):
+    with open_jsonl(input_path(output, seed, arm)) as handle:
+        return json.load(handle)
+
+
+@contextmanager
+def _compressed_jsonl(path):
+    # Fixed header metadata makes identical ecological replays byte-identical.
+    # fsync follows the gzip footer, before any completion record can be written.
+    with Path(path).open('wb') as raw:
+        try:
+            with gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0, compresslevel=3) as compressed:
+                with io.TextIOWrapper(compressed, encoding='utf-8', newline='\n') as handle:
+                    yield handle
+        finally:
+            raw.flush()
+            os.fsync(raw.fileno())
+
+
 def artifact_manifest(directory):
     result = {}
     for name in ('events.jsonl', 'trajectory.jsonl', 'rng_final.json'):
-        path = Path(directory) / name
+        path = artifact_path(directory, name)
         hasher = hashlib.sha256()
         with path.open('rb') as handle:
             for chunk in iter(lambda: handle.read(1024*1024), b''):
                 hasher.update(chunk)
-        result[name] = {'sha256':hasher.hexdigest(), 'size_bytes':path.stat().st_size}
+        result[path.name] = {'sha256':hasher.hexdigest(), 'size_bytes':path.stat().st_size}
     return result
 
 
@@ -194,10 +250,16 @@ def execute_arm(output, seed, arm, retry=False):
     """Worker entry point. A fresh process owns each arm, including each retry."""
     output = Path(output)
     manifest = read_manifest(output)
+    if manifest['cohort'] == 'main':
+        _verify_main_freeze(manifest['freeze'], manifest['protocol'], manifest['code'], manifest['runtime'])
+    if (manifest['cohort'].startswith('diagnostic_v03_')
+            or any('study_v03:' in str(a) for a in manifest['protocol'].get('amendments', []))):
+        from .study_v03 import verify_admission
+        verify_admission(output, manifest)
     pair_meta = next((p for p in manifest['pairs'] if p['seed'] == seed), None)
     if pair_meta is None or arm not in ('U', 'H'):
         raise ValueError('unregistered arm')
-    inputs = json.loads((output / 'inputs' / str(seed) / f'{arm}.json').read_text())
+    inputs = read_inputs(output, seed, arm)
     if digest(inputs) != pair_meta['inputs'][arm]:
         raise ValueError('saved inputs changed')
     arm_dir = output / 'runs' / str(seed) / arm
@@ -247,8 +309,8 @@ def execute_arm(output, seed, arm, retry=False):
         sim = None
         try:
             with ExitStack() as stack:
-                events = stack.enter_context((attempt_dir / 'events.jsonl').open('w'))
-                trajectory = stack.enter_context((attempt_dir / 'trajectory.jsonl').open('w'))
+                events = stack.enter_context(_compressed_jsonl(attempt_dir / 'events.jsonl.gz'))
+                trajectory = stack.enter_context(_compressed_jsonl(attempt_dir / 'trajectory.jsonl.gz'))
                 def event_sink(event):
                     events.write(canonical(_json_state(event)) + '\n')
                 sim = build_simulation(inputs, event_sink=event_sink)
@@ -283,10 +345,7 @@ def execute_arm(output, seed, arm, retry=False):
                         events.flush()
                         atomic_json(attempt_dir / 'progress.json', {**record, 'reached_time_s': reached,
                                                                  'counts': _last_counts(sim)})
-                events.flush()
-                os.fsync(events.fileno())
-                trajectory.flush()
-                os.fsync(trajectory.fileno())
+                stack.close()
                 ledger = _json_state(sim.experiment.cumulative)
                 record.update(status='completed', validated=True, reached_time_s=reached,
                               focal_count=len(focal.members), counts=_last_counts(sim),
@@ -294,10 +353,14 @@ def execute_arm(output, seed, arm, retry=False):
                               tail_min_focal_count=tail_min,
                               extinction_time_s=first_extinction,
                               established={str(t): tail_min >= t for t in (1,5,10)},
+                              exposure={'populations': last_tick['population_exposure'],
+                                        'early_window_seconds': [0.0, 25.0],
+                                        'early_observed_seconds': last_tick['early_exposure_time_seconds']},
                               diagnostics={'max_mass_residual_pg': max_mass_residual,
                                            'food_balance_residual_pg': max_mass_residual,
                                            'exposure_contrast': last_tick['exposure_contrast'],
                                            'alive_weighted_exposure_contrast': last_tick['alive_weighted_exposure_contrast'],
+                                           'early_exposure_contrast': last_tick['early_exposure_contrast'],
                                            'alive_cell_seconds': last_tick['alive_cell_seconds']}, ledger=ledger)
                 # Numerical comparison also receives named scalar diagnostics without discarding the detailed ledger.
                 record['diagnostics'].update({k: float(v) for k,v in ledger.items() if isinstance(v,(int,float))})

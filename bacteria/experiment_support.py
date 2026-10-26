@@ -55,6 +55,14 @@ class ExperimentLedger:
         self.alive_weighted_contrast_integral = 0.0
         self.alive_cell_seconds = 0.0
         self.elapsed_seconds = 0.0
+        # Own-model readouts, not new ecological rules. The fixed early window
+        # is the prespecified v0.3 diagnostic (PROTOCOL_V03.md, exposure section).
+        self.early_exposure_window_seconds = 25.0
+        self.early_exposure_contrast_integral = 0.0
+        self.early_exposure_time_seconds = 0.0
+        self.population_uptake = {}
+        self.population_contrast_integral = {}
+        self.population_time_support = {}
         self.cumulative = {k: 0.0 for k in ('feed_pg', 'recycled_pg', 'uptake_pg',
             'washout_pg', 'pruned_pg', 'reserve_gain_pg', 'maintenance_pg',
             'fission_cost_pg', 'death_reserve_pg', 'maintenance_demand_pg',
@@ -66,6 +74,7 @@ class ExperimentLedger:
         self.last_mass = sum(n.amount for n in sim.food_nodes)
         self.last_reserves = self.reserves()
         self.last_counts = self.counts()
+        self.initial_counts = dict(self.last_counts)
         self.start_cumulative = dict(self.cumulative)
         self.next_agent_id = 0
         seen = set()
@@ -151,6 +160,10 @@ class ExperimentLedger:
         if kind == 'uptake':
             self.cumulative['reserve_gain_pg'] += fields['reserve_gain_pg']
             agent.experiment_uptake_pg = getattr(agent, 'experiment_uptake_pg', 0.0) + amount_pg
+            # Event-location uptake remains after the recipient dies or divides;
+            # a snapshot of only living agents cannot provide this quantity.
+            key = event['population'] + ':' + event['region']
+            self.population_uptake[key] = self.population_uptake.get(key, 0.0) + amount_pg
         if kind in ('birth', 'death'):
             self.cumulative['births' if kind == 'birth' else 'deaths'] += 1
         self.events.append(event)
@@ -167,6 +180,14 @@ class ExperimentLedger:
         self.tick_start_reserves = dict(self.last_reserves)
         self.tick_start_counts = dict(self.last_counts)
         for sp in self.sim.species:
+            support = self.population_time_support.setdefault(sp.name, {
+                'first_occupied_tick_start_seconds': None,
+                'last_occupied_tick_end_seconds': None,
+                'first_extinction_time_seconds': (0.0 if not sp.members else None)})
+            if sp.members:
+                if support['first_occupied_tick_start_seconds'] is None:
+                    support['first_occupied_tick_start_seconds'] = self.elapsed_seconds
+                support['last_occupied_tick_end_seconds'] = self.elapsed_seconds + dt
             for b in sp.members:
                 r = self.region(b.x, b.y)
                 k = sp.name + ':' + r
@@ -214,6 +235,19 @@ class ExperimentLedger:
         alive_weight = dt * sum(self.tick_start_counts.values())
         self.alive_weighted_contrast_integral += alive_weight * contrast
         self.alive_cell_seconds += alive_weight
+        # Integrate only the intersection of this tick and the fixed [0,25] s
+        # support. This remains comparable for timesteps that straddle 25 s.
+        early_dt = max(0.0, min(self.elapsed_seconds + dt, self.early_exposure_window_seconds)
+                       - min(self.elapsed_seconds, self.early_exposure_window_seconds))
+        self.early_exposure_contrast_integral += early_dt * contrast
+        self.early_exposure_time_seconds += early_dt
+        for sp in self.sim.species:
+            weight = dt * self.tick_start_counts[sp.name]
+            self.population_contrast_integral[sp.name] = (
+                self.population_contrast_integral.get(sp.name, 0.0) + weight * contrast)
+            support = self.population_time_support[sp.name]
+            if counts[sp.name] == 0 and support['first_extinction_time_seconds'] is None:
+                support['first_extinction_time_seconds'] = self.elapsed_seconds + dt
         self.elapsed_seconds += dt
         self.last_tick = {'tick': self.sim.step_idx, 'time_seconds': self.elapsed_seconds,
             'mass_start_pg': self.tick_start_mass, 'mass_end_pg': mass,
@@ -221,11 +255,53 @@ class ExperimentLedger:
             'exposure': exposure, 'exposure_contrast': self.exposure_contrast_integral / self.elapsed_seconds,
             'alive_weighted_exposure_contrast': (self.alive_weighted_contrast_integral / self.alive_cell_seconds
                                                 if self.alive_cell_seconds else None),
-            'alive_cell_seconds': self.alive_cell_seconds}
+            'alive_cell_seconds': self.alive_cell_seconds,
+            'early_exposure_contrast': (self.early_exposure_contrast_integral / self.early_exposure_time_seconds
+                                       if self.early_exposure_time_seconds else None),
+            'early_exposure_time_seconds': self.early_exposure_time_seconds,
+            'population_exposure': self.population_exposure()}
         self.last_mass, self.last_reserves, self.last_counts = mass, reserves, counts
         self.start_cumulative = dict(self.cumulative)
         self.last_events, self.events = self.events, []
         return self.last_tick
+
+    def population_exposure(self):
+        """Durable readouts including extinct cells, with explicit support.
+
+        Residence uses position and abundance at tick start; uptake uses the
+        event location before movement. Their regional ratio is a discrete-time
+        uptake-per-cell-time diagnostic, not a measured local concentration.
+        Field contrast is a whole-domain statistic even when population weighted.
+        See DOCUMENTATION.md, spatial experiment qualification.
+        """
+        result = {}
+        for sp in self.sim.species:
+            residence = {region: self.residence.get(sp.name + ':' + region, 0.0)
+                         for region in ('rich', 'poor')}
+            uptake = {region: self.population_uptake.get(sp.name + ':' + region, 0.0)
+                      for region in ('rich', 'poor')}
+            residence['total'] = math.fsum(residence.values())
+            uptake['total'] = math.fsum(uptake.values())
+            ratios = {region: uptake[region] / seconds if seconds else None
+                      for region, seconds in residence.items()}
+            total = residence['total']
+            result[sp.name] = {
+                'cell_seconds': residence,
+                'uptake_pg': uptake,
+                'uptake_pg_per_cell_second': ratios,
+                'rich_cell_time_fraction': residence['rich'] / total if total else None,
+                'living_count': len(sp.members),
+                'initial_living_count': self.initial_counts.get(sp.name, 0),
+                'time_support': {
+                    'observed_through_seconds': self.elapsed_seconds,
+                    **self.population_time_support.get(sp.name, {}),
+                    'right_censored_at_observation_end': bool(sp.members)},
+                'cell_time_weighted_field_contrast': (
+                    self.population_contrast_integral.get(sp.name, 0.0) / total if total else None),
+                'residence_convention': 'tick_start_position_and_abundance',
+                'uptake_convention': 'event_location_before_movement',
+            }
+        return result
 
     def exposure(self):
         halves = {'rich': 0.0, 'poor': 0.0}

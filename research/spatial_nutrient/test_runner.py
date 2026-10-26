@@ -22,8 +22,8 @@ def test_registration_saves_inputs_and_rejects_overwrite(tmp_path):
     out=tmp_path/'case'
     manifest=runner.register(out,small_protocol(),'diagnostic',[45])
     assert len(manifest['pairs'])==1
-    assert (out/'inputs/45/U.json').exists()
-    assert (out/'inputs/45/H.json').exists()
+    assert runner.input_path(out,45,'U').name=='U.json.gz'
+    assert runner.input_path(out,45,'H').name=='H.json.gz'
     assert runner.read_manifest(out)['manifest_sha256']==manifest['manifest_sha256']
     with pytest.raises(FileExistsError):runner.register(out,small_protocol(),'diagnostic',[45])
 
@@ -52,9 +52,10 @@ def test_failure_retained_and_retry_uses_same_saved_input(tmp_path):
 def test_tampering_and_main_without_freeze_rejected(tmp_path):
     out=tmp_path/'case'
     runner.register(out,small_protocol(),'diagnostic',[47])
-    path=out/'inputs/47/U.json'
-    data=json.loads(path.read_text());data['orientation_rad']=123
-    path.write_text(json.dumps(data))
+    path=runner.input_path(out,47,'U')
+    data=runner.read_inputs(out,47,'U');data['orientation_rad']=123
+    with runner._compressed_jsonl(path) as handle:
+        handle.write(json.dumps(data))
     with pytest.raises(ValueError,match='inputs changed'):runner.execute_arm(out,47,'U')
     with pytest.raises(ValueError,match='qualification freeze'):
         runner.register(tmp_path/'main',load_protocol(),'main')
@@ -112,7 +113,7 @@ def test_interrupted_completion_marker_repaired_and_outputs_verified(tmp_path):
         runner.execute_arm(out,52,'U')
     assert runner.execute_arm(out,52,'U',retry=True)==original
     assert marker.exists()
-    events=out/'runs/52/U/attempt-001/events.jsonl'
+    events=runner.artifact_path(out/'runs/52/U/attempt-001', 'events.jsonl')
     events.write_text('truncated\n')
     with pytest.raises(ValueError,match='integrity mismatch'):
         runner.execute_arm(out,52,'U',retry=True)
@@ -126,3 +127,58 @@ def test_dead_worker_lock_recovery_retains_evidence(tmp_path):
     assert runner.recover_interrupted(out,53,'U')
     assert (arm/'recovery-001.json').exists()
     assert runner.execute_arm(out,53,'U',retry=True)['status']=='completed'
+
+
+def test_compressed_evidence_roundtrip_and_ambiguous_copy_rejected(tmp_path):
+    out=tmp_path/'compressed'
+    runner.register(out,small_protocol(),'diagnostic',[54])
+    record=runner.execute_arm(out,54,'U')
+    assert record['status']=='completed',record
+    attempt=out/'runs/54/U/attempt-001'
+    events=runner.artifact_path(attempt,'events.jsonl')
+    assert events.name=='events.jsonl.gz'
+    with runner.open_jsonl(events) as handle:
+        parsed=[json.loads(line) for line in handle]
+    assert any(e['kind']=='feed' for e in parsed)
+    assert sum(e.get('amount_pg',0) for e in parsed if e['kind']=='feed')==record['ledger']['feed_pg']
+    (attempt/'events.jsonl').write_text('unregistered alternate copy\n')
+    with pytest.raises(ValueError,match='Expected one retained artifact'):
+        runner.execute_arm(out,54,'U',retry=True)
+
+
+def test_historical_plain_inputs_and_output_logs_remain_readable(tmp_path):
+    out = tmp_path / 'historical'
+    runner.register(out, small_protocol(), 'diagnostic', [55])
+    expected = []
+    for arm in ('U', 'H'):
+        # Recreate the historical on-disk format before execution: input identity
+        # binds parsed data, while retained output identity binds the file bytes.
+        compressed_input = runner.input_path(out, 55, arm)
+        inputs = runner.read_inputs(out, 55, arm)
+        runner.atomic_json(compressed_input.with_suffix(''), inputs)
+        compressed_input.unlink()
+        assert runner.read_inputs(out, 55, arm) == inputs
+        record = runner.execute_arm(out, 55, arm)
+        assert record['status'] == 'completed', record
+        attempt = out / 'runs' / '55' / arm / 'attempt-001'
+        for name in ('events.jsonl', 'trajectory.jsonl'):
+            compressed_log = runner.artifact_path(attempt, name)
+            with runner.open_jsonl(compressed_log) as handle:
+                text = handle.read()
+            plain_log = compressed_log.with_suffix('')
+            plain_log.write_text(text, encoding='utf-8')
+            compressed_log.unlink()
+            assert runner.artifact_path(attempt, name) == plain_log
+            with runner.open_jsonl(plain_log) as handle:
+                assert handle.read() == text
+        # Emulate a historical producer's own completion hashes; this is only
+        # fixture construction, never a migration of retained research evidence.
+        record['outputs'] = runner.artifact_manifest(attempt)
+        runner.atomic_json(attempt / 'result.json', record)
+        runner.atomic_json(attempt.parent / 'completed.json',
+                           {'attempt': 1, 'result_sha256': runner.digest(record)})
+        assert set(record['outputs']) == {'events.jsonl', 'trajectory.jsonl', 'rng_final.json'}
+        assert runner.execute_arm(out, 55, arm) == record
+        expected.append(record)
+    _, records = runner.collect(out)
+    assert records == expected
