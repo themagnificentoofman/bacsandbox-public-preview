@@ -1,6 +1,6 @@
 # Bacteria Sandbox — public preview
 
-BacSandbox is a Python/Pygame sandbox for exploring how individual simulated bacteria move, find nutrients, interact, and change population abundance over time. Optional C++ kernels accelerate selected calculations. This repository lets a reviewer run the software, inspect its architecture, and follow its development history.
+Bacteria Sandbox (BacSandbox) is a Python/Pygame sandbox for exploring how individual simulated bacteria move, find nutrients, interact, and change population abundance over time. Optional C++ kernels accelerate selected calculations. This repository lets a reviewer run the software, inspect its architecture, and follow its development history.
 
 **Start here:** [reviewer guide and architecture](PORTFOLIO.md) · [technical documentation](DOCUMENTATION.md) · [history and disclosure notes](HISTORY.md) · [verification](VERIFICATION.md)
 
